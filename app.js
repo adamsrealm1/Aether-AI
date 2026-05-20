@@ -300,7 +300,7 @@ function chatListItem(chat) {
 
 function renderRateLimitMeter() {
   const rate = Aether.state.rateLimit || {};
-  const limit = Math.max(1, Number(rate.limit || 10));
+  const limit = Math.max(1, Number(rate.limit || 5));
   const remaining = Math.max(0, Math.min(limit, Number(rate.remaining ?? limit)));
   const targetPercent = Math.round((remaining / limit) * 100);
   const displayPercent = clampPercent(Aether.state.rateMeter?.displayPercent ?? targetPercent);
@@ -1111,7 +1111,7 @@ function updateRateMeterDom() {
   const card = document.querySelector(".rate-card");
   if (!card) return;
   const rate = Aether.state.rateLimit || {};
-  const limit = Math.max(1, Number(rate.limit || 10));
+  const limit = Math.max(1, Number(rate.limit || 5));
   const remaining = Math.max(0, Math.min(limit, Number(rate.remaining ?? limit)));
   const displayPercent = clampPercent(Aether.state.rateMeter?.displayPercent ?? ratePercent(rate));
   const resetInSeconds = Math.max(0, Number(rate.resetInSeconds || 0));
@@ -1125,7 +1125,7 @@ function updateRateMeterDom() {
 }
 
 function ratePercent(rate) {
-  const limit = Math.max(1, Number(rate?.limit || 10));
+  const limit = Math.max(1, Number(rate?.limit || 5));
   const remaining = Math.max(0, Math.min(limit, Number(rate?.remaining ?? limit)));
   return Math.round((remaining / limit) * 100);
 }
