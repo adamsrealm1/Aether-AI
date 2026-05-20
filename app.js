@@ -477,10 +477,12 @@ function renderAdminPage() {
   const stats = data?.stats || {};
   const bannedUsers = data?.bannedUsers || {};
   const bannedMacs = data?.bannedMacs || {};
-  const warnedUsers = data?.warnedUsers || {};
   const adminMacs = data?.adminMacs || {};
   const adminIps = data?.adminIps || {};
   const accounts = data?.accounts || [];
+  const adminAccounts = accounts.filter((account) => account.isAdmin);
+  const bannedTotal = Number(stats.bannedUsers || 0) + Number(stats.bannedMacs || 0);
+  const adminIdentityTotal = Number(stats.adminMacs || 0) + Number(stats.adminAccounts || 0);
   return `
     <main class="admin-page">
       <div class="animated-bg">
@@ -501,14 +503,10 @@ function renderAdminPage() {
       <section class="admin-stats">
         <div><strong>${Number(stats.openReports || 0)}</strong><span>Open reports</span></div>
         <div><strong>${Number(stats.totalReports || 0)}</strong><span>Total reports</span></div>
-        <div><strong>${Number(stats.bannedUsers || 0)}</strong><span>Banned IPs</span></div>
-        <div><strong>${Number(stats.bannedMacs || 0)}</strong><span>Banned MACs</span></div>
-        <div><strong>${Number(stats.warnedUsers || 0)}</strong><span>Warned IPs</span></div>
-        <div><strong>${Number(stats.uniqueReporters || 0)}</strong><span>Reporters</span></div>
-        <div><strong>${Number(stats.adminMacs || 0)}</strong><span>Admin MACs</span></div>
+        <div><strong>${bannedTotal}</strong><span>Banned IPs/MACs</span></div>
+        <div><strong>${adminIdentityTotal}</strong><span>Admin MACs/accounts</span></div>
         <div><strong>${Number(stats.adminIps || 0)}</strong><span>Admin IPs</span></div>
         <div><strong>${Number(stats.accounts || 0)}</strong><span>Accounts</span></div>
-        <div><strong>${Number(stats.adminAccounts || 0)}</strong><span>Admin accounts</span></div>
       </section>
       <section class="admin-panel">
         <h2>Give admin</h2>
@@ -547,11 +545,6 @@ function renderAdminPage() {
             <input name="reason" placeholder="Reason" autocomplete="off">
             <button class="danger-button" type="submit">Ban MAC</button>
           </form>
-          <form class="manual-form" data-action="manual-reset-warnings">
-            <label>Reset warnings</label>
-            <input name="ip" placeholder="IP address" autocomplete="off">
-            <button class="secondary-button" type="submit">Reset</button>
-          </form>
         </div>
         <div class="admin-recent">
           <span>Recent IPs: ${escapeHtml((data?.recent?.ips || []).join(", ") || "none")}</span>
@@ -573,7 +566,8 @@ function renderAdminPage() {
         ${reports.length ? reports.map(renderAdminReport).join("") : `<div class="admin-empty">No reports yet.</div>`}
       </section>
       <section class="admin-panel">
-        <h2>Banned IPs</h2>
+        <h2>Banned IPs & MACs</h2>
+        <h3>Banned IPs</h3>
         ${
           Object.keys(bannedUsers).length
             ? Object.entries(bannedUsers)
@@ -589,9 +583,7 @@ function renderAdminPage() {
                 .join("")
             : `<div class="admin-empty">No banned IPs.</div>`
         }
-      </section>
-      <section class="admin-panel">
-        <h2>Banned MACs</h2>
+        <h3>Banned MACs</h3>
         ${
           Object.keys(bannedMacs).length
             ? Object.entries(bannedMacs)
@@ -610,7 +602,7 @@ function renderAdminPage() {
       </section>
       <section class="admin-panel">
         <h2>Admins</h2>
-        <h3>Admin MACs</h3>
+        <h3>Admin MACs & accounts</h3>
         ${
           Object.keys(adminMacs).length
             ? Object.entries(adminMacs)
@@ -625,6 +617,21 @@ function renderAdminPage() {
                 )
                 .join("")
             : `<div class="admin-empty">No admin MACs.</div>`
+        }
+        ${
+          adminAccounts.length
+            ? adminAccounts
+                .map(
+                  (account) => `
+                    <div class="ban-row">
+                      <strong>${escapeHtml(account.displayName || account.username)}</strong>
+                      <span>@${escapeHtml(account.username)} Admin account</span>
+                      <button class="secondary-button" data-account-admin="${escapeHtml(account.username)}" data-admin-value="false">Remove admin</button>
+                    </div>
+                  `,
+                )
+                .join("")
+            : `<div class="admin-empty">No admin accounts.</div>`
         }
         <h3>Admin IPs</h3>
         ${
@@ -662,25 +669,6 @@ function renderAdminPage() {
                 )
                 .join("")
             : `<div class="admin-empty">No accounts yet.</div>`
-        }
-      </section>
-      <section class="admin-panel">
-        <h2>Warned IPs</h2>
-        ${
-          Object.keys(warnedUsers).length
-            ? Object.entries(warnedUsers)
-                .map(
-                  ([ip, info]) => `
-                    <div class="ban-row">
-                      <strong>${escapeHtml(ip)}</strong>
-                      <span>${Number(info.warnings || 0)} warnings</span>
-                      <button class="secondary-button" data-reset-ip="${escapeHtml(ip)}">Reset</button>
-                      <button class="danger-button" data-ban-ip="${escapeHtml(ip)}">Ban IP</button>
-                    </div>
-                  `,
-                )
-                .join("")
-            : `<div class="admin-empty">No warned IPs.</div>`
         }
       </section>
     </main>
@@ -814,7 +802,6 @@ function bindEvents(root) {
   });
   root.querySelector("[data-action='manual-ban-ip']")?.addEventListener("submit", manualBanIp);
   root.querySelector("[data-action='manual-ban-mac']")?.addEventListener("submit", manualBanMac);
-  root.querySelector("[data-action='manual-reset-warnings']")?.addEventListener("submit", manualResetWarnings);
   root.querySelector("[data-action='grant-admin-user']")?.addEventListener("submit", grantAdminUser);
   root.querySelector("[data-action='grant-admin-mac']")?.addEventListener("submit", (event) => grantAdmin(event, "mac"));
   root.querySelector("[data-action='grant-admin-ip']")?.addEventListener("submit", (event) => grantAdmin(event, "ip"));
@@ -835,9 +822,6 @@ function bindEvents(root) {
   });
   root.querySelectorAll("[data-unban-mac]").forEach((button) => {
     button.addEventListener("click", () => unbanMac(button.dataset.unbanMac));
-  });
-  root.querySelectorAll("[data-reset-ip]").forEach((button) => {
-    button.addEventListener("click", () => resetWarnings(button.dataset.resetIp));
   });
   root.querySelectorAll("[data-revoke-admin-mac]").forEach((button) => {
     button.addEventListener("click", () => revokeAdmin("mac", button.dataset.revokeAdminMac));
@@ -1216,12 +1200,6 @@ async function unbanMac(mac) {
   await loadAdminData();
 }
 
-async function resetWarnings(ip) {
-  if (!ip) return;
-  await postJson("/api/admin/reset-warnings", { ip });
-  await loadAdminData();
-}
-
 async function deleteReport(reportId) {
   if (!reportId) return;
   await postJson("/api/admin/delete-report", { reportId });
@@ -1257,15 +1235,6 @@ async function manualBanMac(event) {
   await postJson("/api/admin/ban-mac", { mac, reason: form.elements.reason.value.trim() || "Manual admin MAC ban" });
   form.reset();
   await loadAdminData();
-}
-
-async function manualResetWarnings(event) {
-  event.preventDefault();
-  const form = event.currentTarget;
-  const ip = form.elements.ip.value.trim();
-  if (!ip) return;
-  await resetWarnings(ip);
-  form.reset();
 }
 
 async function grantAdmin(event, type) {
