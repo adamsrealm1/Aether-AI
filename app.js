@@ -101,6 +101,10 @@ const storage = {
 };
 
 function defaultApiEndpoint() {
+  const publicEndpoint = configuredPublicApiEndpoint();
+  if (publicEndpoint) {
+    return publicEndpoint;
+  }
   if (canUseRelativeApi()) {
     return "/api/chat";
   }
@@ -110,17 +114,17 @@ function defaultApiEndpoint() {
   return "/api/chat";
 }
 
+function configuredPublicApiEndpoint() {
+  const value = String(window.AETHER_API_ENDPOINT || "").trim();
+  return /^https?:\/\/[^/]+\/api\/chat\/?$/i.test(value) ? value.replace(/\/+$/, "") : "";
+}
+
 function canUseRelativeApi() {
   return location.protocol === "http:" && ["127.0.0.1", "localhost", "::1"].includes(location.hostname);
 }
 
 function isStaticLaunch() {
   return location.protocol === "file:" || location.hostname.endsWith("github.io");
-}
-
-function shouldShowBlankForPhoneSite() {
-  const isPhone = /Android|iPhone|iPod|Mobile/i.test(navigator.userAgent) || Math.min(screen.width, screen.height) < 760;
-  return isPhone && location.protocol === "https:" && location.hostname.endsWith("github.io");
 }
 
 function readJson(key, fallback) {
@@ -151,12 +155,6 @@ function activeChat() {
 }
 
 function bootstrap() {
-  if (shouldShowBlankForPhoneSite()) {
-    document.documentElement.style.background = "#fff";
-    document.body.style.background = "#fff";
-    document.body.innerHTML = "";
-    return;
-  }
   injectStyles();
   storage.load();
   bindGlobalEvents();
@@ -1323,9 +1321,9 @@ function backendLaunchMessage() {
     return "Start server.py. This file page uses http://127.0.0.1:8765/api/chat on this computer.";
   }
   if (location.protocol === "https:" && location.hostname.endsWith("github.io")) {
-    return "GitHub Pages cannot reliably call a plain HTTP LAN backend from a phone. Open http://YOUR-COMPUTER-IP:8765/ on the phone, or use an HTTPS tunnel/backend.";
+    return "This GitHub Pages site needs a public HTTPS backend in config.js to work from anywhere.";
   }
-  return "Start server.py, then set Backend to the computer's API URL.";
+  return "Start server.py, or use a public HTTPS backend.";
 }
 
 async function locationForWeatherRequest(text) {

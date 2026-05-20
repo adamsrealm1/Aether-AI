@@ -1140,7 +1140,7 @@ def groq_error_message(exc: APIStatusError) -> str:
 
 def main() -> None:
     load_dotenv()
-    port = int(os.getenv("AETHER_PORT", "8765"))
+    port = int(os.getenv("PORT") or os.getenv("AETHER_PORT", "8765"))
     host = os.getenv("AETHER_HOST", "0.0.0.0").strip() or "0.0.0.0"
     server = ThreadingHTTPServer((host, port), AetherHandler)
     print(f"Server active.")

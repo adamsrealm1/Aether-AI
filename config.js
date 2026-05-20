@@ -1,0 +1,1 @@
+window.AETHER_API_ENDPOINT = "https://aether-ai-backend-f5hp.onrender.com";
