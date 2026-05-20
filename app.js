@@ -26,6 +26,7 @@ const Aether = {
 
 let speechRecognition = null;
 let messageVisibilityObserver = null;
+const thoughtTimerTimeouts = new Map();
 const PROFANITY_LIMIT = 6;
 const PROFANITY_PATTERNS = [
   /\bass\b/i,
@@ -258,11 +259,16 @@ function renderMessage(message) {
     message.role === "assistant" && !message.typing
       ? `<button class="report-message" data-report-message="${escapeHtml(messageId)}" aria-label="Report this message" title="Report this message">⚑</button>`
       : "";
+  const thoughtTime =
+    message.role === "assistant" && !message.typing && message.showThoughtTime && Number.isFinite(message.thoughtTimeMs)
+      ? `<span class="thought-time">Thought for ${escapeHtml(formatThoughtTime(message.thoughtTimeMs))}</span>`
+      : "";
+  const messageControls = reportButton || thoughtTime ? `<div class="message-controls">${reportButton}${thoughtTime}</div>` : "";
   return `
     <div class="message-row ${roleClass}${typingClass}" data-message-id="${escapeHtml(messageId)}">
       <div class="message-stack">
         <div class="bubble">${escapeHtml(content)}</div>
-        ${reportButton}
+        ${messageControls}
       </div>
     </div>
   `;
@@ -796,9 +802,11 @@ async function sendTextMessage(text) {
   storage.save();
   render();
 
+  const thinkingStartedAt = performance.now();
   const answer = await getAssistantReply(text);
+  const thoughtTimeMs = performance.now() - thinkingStartedAt;
   if (answer) {
-    const assistantMessage = createMessage("assistant", "", { typing: true });
+    const assistantMessage = createMessage("assistant", "", { typing: true, thoughtTimeMs });
     chat.messages.push(assistantMessage);
     Aether.state.thinking = false;
     storage.save();
@@ -1296,8 +1304,37 @@ async function typeAssistantMessage(chat, message, fullText) {
   }
 
   message.typing = false;
+  message.showThoughtTime = Number.isFinite(message.thoughtTimeMs);
   row?.classList.remove("typing");
   storage.save();
+  render();
+  scheduleThoughtTimeFade(message.id);
+}
+
+function scheduleThoughtTimeFade(messageId) {
+  if (!messageId) return;
+  if (thoughtTimerTimeouts.has(messageId)) {
+    clearTimeout(thoughtTimerTimeouts.get(messageId));
+  }
+
+  const timeoutId = setTimeout(() => {
+    thoughtTimerTimeouts.delete(messageId);
+    const message = Aether.state.chats
+      .flatMap((chat) => chat.messages)
+      .find((item) => item.id === messageId);
+    if (!message || !message.showThoughtTime) return;
+    message.showThoughtTime = false;
+    storage.save();
+    render();
+  }, 3000);
+
+  thoughtTimerTimeouts.set(messageId, timeoutId);
+}
+
+function formatThoughtTime(milliseconds) {
+  if (milliseconds < 1000) return `${Math.max(0.1, milliseconds / 1000).toFixed(1)}s`;
+  if (milliseconds < 10000) return `${(milliseconds / 1000).toFixed(1)}s`;
+  return `${Math.round(milliseconds / 1000)}s`;
 }
 
 function randomBetween(min, max) {
@@ -1620,6 +1657,12 @@ function injectStyles() {
     .message-stack .bubble {
       max-width: 100%;
     }
+    .message-controls {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 22px;
+    }
     .report-message {
       width: 26px;
       height: 22px;
@@ -1637,6 +1680,33 @@ function injectStyles() {
       opacity: 1;
       outline: none;
       transform: translateY(-1px);
+    }
+    .thought-time {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      border-radius: 999px;
+      padding: 0 9px;
+      color: rgba(219, 234, 254, 0.92);
+      background: rgba(7, 17, 31, 0.44);
+      border: 1px solid rgba(191, 219, 254, 0.12);
+      font-size: 12px;
+      font-weight: 760;
+      animation: thoughtTimePulse 3s ease forwards;
+    }
+    @keyframes thoughtTimePulse {
+      0% {
+        opacity: 0;
+        transform: translateY(2px);
+      }
+      18%, 72% {
+        opacity: 1;
+        transform: translateY(0);
+      }
+      100% {
+        opacity: 0;
+        transform: translateY(-2px);
+      }
     }
     .bubble, .thinking {
       transition: opacity 520ms ease, transform 520ms ease;
