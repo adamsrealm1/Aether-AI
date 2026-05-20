@@ -32,6 +32,8 @@ const Aether = {
     accountSession: "",
     accountModal: null,
     accountError: "",
+    backendModal: false,
+    backendError: "",
   },
 };
 
@@ -111,10 +113,8 @@ function defaultApiEndpoint() {
 
 function isValidApiEndpoint(value) {
   if (!value || value.startsWith("github_pat_")) return false;
-  if (location.protocol === "file:" || location.hostname.endsWith("github.io")) {
-    return value.startsWith("http://127.0.0.1:8765/");
-  }
-  return value.startsWith("/");
+  if (value.startsWith("/")) return true;
+  return /^https?:\/\/[^/]+\/api\/chat\/?$/i.test(value);
 }
 
 function readJson(key, fallback) {
@@ -181,6 +181,14 @@ function bindGlobalEvents() {
       event.preventDefault();
       logoutAccount();
     }
+    if (action === "open-backend") {
+      event.preventDefault();
+      openBackendModal();
+    }
+    if (action === "close-backend") {
+      event.preventDefault();
+      closeBackendModal();
+    }
   });
 }
 
@@ -193,6 +201,18 @@ function openAccountModal() {
 function closeAccountModal() {
   Aether.state.accountModal = null;
   Aether.state.accountError = "";
+  render();
+}
+
+function openBackendModal() {
+  Aether.state.backendModal = true;
+  Aether.state.backendError = "";
+  render();
+}
+
+function closeBackendModal() {
+  Aether.state.backendModal = false;
+  Aether.state.backendError = "";
   render();
 }
 
@@ -211,6 +231,7 @@ function render() {
         <button class="account-tab" data-action="open-account">
           ${Aether.state.account ? escapeHtml(Aether.state.account.displayName || Aether.state.account.username) : "Sign in"}
         </button>
+        <button class="backend-tab" data-action="open-backend">Backend</button>
         ${Aether.state.isAdmin ? `<button class="admin-tab ${Aether.state.adminView ? "active" : ""}" data-action="admin-view" aria-label="Admin dashboard">Admin</button>` : ""}
         <div class="chat-list">
           ${Aether.state.chats.map(chatListItem).join("")}
@@ -224,6 +245,7 @@ function render() {
       ${renderRateLimitPopup()}
       ${renderReportPopup()}
       ${renderAccountModal()}
+      ${renderBackendModal()}
       ${renderBanOverlay()}
     </div>
   `;
@@ -455,6 +477,25 @@ function renderAccountModal() {
             `
         }
       </div>
+    </div>
+  `;
+}
+
+function renderBackendModal() {
+  if (!Aether.state.backendModal) return "";
+  return `
+    <div class="account-overlay" role="dialog" aria-modal="true" aria-labelledby="backend-title">
+      <form class="account-modal" data-action="save-backend">
+        <button class="modal-close" type="button" data-action="close-backend" aria-label="Close">X</button>
+        <h2 id="backend-title">Backend</h2>
+        <p class="account-subtitle">On a phone, use your computer's Wi-Fi IP address.</p>
+        ${Aether.state.backendError ? `<p class="account-error">${escapeHtml(Aether.state.backendError)}</p>` : ""}
+        <div class="account-form">
+          <input name="apiEndpoint" value="${escapeHtml(Aether.config.apiEndpoint)}" placeholder="http://192.168.1.20:8765/api/chat" autocomplete="off">
+          <p class="backend-hint">Example: http://192.168.1.20:8765/api/chat</p>
+          <button class="primary-button" type="submit">Save backend</button>
+        </div>
+      </form>
     </div>
   `;
 }
@@ -731,6 +772,7 @@ function bindEvents(root) {
   });
   root.querySelector("[data-action='login-account']")?.addEventListener("submit", loginAccount);
   root.querySelector("[data-action='register-account']")?.addEventListener("submit", registerAccount);
+  root.querySelector("[data-action='save-backend']")?.addEventListener("submit", saveBackendEndpoint);
 
   root.querySelector("[data-action='admin-view']")?.addEventListener("click", () => {
     Aether.state.adminView = true;
@@ -953,7 +995,7 @@ async function getAssistantReply(text) {
       }
       if (data.reply) return data.reply;
     } catch (error) {
-      return `I could not reach ${Aether.config.apiEndpoint} from ${location.href}. Start server.py and open http://127.0.0.1:8765/.`;
+      return `I could not reach ${Aether.config.apiEndpoint} from ${location.href}. On a phone, start server.py on your computer and set Backend to http://YOUR-COMPUTER-IP:8765/api/chat. If the browser blocks that, open http://YOUR-COMPUTER-IP:8765/ on the phone instead.`;
     }
   }
 
@@ -1109,6 +1151,22 @@ async function logoutAccount() {
   Aether.state.isAdmin = false;
   Aether.state.adminView = false;
   Aether.state.adminData = null;
+  storage.save();
+  await checkAdminStatus();
+  render();
+}
+
+async function saveBackendEndpoint(event) {
+  event.preventDefault();
+  const value = event.currentTarget.elements.apiEndpoint.value.trim().replace(/\/+$/, "");
+  if (!isValidApiEndpoint(value)) {
+    Aether.state.backendError = "Use a full API URL like http://192.168.1.20:8765/api/chat.";
+    render();
+    return;
+  }
+  Aether.config.apiEndpoint = value;
+  Aether.state.backendModal = false;
+  Aether.state.backendError = "";
   storage.save();
   await checkAdminStatus();
   render();
@@ -1313,7 +1371,7 @@ async function postJson(path, payload) {
 }
 
 function backendUnavailableMessage() {
-  return `Could not reach ${apiUrl("/api/account/login")}. Start server.py, then try again.`;
+  return `Could not reach ${apiUrl("/api/account/login")}. Start server.py, then set Backend to your computer's Wi-Fi IP if you are on a phone.`;
 }
 
 function authHeaders() {
@@ -1618,7 +1676,7 @@ function injectStyles() {
       backdrop-filter: blur(18px);
       min-width: 0;
     }
-    .brand, .new-chat, .account-tab, .admin-tab, .chat-item, .delete-chat, .report-message, .composer button, .primary-button, .secondary-button, .danger-button, .modal-close, .link-button { border: 0; }
+    .brand, .new-chat, .account-tab, .backend-tab, .admin-tab, .chat-item, .delete-chat, .report-message, .composer button, .primary-button, .secondary-button, .danger-button, .modal-close, .link-button { border: 0; }
     .brand {
       display: flex;
       align-items: center;
@@ -1647,7 +1705,7 @@ function injectStyles() {
       background: #dbeafe;
       font-weight: 740;
     }
-    .account-tab {
+    .account-tab, .backend-tab {
       display: block;
       width: 100%;
       min-height: 38px;
@@ -1661,7 +1719,12 @@ function injectStyles() {
       white-space: nowrap;
       padding: 0 12px;
     }
-    .account-tab:hover, .account-tab:focus-visible {
+    .backend-tab {
+      margin-top: -6px;
+      color: #bfdbfe;
+      background: rgba(14, 165, 233, 0.1);
+    }
+    .account-tab:hover, .account-tab:focus-visible, .backend-tab:hover, .backend-tab:focus-visible {
       color: #07111f;
       background: #dbeafe;
       outline: none;
@@ -2123,6 +2186,13 @@ function injectStyles() {
     .account-form input:focus {
       border-color: rgba(191, 219, 254, 0.72);
       box-shadow: 0 0 0 3px rgba(191, 219, 254, 0.12);
+    }
+    .backend-hint {
+      margin: -2px 0 2px;
+      color: #93c5fd;
+      font-size: 13px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
     }
     .account-error {
       margin: 0 0 12px;
