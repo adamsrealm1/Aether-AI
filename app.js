@@ -36,6 +36,7 @@ const Aether = {
     accountSession: "",
     accountModal: null,
     accountError: "",
+    accountPasswordVisible: false,
   },
 };
 
@@ -207,6 +208,11 @@ function bindGlobalEvents() {
     if (action === "logout-account") {
       event.preventDefault();
       logoutAccount();
+    }
+    if (action === "toggle-profile-password") {
+      event.preventDefault();
+      Aether.state.accountPasswordVisible = !Aether.state.accountPasswordVisible;
+      render();
     }
   });
 }
@@ -441,6 +447,7 @@ function renderAccountModal() {
   if (!Aether.state.accountModal) return "";
   const isRegister = Aether.state.accountModal === "register";
   const account = Aether.state.account;
+  const passwordType = Aether.state.accountPasswordVisible ? "text" : "password";
   return `
     <div class="account-overlay" role="dialog" aria-modal="true" aria-labelledby="account-title">
       <div class="account-modal">
@@ -454,8 +461,24 @@ function renderAccountModal() {
                 <span>Username</span>
                 <strong>${escapeHtml(account.username)}</strong>
               </div>
+              ${Aether.state.accountError ? `<p class="account-error">${escapeHtml(Aether.state.accountError)}</p>` : ""}
+              <form class="account-form profile-form" data-action="update-account">
+                <input name="displayName" value="${escapeHtml(account.displayName || "")}" placeholder="Display name" autocomplete="name">
+                <input name="username" value="${escapeHtml(account.username)}" placeholder="Username" autocomplete="username">
+                <div class="password-heading">
+                  <span>Password</span>
+                  <button class="link-button inline" type="button" data-action="toggle-profile-password">
+                    ${Aether.state.accountPasswordVisible ? "Hide password" : "Show password"}
+                  </button>
+                </div>
+                <input name="currentPassword" type="${passwordType}" placeholder="Current password" autocomplete="current-password">
+                <input name="newPassword" type="${passwordType}" placeholder="New password" autocomplete="new-password">
+                <p class="account-note">Saved passwords are protected, so the current password cannot be displayed. Use these fields to change it.</p>
+                <button class="primary-button" type="submit">Save changes</button>
+              </form>
               <div class="modal-actions">
                 <button class="secondary-button" type="button" data-action="logout-account">Sign out</button>
+                <button class="danger-button" type="button" data-action="delete-own-account">Delete account</button>
               </div>
             `
             : `
@@ -738,6 +761,8 @@ function bindEvents(root) {
   });
   root.querySelector("[data-action='login-account']")?.addEventListener("submit", loginAccount);
   root.querySelector("[data-action='register-account']")?.addEventListener("submit", registerAccount);
+  root.querySelector("[data-action='update-account']")?.addEventListener("submit", updateOwnAccount);
+  root.querySelector("[data-action='delete-own-account']")?.addEventListener("click", deleteOwnAccount);
 
   root.querySelector("[data-action='admin-view']")?.addEventListener("click", () => {
     Aether.state.adminView = true;
@@ -1208,6 +1233,62 @@ async function registerAccount(event) {
 
 async function logoutAccount() {
   await postJson("/api/account/logout", {});
+  Aether.state.account = null;
+  Aether.state.accountSession = "";
+  Aether.state.accountModal = null;
+  Aether.state.isAdmin = false;
+  Aether.state.adminView = false;
+  Aether.state.adminData = null;
+  storage.save();
+  await checkAdminStatus();
+  render();
+}
+
+async function updateOwnAccount(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  let data;
+  try {
+    data = await postJson("/api/account/update", {
+      displayName: form.elements.displayName.value,
+      username: form.elements.username.value,
+      currentPassword: form.elements.currentPassword.value,
+      newPassword: form.elements.newPassword.value,
+    });
+  } catch (error) {
+    Aether.state.accountError = backendUnavailableMessage();
+    render();
+    return;
+  }
+  if (!data.ok) {
+    Aether.state.accountError = data.error || "Could not update account.";
+    render();
+    return;
+  }
+  Aether.state.account = data.account;
+  Aether.state.accountError = "Account updated.";
+  form.elements.currentPassword.value = "";
+  form.elements.newPassword.value = "";
+  storage.save();
+  await checkAdminStatus();
+  render();
+}
+
+async function deleteOwnAccount() {
+  if (!confirm("Delete your account permanently?")) return;
+  let data;
+  try {
+    data = await postJson("/api/account/delete", {});
+  } catch (error) {
+    Aether.state.accountError = backendUnavailableMessage();
+    render();
+    return;
+  }
+  if (!data.ok) {
+    Aether.state.accountError = data.error || "Could not delete account.";
+    render();
+    return;
+  }
   Aether.state.account = null;
   Aether.state.accountSession = "";
   Aether.state.accountModal = null;
@@ -2215,6 +2296,9 @@ function injectStyles() {
       display: grid;
       gap: 10px;
     }
+    .profile-form {
+      margin-top: 14px;
+    }
     .account-form input {
       height: 42px;
       border: 1px solid rgba(191, 219, 254, 0.22);
@@ -2227,6 +2311,25 @@ function injectStyles() {
     .account-form input:focus {
       border-color: rgba(191, 219, 254, 0.72);
       box-shadow: 0 0 0 3px rgba(191, 219, 254, 0.12);
+    }
+    .password-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      color: #dbeafe;
+      font-weight: 760;
+      margin-top: 4px;
+    }
+    .link-button.inline {
+      margin: 0;
+      font-size: 13px;
+    }
+    .account-note {
+      margin: 0;
+      color: #93c5fd;
+      font-size: 12px;
+      line-height: 1.35;
     }
     .account-error {
       margin: 0 0 12px;

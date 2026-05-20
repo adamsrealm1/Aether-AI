@@ -212,6 +212,48 @@ def login_account(username: str, password: str) -> dict:
     return {"session": token, "account": public_account(username, account)}
 
 
+def update_account(session_token: str, username: str = "", display_name: str = "", current_password: str = "", new_password: str = "") -> dict:
+    current_username, account = account_for_session(session_token)
+    if not account or not current_username:
+        raise ValueError("Sign in first.")
+
+    store = load_accounts_store()
+    account = store["users"].get(current_username)
+    if not account:
+        raise ValueError("Account not found.")
+
+    next_username = normalize_username(username or current_username)
+    if not next_username:
+        raise ValueError("Enter a username.")
+    if next_username != current_username and next_username in store["users"]:
+        raise ValueError("That username already exists.")
+
+    if display_name.strip():
+        account["displayName"] = display_name.strip()[:40]
+
+    if new_password:
+        if len(new_password) < 4:
+            raise ValueError("Password must be at least 4 characters.")
+        if account.get("passwordHash") != hash_password(current_password, account.get("passwordSalt", "")):
+            raise ValueError("Current password is incorrect.")
+        salt = secrets.token_hex(16)
+        account["passwordSalt"] = salt
+        account["passwordHash"] = hash_password(new_password, salt)
+        account["passwordUpdatedAt"] = datetime.now().astimezone().isoformat()
+
+    if next_username != current_username:
+        store["users"][next_username] = account
+        store["users"].pop(current_username, None)
+        for session in store["sessions"].values():
+            if session.get("username") == current_username:
+                session["username"] = next_username
+        current_username = next_username
+
+    account["updatedAt"] = datetime.now().astimezone().isoformat()
+    save_accounts_store(store)
+    return public_account(current_username, account)
+
+
 def account_for_session(session_token: str) -> tuple[str, dict] | tuple[None, None]:
     if not session_token:
         return None, None
@@ -230,6 +272,13 @@ def logout_account(session_token: str) -> None:
     store = load_accounts_store()
     store["sessions"].pop(session_token, None)
     save_accounts_store(store)
+
+
+def delete_current_account(session_token: str) -> bool:
+    username, account = account_for_session(session_token)
+    if not account or not username:
+        raise ValueError("Sign in first.")
+    return delete_account(username)
 
 
 def set_account_admin(username: str, is_admin: bool) -> dict:
@@ -845,6 +894,28 @@ class AetherHandler(SimpleHTTPRequestHandler):
         if self.path == "/api/account/status":
             username, account = account_for_session(self.session_token())
             self.send_json({"account": public_account(username, account) if account else None})
+            return
+
+        if self.path == "/api/account/update":
+            try:
+                payload = self.read_json_body()
+                account = update_account(
+                    self.session_token(),
+                    str(payload.get("username", "")),
+                    str(payload.get("displayName", "")),
+                    str(payload.get("currentPassword", "")),
+                    str(payload.get("newPassword", "")),
+                )
+                self.send_json({"ok": True, "account": account})
+            except ValueError as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+
+        if self.path == "/api/account/delete":
+            try:
+                self.send_json({"ok": delete_current_account(self.session_token())})
+            except ValueError as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400)
             return
 
         if self.path == "/api/report":
