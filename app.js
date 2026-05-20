@@ -14,9 +14,9 @@ const Aether = {
     rateLimitPopup: false,
     ban: null,
     rateLimit: {
-      limit: 10,
+      limit: 5,
       used: 0,
-      remaining: 10,
+      remaining: 5,
       percentUsed: 0,
       resetInSeconds: 60,
     },
@@ -387,7 +387,7 @@ function renderRateLimitPopup() {
     <div class="warning-overlay compact" role="dialog" aria-modal="true">
       <div class="warning-modal compact-modal">
         <h2>Rate limit reached</h2>
-        <p>Wait ${Number(rate.resetInSeconds || 0)} seconds. Guests get 10, signed-in users get 30, and admins get 60 messages every 60 seconds.</p>
+        <p>Wait ${Number(rate.resetInSeconds || 0)} seconds. Guests get 5, signed-in users get 30, and admins get 60 messages every 60 seconds.</p>
         <button class="warning-understand" data-action="close-rate-limit">I understand</button>
       </div>
     </div>
@@ -1813,6 +1813,13 @@ function injectStyles() {
       font-size: 18px;
       padding: 8px;
       text-align: left;
+    }
+    .brand img {
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      object-fit: cover;
+      flex: 0 0 auto;
     }
     .brand-mark {
       display: grid;
