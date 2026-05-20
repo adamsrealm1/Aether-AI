@@ -8,7 +8,6 @@ const Aether = {
     activeChatId: null,
     composerDraft: "",
     thinking: false,
-    listening: false,
     warningPopup: null,
     shortMessagePopup: false,
     rateLimitPopup: false,
@@ -40,7 +39,6 @@ const Aether = {
   },
 };
 
-let speechRecognition = null;
 let messageVisibilityObserver = null;
 let rateMeterTimer = null;
 let rateLimitCountdownTimer = null;
@@ -281,7 +279,6 @@ function renderChatPage(chat) {
       </div>
       <form class="composer" data-action="send-message">
         <input name="message" autocomplete="off" placeholder="Send a message here." value="${escapeHtml(Aether.state.composerDraft)}">
-        <button class="mic-button ${Aether.state.listening ? "listening" : ""}" type="button" data-action="toggle-mic" aria-label="Use microphone">🎤︎︎</button>
         <button type="submit">Send</button>
       </form>
     </main>
@@ -799,7 +796,6 @@ function bindEvents(root) {
   root.querySelector(".composer input[name='message']")?.addEventListener("input", (event) => {
     Aether.state.composerDraft = event.currentTarget.value;
   });
-  root.querySelector("[data-action='toggle-mic']")?.addEventListener("click", toggleMic);
   root.querySelector("[data-action='close-warning']")?.addEventListener("click", () => {
     Aether.state.warningPopup = null;
     render();
@@ -1543,63 +1539,6 @@ function looksLikeWeatherRequest(text) {
   return /\b(weather|forecast|temperature|rain|snow|humidity|wind|storm|hot|cold)\b/i.test(text);
 }
 
-function toggleMic() {
-  if (Aether.state.thinking) return;
-
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechRecognition) {
-    addAssistantMessage("Your browser does not support speech recognition. Try Chrome or Edge.");
-    return;
-  }
-
-  if (speechRecognition && Aether.state.listening) {
-    speechRecognition.stop();
-    return;
-  }
-
-  speechRecognition = new SpeechRecognition();
-  speechRecognition.lang = "en-US";
-  speechRecognition.interimResults = true;
-  speechRecognition.continuous = false;
-
-  let finalTranscript = "";
-  Aether.state.listening = true;
-  render();
-
-  speechRecognition.onresult = (event) => {
-    let interimTranscript = "";
-    for (let index = event.resultIndex; index < event.results.length; index++) {
-      const transcript = event.results[index][0].transcript;
-      if (event.results[index].isFinal) {
-        finalTranscript += transcript;
-      } else {
-        interimTranscript += transcript;
-      }
-    }
-
-    const input = document.querySelector(".composer input");
-    if (input) input.value = `${finalTranscript}${interimTranscript}`.trim();
-  };
-
-  speechRecognition.onerror = () => {
-    Aether.state.listening = false;
-    speechRecognition = null;
-    render();
-    addAssistantMessage("I could not access the microphone.");
-  };
-
-  speechRecognition.onend = () => {
-    const inputValue = document.querySelector(".composer input")?.value.trim() || "";
-    const transcript = finalTranscript.trim() || inputValue;
-    Aether.state.listening = false;
-    speechRecognition = null;
-    render();
-    if (transcript) sendTextMessage(transcript);
-  };
-
-  speechRecognition.start();
-}
-
 function addAssistantMessage(text) {
   activeChat().messages.push(createMessage("assistant", text));
   storage.save();
@@ -2160,25 +2099,6 @@ function injectStyles() {
       color: #07111f;
       background: #bfdbfe;
       font-weight: 800;
-    }
-    .composer .mic-button {
-      min-width: 56px;
-      color: #dbeafe;
-      background: rgba(191, 219, 254, 0.12);
-      border: 1px solid rgba(191, 219, 254, 0.2);
-    }
-    .composer .mic-button:hover {
-      color: #fff;
-      background: rgba(191, 219, 254, 0.18);
-    }
-    .composer .mic-button.listening {
-      color: #07111f;
-      background: #c7cbd3;
-      animation: micPulse 900ms ease-in-out infinite;
-    }
-    @keyframes micPulse {
-      0%, 100% { box-shadow: 0 0 0 0 rgba(199, 203, 211, 0.26); }
-      50% { box-shadow: 0 0 0 7px rgba(199, 203, 211, 0); }
     }
     .warning-overlay {
       position: fixed;

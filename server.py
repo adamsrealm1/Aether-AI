@@ -68,6 +68,82 @@ WEATHER_CODES = {
 }
 
 
+def supabase_url() -> str:
+    return os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+
+
+def supabase_service_key() -> str:
+    return os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+
+
+def supabase_enabled() -> bool:
+    return bool(supabase_url() and supabase_service_key())
+
+
+def supabase_headers() -> dict:
+    key = supabase_service_key()
+    return {
+        "Content-Type": "application/json",
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+    }
+
+
+def supabase_store_url(name: str = "") -> str:
+    base = f"{supabase_url()}/rest/v1/aether_store"
+    if not name:
+        return base
+    query_name = urllib.parse.quote(name)
+    return f"{base}?name=eq.{query_name}&select=data"
+
+
+def load_supabase_store(name: str, fallback: dict) -> dict | None:
+    if not supabase_enabled():
+        return None
+
+    try:
+        request = urllib.request.Request(
+            supabase_store_url(name),
+            headers=supabase_headers(),
+            method="GET",
+        )
+        with urllib.request.urlopen(request, timeout=8) as response:
+            rows = json.loads(response.read().decode("utf-8") or "[]")
+    except (OSError, urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as exc:
+        print(f"Supabase load failed for {name}: {exc}")
+        return None
+
+    if rows:
+        data = rows[0].get("data")
+        return data if isinstance(data, dict) else fallback
+
+    save_supabase_store(name, fallback)
+    return fallback
+
+
+def save_supabase_store(name: str, store: dict) -> bool:
+    if not supabase_enabled():
+        return False
+
+    payload = json.dumps([{"name": name, "data": store}]).encode("utf-8")
+    headers = {
+        **supabase_headers(),
+        "Prefer": "resolution=merge-duplicates",
+    }
+    try:
+        request = urllib.request.Request(
+            f"{supabase_url()}/rest/v1/aether_store?on_conflict=name",
+            data=payload,
+            headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=8):
+            return True
+    except (OSError, urllib.error.URLError, urllib.error.HTTPError) as exc:
+        print(f"Supabase save failed for {name}: {exc}")
+        return False
+
+
 def default_profanity_store() -> dict:
     return {"warnedUsers": {}, "bannedUsers": {}, "bannedMacs": {}, "adminMacs": {}, "adminIps": {}}
 
@@ -76,17 +152,22 @@ def load_profanity_store() -> dict:
     changed = False
     if not PROFANITY_STORE_PATH.exists():
         store = default_profanity_store()
-        save_profanity_store(store)
-        return store
+        body = json.dumps(store, indent=2, sort_keys=True)
+        PROFANITY_STORE_PATH.write_text(f"window.AETHER_PROFANITY_STORE = {body};\n", encoding="utf-8")
+    else:
+        text = PROFANITY_STORE_PATH.read_text(encoding="utf-8")
+        match = re.search(r"window\.AETHER_PROFANITY_STORE\s*=\s*(\{.*\})\s*;?\s*$", text, re.S)
+        if not match:
+            store = default_profanity_store()
+        else:
+            try:
+                store = json.loads(match.group(1))
+            except json.JSONDecodeError:
+                store = default_profanity_store()
 
-    text = PROFANITY_STORE_PATH.read_text(encoding="utf-8")
-    match = re.search(r"window\.AETHER_PROFANITY_STORE\s*=\s*(\{.*\})\s*;?\s*$", text, re.S)
-    if not match:
-        return default_profanity_store()
-    try:
-        store = json.loads(match.group(1))
-    except json.JSONDecodeError:
-        return default_profanity_store()
+    supabase_store = load_supabase_store("profanity", store)
+    if supabase_store:
+        store = supabase_store
     store.setdefault("warnedUsers", {})
     store.setdefault("bannedUsers", {})
     store.setdefault("bannedMacs", {})
@@ -101,6 +182,7 @@ def load_profanity_store() -> dict:
 
 
 def save_profanity_store(store: dict) -> None:
+    save_supabase_store("profanity", store)
     body = json.dumps(store, indent=2, sort_keys=True)
     PROFANITY_STORE_PATH.write_text(f"window.AETHER_PROFANITY_STORE = {body};\n", encoding="utf-8")
 
@@ -112,17 +194,22 @@ def default_reports_store() -> dict:
 def load_reports_store() -> dict:
     if not REPORTS_STORE_PATH.exists():
         store = default_reports_store()
-        save_reports_store(store)
-        return store
-    try:
-        store = json.loads(REPORTS_STORE_PATH.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        store = default_reports_store()
+        REPORTS_STORE_PATH.write_text(json.dumps(store, indent=2, sort_keys=True), encoding="utf-8")
+    else:
+        try:
+            store = json.loads(REPORTS_STORE_PATH.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            store = default_reports_store()
     store.setdefault("reports", [])
+    supabase_store = load_supabase_store("reports", store)
+    if supabase_store:
+        supabase_store.setdefault("reports", [])
+        return supabase_store
     return store
 
 
 def save_reports_store(store: dict) -> None:
+    save_supabase_store("reports", store)
     REPORTS_STORE_PATH.write_text(json.dumps(store, indent=2, sort_keys=True), encoding="utf-8")
 
 
@@ -133,23 +220,30 @@ def default_accounts_store() -> dict:
 def load_accounts_store() -> dict:
     if not ACCOUNTS_STORE_PATH.exists():
         store = default_accounts_store()
-        save_accounts_store(store)
-        return store
-
-    text = ACCOUNTS_STORE_PATH.read_text(encoding="utf-8")
-    match = re.search(r"window\.AETHER_ACCOUNTS\s*=\s*(\{.*\})\s*;?\s*$", text, re.S)
-    if not match:
-        return default_accounts_store()
-    try:
-        store = json.loads(match.group(1))
-    except json.JSONDecodeError:
-        return default_accounts_store()
+        body = json.dumps(store, indent=2, sort_keys=True)
+        ACCOUNTS_STORE_PATH.write_text(f"window.AETHER_ACCOUNTS = {body};\n", encoding="utf-8")
+    else:
+        text = ACCOUNTS_STORE_PATH.read_text(encoding="utf-8")
+        match = re.search(r"window\.AETHER_ACCOUNTS\s*=\s*(\{.*\})\s*;?\s*$", text, re.S)
+        if not match:
+            store = default_accounts_store()
+        else:
+            try:
+                store = json.loads(match.group(1))
+            except json.JSONDecodeError:
+                store = default_accounts_store()
     store.setdefault("users", {})
     store.setdefault("sessions", {})
+    supabase_store = load_supabase_store("accounts", store)
+    if supabase_store:
+        supabase_store.setdefault("users", {})
+        supabase_store.setdefault("sessions", {})
+        return supabase_store
     return store
 
 
 def save_accounts_store(store: dict) -> None:
+    save_supabase_store("accounts", store)
     body = json.dumps(store, indent=2, sort_keys=True)
     ACCOUNTS_STORE_PATH.write_text(f"window.AETHER_ACCOUNTS = {body};\n", encoding="utf-8")
 
