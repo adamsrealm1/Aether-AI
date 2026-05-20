@@ -409,9 +409,7 @@ def local_mac_addresses() -> set[str]:
 
 def mac_for_ip(ip_address: str) -> str:
     if ip_address in {"127.0.0.1", "::1"}:
-        target = normalize_mac(ADMIN_MAC_ADDRESS)
-        local_macs = local_mac_addresses()
-        return target if target in local_macs else next(iter(local_macs), "")
+        return normalize_mac(ADMIN_MAC_ADDRESS)
 
     try:
         result = subprocess.run(
@@ -622,11 +620,73 @@ def load_dotenv() -> None:
             os.environ[key] = value
 
 
+def groq_api_keys() -> list[str]:
+    candidates = []
+    primary_key = os.getenv("GROQ_API_KEY", "").strip()
+    if primary_key:
+        candidates.append(primary_key)
+
+    bulk_keys = os.getenv("GROQ_API_KEYS", "").strip()
+    if bulk_keys:
+        candidates.extend(re.split(r"[\s,;]+", bulk_keys))
+
+    for index in range(1, 21):
+        key = os.getenv(f"GROQ_API_KEY_{index}", "").strip()
+        if key:
+            candidates.append(key)
+
+    keys = []
+    seen = set()
+    for key in candidates:
+        key = key.strip()
+        if not key or "your_" in key or key in seen:
+            continue
+        keys.append(key)
+        seen.add(key)
+    return keys
+
+
+def groq_completion_with_fallback(model: str, messages: list[dict]) -> str:
+    keys = groq_api_keys()
+    if not keys:
+        return "Add GROQ_API_KEY or GROQ_API_KEYS to .env, restart server.py, then try again."
+
+    last_rate_limit_error = None
+    for api_key in keys:
+        try:
+            client = Groq(api_key=api_key)
+            completion = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0.6,
+                max_completion_tokens=4096,
+                top_p=0.95,
+                reasoning_effort="low",
+                stream=True,
+                stop=None,
+            )
+
+            chunks = []
+            for chunk in completion:
+                content = chunk.choices[0].delta.content or ""
+                if content:
+                    chunks.append(content)
+
+            reply = "".join(chunks).strip()
+            return reply or "I could not read a response from the model."
+        except APIStatusError as exc:
+            if exc.status_code == 429:
+                last_rate_limit_error = exc
+                continue
+            raise
+
+    if last_rate_limit_error:
+        raise last_rate_limit_error
+    return "I could not read a response from the model."
+
+
 def groq_reply(message: str, chat: list[dict]) -> str:
-    api_key = os.getenv("GROQ_API_KEY", "").strip()
     model = os.getenv("AETHER_GROQ_MODEL", "qwen/qwen3-32b").strip()
-    if not api_key or "your_" in api_key:
-        return "Add GROQ_API_KEY to .env, restart server.py, then try again."
 
     now = datetime.now().astimezone().strftime("%A, %B %d, %Y at %I:%M %p %Z")
     messages = [
@@ -650,26 +710,7 @@ def groq_reply(message: str, chat: list[dict]) -> str:
     if not any(item["role"] == "user" and item["content"] == message for item in messages):
         messages.append({"role": "user", "content": message})
 
-    client = Groq(api_key=api_key)
-    completion = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=0.6,
-        max_completion_tokens=4096,
-        top_p=0.95,
-        reasoning_effort="low",
-        stream=True,
-        stop=None,
-    )
-
-    chunks = []
-    for chunk in completion:
-        content = chunk.choices[0].delta.content or ""
-        if content:
-            chunks.append(content)
-
-    reply = "".join(chunks).strip()
-    return reply or "I could not read a response from the model."
+    return groq_completion_with_fallback(model, messages)
 
 
 def looks_like_weather_request(message: str) -> bool:

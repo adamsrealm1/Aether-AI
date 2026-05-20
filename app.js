@@ -933,7 +933,7 @@ async function getAssistantReply(text) {
       const location = await locationForWeatherRequest(text);
       const response = await fetch(Aether.config.apiEndpoint, {
         method: "POST",
-        headers: { "Content-Type": "text/plain;charset=UTF-8" },
+        headers: { "Content-Type": "text/plain;charset=UTF-8", ...authHeaders() },
         body: JSON.stringify({ message: text, chat: activeChat().messages, location }),
       });
       const data = await response.json();
@@ -988,13 +988,35 @@ function containsProfanity(text) {
 
 function showProfanityWarning(warnings, banned) {
   Aether.state.warningPopup = { warnings, banned };
+  if (banned) {
+    Aether.state.ban = { banned: true };
+  }
   render();
+}
+
+function hasMinimumLetters(text) {
+  return (text.match(/[a-zA-Z]/g) || []).length >= 2;
+}
+
+function isRateLimited() {
+  const rate = Aether.state.rateLimit;
+  return Boolean(rate && !rate.unlimited && Number(rate.remaining) <= 0);
+}
+
+function applyServerStatus(data) {
+  if (data.rateLimit) {
+    Aether.state.rateLimit = data.rateLimit;
+  }
+  if (data.ban) {
+    Aether.state.ban = data.ban;
+  }
 }
 
 async function checkAdminStatus() {
   try {
     const response = await fetch(apiUrl("/api/admin/status"), { headers: authHeaders() });
     const data = await response.json();
+    applyServerStatus(data);
     Aether.state.isAdmin = Boolean(data.isAdmin);
     if (data.account) {
       Aether.state.account = data.account;
@@ -1196,6 +1218,12 @@ async function deleteReport(reportId) {
 
 async function clearReports(status) {
   await postJson("/api/admin/clear-reports", { status });
+  await loadAdminData();
+}
+
+async function resetRateLimits() {
+  await postJson("/api/admin/reset-rate-limits", {});
+  await checkAdminStatus();
   await loadAdminData();
 }
 
@@ -1661,6 +1689,47 @@ function injectStyles() {
       overflow: auto;
       min-height: 0;
     }
+    .rate-card {
+      margin-top: auto;
+      display: grid;
+      gap: 10px;
+      padding: 14px 12px;
+      border: 1px solid rgba(191, 219, 254, 0.16);
+      border-radius: 14px;
+      background: rgba(5, 10, 20, 0.54);
+      color: #dbeafe;
+    }
+    .rate-percent {
+      color: #f8fbff;
+      font-size: 34px;
+      line-height: 1;
+      text-align: center;
+      font-weight: 760;
+    }
+    .rate-track {
+      height: 28px;
+      overflow: hidden;
+      border: 2px solid rgba(2, 6, 23, 0.92);
+      border-radius: 999px;
+      background: rgba(219, 234, 254, 0.1);
+    }
+    .rate-track span {
+      display: block;
+      height: 100%;
+      min-width: 0;
+      border-radius: inherit;
+      background: #f8fbff;
+      transition: width 240ms ease;
+    }
+    .rate-card.unlimited .rate-track span {
+      background: #bfdbfe;
+    }
+    .rate-label {
+      color: #bfdbfe;
+      font-size: 12px;
+      text-align: center;
+      line-height: 1.35;
+    }
     .chat-item-row {
       display: grid;
       grid-template-columns: 1fr 28px;
@@ -1950,6 +2019,35 @@ function injectStyles() {
       margin: 0;
       color: #dbeafe;
       line-height: 1.5;
+    }
+    .compact-modal {
+      width: min(380px, 100%);
+    }
+    .ban-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 60;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: rgba(0, 0, 0, 0.82);
+      backdrop-filter: blur(14px);
+    }
+    .ban-modal {
+      width: min(620px, 100%);
+      border: 1px solid rgba(248, 113, 113, 0.28);
+      border-radius: 20px;
+      background: linear-gradient(145deg, rgba(47, 8, 16, 0.96), rgba(2, 6, 23, 0.98));
+      box-shadow: 0 30px 90px rgba(0, 0, 0, 0.62);
+      padding: 34px;
+      text-align: center;
+    }
+    .ban-modal h2 {
+      margin: 0;
+      color: #fff;
+      font-size: clamp(26px, 4vw, 42px);
+      line-height: 1.12;
+      letter-spacing: 0;
     }
     .warning-understand {
       height: 44px;
@@ -2337,6 +2435,7 @@ function injectStyles() {
         border-radius: 18px;
       }
       .brand, .chat-list { display: none; }
+      .rate-card { display: none; }
       .chat-page { padding: 18px 16px 100px; }
       .admin-page { padding: 18px 16px 110px; }
       .admin-header, .admin-panel-head {
