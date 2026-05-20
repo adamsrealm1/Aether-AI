@@ -1,6 +1,6 @@
 const Aether = {
   config: {
-    appName: "Aether AI",
+    appName: "Aether",
     apiEndpoint: defaultApiEndpoint(),
   },
   state: {
@@ -36,12 +36,14 @@ const Aether = {
     accountModal: null,
     accountError: "",
     accountPasswordVisible: false,
+    serverOnline: false,
   },
 };
 
 let messageVisibilityObserver = null;
 let rateMeterTimer = null;
 let rateLimitCountdownTimer = null;
+let serverStatusTimer = null;
 const thoughtTimerTimeouts = new Map();
 const PROFANITY_LIMIT = 6;
 const PROFANITY_PATTERNS = [
@@ -159,7 +161,7 @@ function createChat(title) {
       {
         id: createId(),
         role: "assistant",
-        content: "Hi there! I'm Aether. What's on your mind today?",
+        content: "Hi there! I'm Aether. What's on your mind?",
       },
     ],
   };
@@ -176,6 +178,7 @@ function bootstrap() {
   startRateLimitCountdown();
   render();
   checkAdminStatus();
+  startServerStatusPolling();
 }
 
 function bindGlobalEvents() {
@@ -234,9 +237,12 @@ function render() {
   root.innerHTML = `
     <div class="app-shell">
       <aside class="sidebar">
-        <button class="brand" data-action="home" aria-label="Aether AI home">
-        <img src="assets/Aether.png" alt="Aether" width="60" height="60">
-          <span>Aether AI</span>
+        <button class="brand" data-action="home" aria-label="Aether home">
+          <img src="assets/Aether.png" alt="Aether" width="60" height="60">
+          <span class="brand-copy">
+            <span class="brand-name">Aether</span>
+            ${renderServerStatus()}
+          </span>
         </button>
         <button class="new-chat" data-action="new-chat">+ New conversation</button>
         <button class="account-tab" data-action="open-account">
@@ -267,9 +273,7 @@ function render() {
 function renderChatPage(chat) {
   return `
     <main class="chat-page">
-      <div class="animated-bg">
-        <span></span><span></span><span></span>
-      </div>
+      <div class="animated-bg" aria-hidden="true"></div>
       <header class="topbar">
         <h1>${escapeHtml(chat.title)}</h1>
       </header>
@@ -277,11 +281,24 @@ function renderChatPage(chat) {
         ${chat.messages.map(renderMessage).join("")}
         ${Aether.state.thinking ? renderThinking() : ""}
       </div>
-      <form class="composer" data-action="send-message">
-        <input name="message" autocomplete="off" placeholder="Send a message here." value="${escapeHtml(Aether.state.composerDraft)}">
-        <button type="submit">Send</button>
-      </form>
+      <div class="composer-area">
+        <form class="composer" data-action="send-message">
+          <input name="message" autocomplete="off" placeholder="Send a message here." value="${escapeHtml(Aether.state.composerDraft)}">
+          <button type="submit">Send</button>
+        </form>
+        <p class="composer-note">Aether can make mistakes. Check important info.</p>
+      </div>
     </main>
+  `;
+}
+
+function renderServerStatus() {
+  const online = Boolean(Aether.state.serverOnline);
+  return `
+    <span class="server-status ${online ? "online" : "offline"}" aria-live="polite">
+      <span class="server-dot" aria-hidden="true"></span>
+      <span class="server-status-label">${online ? "Servers are online" : "Servers are offline"}</span>
+    </span>
   `;
 }
 
@@ -306,7 +323,7 @@ function renderRateLimitMeter() {
     <div class="rate-card" style="--rate-color: ${rateColor(displayPercent)}">
       <div class="rate-percent">${displayPercent}%</div>
       <div class="rate-track"><span class="rate-fill" style="width: ${displayPercent}%"></span></div>
-      <div class="rate-label">${remaining}/${limit} left · resets in ${resetInSeconds}s</div>
+      <div class="rate-label">${remaining}/${limit} left - resets in ${resetInSeconds}s</div>
     </div>
   `;
 }
@@ -353,10 +370,10 @@ function renderWarningPopup() {
   return `
     <div class="warning-overlay" role="dialog" aria-modal="true" aria-labelledby="warning-title">
       <div class="warning-modal">
-        <h2 id="warning-title">${banned ? "You are permanently banned from Aether AI." : "Oops!"}</h2>
+        <h2 id="warning-title">${banned ? "You are permanently banned from Aether." : "Oops!"}</h2>
         <p>
           You used a blocked word in your message, you have ${warnings} warnings,
-          reaching 6 will permanently ban you from Aether AI.
+          reaching 6 will permanently ban you from Aether.
         </p>
         <button class="warning-understand" data-action="close-warning">I understand</button>
       </div>
@@ -396,7 +413,7 @@ function renderBanOverlay() {
   return `
     <div class="ban-overlay" role="dialog" aria-modal="true">
       <div class="ban-modal">
-        <h2>You are permanently banned from Aether AI for breaking the TOS.</h2>
+        <h2>You are permanently banned from Aether for breaking the TOS.</h2>
       </div>
     </div>
   `;
@@ -1042,6 +1059,47 @@ function applyServerStatus(data) {
   }
 }
 
+function setServerOnline(online) {
+  const previous = Boolean(Aether.state.serverOnline);
+  Aether.state.serverOnline = Boolean(online);
+  updateServerStatusDom();
+  return previous !== Aether.state.serverOnline;
+}
+
+function updateServerStatusDom() {
+  const status = document.querySelector(".server-status");
+  if (!status) return;
+  const online = Boolean(Aether.state.serverOnline);
+  status.classList.toggle("online", online);
+  status.classList.toggle("offline", !online);
+  const label = status.querySelector(".server-status-label");
+  if (label) label.textContent = online ? "Servers are online" : "Servers are offline";
+}
+
+function startServerStatusPolling() {
+  if (serverStatusTimer) clearInterval(serverStatusTimer);
+  serverStatusTimer = setInterval(pingServerStatus, 15000);
+}
+
+async function pingServerStatus() {
+  const wasBanned = Boolean(Aether.state.ban?.banned);
+  try {
+    const response = await fetch(apiUrl("/api/admin/status"), {
+      headers: authHeaders(),
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error(`Status failed with HTTP ${response.status}`);
+    const data = await response.json();
+    setServerOnline(true);
+    applyServerStatus(data);
+    if (Boolean(Aether.state.ban?.banned) !== wasBanned) {
+      render();
+    }
+  } catch {
+    setServerOnline(false);
+  }
+}
+
 function updateRateLimit(rateLimit) {
   Aether.state.rateLimit = {
     ...Aether.state.rateLimit,
@@ -1117,7 +1175,7 @@ function updateRateMeterDom() {
   const fillElement = card.querySelector(".rate-fill");
   if (fillElement) fillElement.style.width = `${displayPercent}%`;
   const labelElement = card.querySelector(".rate-label");
-  if (labelElement) labelElement.textContent = `${remaining}/${limit} left · resets in ${resetInSeconds}s`;
+  if (labelElement) labelElement.textContent = `${remaining}/${limit} left - resets in ${resetInSeconds}s`;
 }
 
 function ratePercent(rate) {
@@ -1140,8 +1198,10 @@ function rateColor(percent) {
 
 async function checkAdminStatus() {
   try {
-    const response = await fetch(apiUrl("/api/admin/status"), { headers: authHeaders() });
+    const response = await fetch(apiUrl("/api/admin/status"), { headers: authHeaders(), cache: "no-store" });
+    if (!response.ok) throw new Error(`Status failed with HTTP ${response.status}`);
     const data = await response.json();
+    setServerOnline(true);
     applyServerStatus(data);
     Aether.state.isAdmin = Boolean(data.isAdmin);
     if (data.account) {
@@ -1158,6 +1218,7 @@ async function checkAdminStatus() {
     }
   } catch {
     Aether.state.isAdmin = false;
+    setServerOnline(false);
   }
 }
 
@@ -1656,12 +1717,12 @@ function observeMessageVisibility() {
       for (const entry of entries) {
         const opacity = Math.max(0.16, Math.min(1, entry.intersectionRatio * 1.25));
         entry.target.style.opacity = opacity.toFixed(2);
-        entry.target.classList.toggle("is-faded", opacity < 0.65);
+        entry.target.classList.toggle("is-faded", opacity < 0);
       }
     },
     {
       root: messages,
-      threshold: [0, 0.08, 0.16, 0.24, 0.32, 0.4, 0.55, 0.7, 0.85, 1],
+      threshold: [0, 0, 0, 0.24, 0.32, 0.4, 0.55, 0.7, 0.85, 1],
     },
   );
 
@@ -1697,37 +1758,89 @@ function injectStyles() {
     button, input { font: inherit; }
     button { cursor: pointer; }
     .app-shell {
+      position: relative;
+      isolation: isolate;
       display: grid;
       grid-template-columns: 284px 1fr;
       height: 100%;
       background:
-        radial-gradient(circle at 20% 12%, rgba(37, 99, 235, 0.32), transparent 34%),
-        radial-gradient(circle at 82% 30%, rgba(14, 165, 233, 0.18), transparent 30%),
-        linear-gradient(145deg, #02040a 0%, #071426 45%, #000 100%);
+        linear-gradient(125deg, #02040a 0%, #062a2d 28%, #111827 54%, #251324 78%, #040506 100%);
+      background-size: 180% 180%;
+      animation: shellGradient 22s ease-in-out infinite;
+      overflow: hidden;
+    }
+    .app-shell::before,
+    .app-shell::after {
+      content: "";
+      position: fixed;
+      inset: -20%;
+      z-index: -1;
+      pointer-events: none;
+    }
+    .app-shell::before {
+      background:
+        linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+      background-size: 72px 72px;
+      -webkit-mask-image: linear-gradient(135deg, transparent 8%, black 35%, black 70%, transparent 96%);
+      mask-image: linear-gradient(135deg, transparent 8%, black 35%, black 70%, transparent 96%);
+      animation: gridPan 18s linear infinite;
+      opacity: 0.44;
+    }
+    .app-shell::after {
+      background:
+        conic-gradient(from 120deg at 50% 50%,
+          transparent 0deg,
+          rgba(45, 212, 191, 0.16) 54deg,
+          rgba(251, 191, 36, 0.08) 112deg,
+          transparent 170deg,
+          rgba(56, 189, 248, 0.14) 238deg,
+          rgba(244, 114, 182, 0.08) 304deg,
+          transparent 360deg);
+      filter: blur(32px);
+      transform: scale(1.16);
+      animation: auraTurn 28s ease-in-out infinite alternate;
+      opacity: 0.78;
     }
     .animated-bg {
       position: fixed;
       inset: 0;
+      z-index: 0;
       pointer-events: none;
       overflow: hidden;
+      background:
+        linear-gradient(105deg, transparent 0%, rgba(14, 165, 233, 0.13) 25%, transparent 46%),
+        linear-gradient(290deg, transparent 12%, rgba(34, 197, 94, 0.08) 38%, transparent 58%),
+        repeating-linear-gradient(125deg, rgba(255, 255, 255, 0.045) 0 1px, transparent 1px 18px);
+      background-size: 200% 200%, 180% 180%, 100% 100%;
+      animation: backgroundSweep 16s ease-in-out infinite alternate;
+      opacity: 0.72;
     }
-    .animated-bg span {
-      position: absolute;
-      width: 52vw;
-      height: 52vw;
-      min-width: 520px;
-      min-height: 520px;
-      border-radius: 999px;
-      filter: blur(70px);
-      opacity: 0.22;
-      animation: drift 18s ease-in-out infinite alternate;
+    @keyframes shellGradient {
+      0%, 100% { background-position: 0% 42%; }
+      50% { background-position: 100% 58%; }
     }
-    .animated-bg span:nth-child(1) { left: 12%; top: -18%; background: #2563eb; }
-    .animated-bg span:nth-child(2) { right: -12%; top: 22%; background: #38bdf8; animation-delay: -5s; }
-    .animated-bg span:nth-child(3) { left: 32%; bottom: -28%; background: #0f766e; animation-delay: -9s; }
-    @keyframes drift {
-      from { transform: translate3d(-3%, -2%, 0) scale(0.95); }
-      to { transform: translate3d(5%, 4%, 0) scale(1.08); }
+    @keyframes gridPan {
+      from { transform: translate3d(0, 0, 0); }
+      to { transform: translate3d(72px, 72px, 0); }
+    }
+    @keyframes auraTurn {
+      from { transform: scale(1.12) rotate(-6deg); }
+      to { transform: scale(1.22) rotate(8deg); }
+    }
+    @keyframes backgroundSweep {
+      from { background-position: 0% 50%, 100% 50%, 0 0; }
+      to { background-position: 100% 50%, 0% 50%, 0 0; }
+    }
+    @keyframes serverPulseGreen {
+      0% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.48); }
+      70% { box-shadow: 0 0 0 8px rgba(34, 197, 94, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+    }
+    @keyframes serverPulseRed {
+      0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.48); }
+      70% { box-shadow: 0 0 0 8px rgba(239, 68, 68, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
     }
     .sidebar {
       position: relative;
@@ -1745,13 +1858,20 @@ function injectStyles() {
     .brand {
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 12px;
       color: #fff;
-      background: transparent;
+      background: rgba(255, 255, 255, 0.02);
       font-weight: 760;
       font-size: 18px;
       padding: 8px;
+      border-radius: 16px;
       text-align: left;
+      transition: background 180ms ease, transform 180ms ease;
+    }
+    .brand:hover, .brand:focus-visible {
+      background: rgba(255, 255, 255, 0.06);
+      outline: none;
+      transform: translateY(-1px);
     }
     .brand img {
       width: 60px;
@@ -1759,23 +1879,63 @@ function injectStyles() {
       border-radius: 50%;
       object-fit: cover;
       flex: 0 0 auto;
+      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18), 0 12px 28px rgba(0, 0, 0, 0.28);
     }
-    .brand-mark {
+    .brand-copy {
       display: grid;
-      place-items: center;
-      width: 36px;
-      height: 36px;
+      gap: 4px;
+      min-width: 0;
+    }
+    .brand-name {
+      font-size: 19px;
+      line-height: 1;
+      letter-spacing: 0;
+    }
+    .server-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+      color: #bfdbfe;
+      font-size: 12px;
+      font-weight: 760;
+      line-height: 1.25;
+      white-space: nowrap;
+    }
+    .server-dot {
+      position: relative;
+      width: 9px;
+      height: 9px;
       border-radius: 50%;
-      color: #07111f;
-      background: #bfdbfe;
-      font-weight: 800;
+      background: #22c55e;
+      box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.42);
+      animation: serverPulseGreen 1.55s ease-out infinite;
+      flex: 0 0 auto;
+    }
+    .server-status.offline .server-dot {
+      background: #ef4444;
+      box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.42);
+      animation-name: serverPulseRed;
+    }
+    .server-status.online .server-status-label {
+      color: #bbf7d0;
+    }
+    .server-status.offline .server-status-label {
+      color: #fecaca;
     }
     .new-chat {
       height: 42px;
       border-radius: 12px;
       color: #07111f;
-      background: #dbeafe;
+      background: linear-gradient(135deg, #dbeafe, #bbf7d0);
       font-weight: 740;
+      box-shadow: 0 10px 30px rgba(14, 165, 233, 0.14);
+      transition: transform 160ms ease, filter 160ms ease;
+    }
+    .new-chat:hover, .new-chat:focus-visible {
+      transform: translateY(-1px);
+      filter: brightness(1.04);
+      outline: none;
     }
     .account-tab {
       display: block;
@@ -1919,6 +2079,8 @@ function injectStyles() {
       padding: 24px 36px 28px;
     }
     .topbar {
+      position: relative;
+      z-index: 1;
       max-width: 980px;
       width: 100%;
       margin: 0 auto;
@@ -1929,6 +2091,8 @@ function injectStyles() {
       letter-spacing: 0;
     }
     .messages {
+      position: relative;
+      z-index: 1;
       display: flex;
       flex-direction: column;
       gap: 18px;
@@ -2073,12 +2237,19 @@ function injectStyles() {
       0%, 100% { transform: translateY(0); opacity: 0.68; }
       45% { transform: translateY(-7px); opacity: 1; }
     }
+    .composer-area {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      gap: 8px;
+      width: min(820px, 100%);
+      margin: 0 auto;
+    }
     .composer {
       display: grid;
       grid-template-columns: 1fr auto auto;
       gap: 10px;
-      width: min(820px, 100%);
-      margin: 0 auto;
+      width: 100%;
       padding: 8px;
       border-radius: 28px;
       border: 1px solid rgba(148, 163, 184, 0.35);
@@ -2099,6 +2270,24 @@ function injectStyles() {
       color: #07111f;
       background: #bfdbfe;
       font-weight: 800;
+    }
+    .composer-note {
+      margin: 0;
+      color: #93c5fd;
+      font-size: 12px;
+      text-align: center;
+      line-height: 1.35;
+      animation: composerNotePulse 2.8s ease-in-out infinite;
+    }
+    @keyframes composerNotePulse {
+      0%, 100% {
+        opacity: 0.56;
+        text-shadow: 0 0 0 rgba(147, 197, 253, 0);
+      }
+      50% {
+        opacity: 1;
+        text-shadow: 0 0 18px rgba(147, 197, 253, 0.42);
+      }
     }
     .warning-overlay {
       position: fixed;

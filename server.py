@@ -28,6 +28,7 @@ ADMIN_RATE_LIMIT = 60
 RATE_LIMIT_WINDOW_SECONDS = 60
 LEGACY_ADMIN_MACS = {"10:FF:E0:3F:09:F5"}
 RATE_LIMITS: dict[str, dict] = {}
+SUPABASE_LAST_STATUS = {"connected": False, "lastError": "", "lastAction": ""}
 PROFANITY_PATTERNS = [
     re.compile(pattern, re.I)
     for pattern in [
@@ -69,7 +70,11 @@ WEATHER_CODES = {
 
 
 def supabase_url() -> str:
-    return os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+    url = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+    for suffix in ("/rest/v1", "/rest/v1/"):
+        if url.endswith(suffix.rstrip("/")):
+            url = url[: -len(suffix.rstrip("/"))]
+    return url.rstrip("/")
 
 
 def supabase_service_key() -> str:
@@ -99,6 +104,7 @@ def supabase_store_url(name: str = "") -> str:
 
 def load_supabase_store(name: str, fallback: dict) -> dict | None:
     if not supabase_enabled():
+        SUPABASE_LAST_STATUS.update({"connected": False, "lastError": "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY.", "lastAction": "disabled"})
         return None
 
     try:
@@ -110,9 +116,12 @@ def load_supabase_store(name: str, fallback: dict) -> dict | None:
         with urllib.request.urlopen(request, timeout=8) as response:
             rows = json.loads(response.read().decode("utf-8") or "[]")
     except (OSError, urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as exc:
-        print(f"Supabase load failed for {name}: {exc}")
+        error = supabase_error_text(exc)
+        SUPABASE_LAST_STATUS.update({"connected": False, "lastError": error, "lastAction": f"load:{name}"})
+        print(f"Supabase load failed for {name}: {error}")
         return None
 
+    SUPABASE_LAST_STATUS.update({"connected": True, "lastError": "", "lastAction": f"load:{name}"})
     if rows:
         data = rows[0].get("data")
         return data if isinstance(data, dict) else fallback
@@ -123,12 +132,13 @@ def load_supabase_store(name: str, fallback: dict) -> dict | None:
 
 def save_supabase_store(name: str, store: dict) -> bool:
     if not supabase_enabled():
+        SUPABASE_LAST_STATUS.update({"connected": False, "lastError": "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY.", "lastAction": "disabled"})
         return False
 
     payload = json.dumps([{"name": name, "data": store}]).encode("utf-8")
     headers = {
         **supabase_headers(),
-        "Prefer": "resolution=merge-duplicates",
+        "Prefer": "resolution=merge-duplicates,return=minimal",
     }
     try:
         request = urllib.request.Request(
@@ -138,10 +148,32 @@ def save_supabase_store(name: str, store: dict) -> bool:
             method="POST",
         )
         with urllib.request.urlopen(request, timeout=8):
+            SUPABASE_LAST_STATUS.update({"connected": True, "lastError": "", "lastAction": f"save:{name}"})
             return True
     except (OSError, urllib.error.URLError, urllib.error.HTTPError) as exc:
-        print(f"Supabase save failed for {name}: {exc}")
+        error = supabase_error_text(exc)
+        SUPABASE_LAST_STATUS.update({"connected": False, "lastError": error, "lastAction": f"save:{name}"})
+        print(f"Supabase save failed for {name}: {error}")
         return False
+
+
+def supabase_error_text(exc: Exception) -> str:
+    if isinstance(exc, urllib.error.HTTPError):
+        try:
+            body = exc.read().decode("utf-8", errors="replace").strip()
+        except Exception:
+            body = ""
+        return f"HTTP {exc.code}" + (f": {body[:300]}" if body else "")
+    return str(exc)
+
+
+def storage_status() -> dict:
+    return {
+        "supabaseEnabled": supabase_enabled(),
+        "supabaseConnected": bool(SUPABASE_LAST_STATUS.get("connected")),
+        "supabaseLastAction": SUPABASE_LAST_STATUS.get("lastAction", ""),
+        "supabaseLastError": SUPABASE_LAST_STATUS.get("lastError", ""),
+    }
 
 
 def default_profanity_store() -> dict:
@@ -243,7 +275,9 @@ def load_accounts_store() -> dict:
 
 
 def save_accounts_store(store: dict) -> None:
-    save_supabase_store("accounts", store)
+    saved_to_supabase = save_supabase_store("accounts", store)
+    if supabase_enabled() and not saved_to_supabase:
+        raise RuntimeError("Account storage is not connected. Check Supabase settings in Render.")
     body = json.dumps(store, indent=2, sort_keys=True)
     ACCOUNTS_STORE_PATH.write_text(f"window.AETHER_ACCOUNTS = {body};\n", encoding="utf-8")
 
@@ -790,7 +824,7 @@ def groq_api_keys() -> list[str]:
 def groq_completion_with_fallback(model: str, messages: list[dict]) -> str:
     keys = groq_api_keys()
     if not keys:
-        return "Add GROQ_API_KEY or GROQ_API_KEYS to .env, restart server.py, then try again."
+        return "I need a quick setup fix before I can answer."
 
     last_rate_limit_error = None
     for api_key in keys:
@@ -814,7 +848,7 @@ def groq_completion_with_fallback(model: str, messages: list[dict]) -> str:
                     chunks.append(content)
 
             reply = "".join(chunks).strip()
-            return reply or "I could not read a response from the model."
+            return reply or "I could not read a response."
         except APIStatusError as exc:
             if exc.status_code == 429:
                 last_rate_limit_error = exc
@@ -823,7 +857,7 @@ def groq_completion_with_fallback(model: str, messages: list[dict]) -> str:
 
     if last_rate_limit_error:
         raise last_rate_limit_error
-    return "I could not read a response from the model."
+    return "I could not read a response."
 
 
 def groq_reply(message: str, chat: list[dict]) -> str:
@@ -834,10 +868,11 @@ def groq_reply(message: str, chat: list[dict]) -> str:
         {
             "role": "system",
             "content": (
-                "You are Aether AI, a friendly web assistant. "
+                "You are Aether, a friendly web assistant. "
                 f"The user's current system time is {now}. "
-                "Keep replies natural and useful. Do not mention providers, tokens, API calls, "
-                "or implementation details. Reply in plain text only. Do not use Markdown syntax. "
+                "Always be friendly. Keep responses as short as possible while still answering clearly. "
+                "Never mention GPT, ChatGPT, OpenAI, AI, providers, sources, tokens, API calls, "
+                "models, or implementation details. Reply in plain text only. Do not use Markdown syntax. "
                 "Do not use bold, italics, headings, tables, code fences, bullet markdown, or asterisks for emphasis."
             ),
         }
@@ -940,6 +975,7 @@ class AetherHandler(SimpleHTTPRequestHandler):
                     "account": public_account(username, account) if account else None,
                     "ban": ban,
                     "rateLimit": rate_limit_status(self.client_address[0], self.session_token()),
+                    "storage": storage_status(),
                 }
             )
             return
@@ -965,6 +1001,8 @@ class AetherHandler(SimpleHTTPRequestHandler):
                 self.send_json({"ok": True, "account": account})
             except ValueError as exc:
                 self.send_json({"ok": False, "error": str(exc)}, status=400)
+            except RuntimeError as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=503)
             return
 
         if self.path == "/api/account/login":
@@ -978,11 +1016,16 @@ class AetherHandler(SimpleHTTPRequestHandler):
                 )
             except ValueError as exc:
                 self.send_json({"ok": False, "error": str(exc)}, status=400)
+            except RuntimeError as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=503)
             return
 
         if self.path == "/api/account/logout":
-            logout_account(self.session_token())
-            self.send_json({"ok": True})
+            try:
+                logout_account(self.session_token())
+                self.send_json({"ok": True})
+            except RuntimeError as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=503)
             return
 
         if self.path == "/api/account/status":
@@ -1003,6 +1046,8 @@ class AetherHandler(SimpleHTTPRequestHandler):
                 self.send_json({"ok": True, "account": account})
             except ValueError as exc:
                 self.send_json({"ok": False, "error": str(exc)}, status=400)
+            except RuntimeError as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=503)
             return
 
         if self.path == "/api/account/delete":
@@ -1010,6 +1055,8 @@ class AetherHandler(SimpleHTTPRequestHandler):
                 self.send_json({"ok": delete_current_account(self.session_token())})
             except ValueError as exc:
                 self.send_json({"ok": False, "error": str(exc)}, status=400)
+            except RuntimeError as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=503)
             return
 
         if self.path == "/api/report":
@@ -1190,7 +1237,7 @@ class AetherHandler(SimpleHTTPRequestHandler):
             if ban["banned"]:
                 self.send_json(
                     {
-                        "reply": "You are permanently banned from Aether AI for breaking the TOS.",
+                        "reply": "You are permanently banned from Aether for breaking the TOS.",
                         "ban": ban,
                     }
                 )
@@ -1198,7 +1245,7 @@ class AetherHandler(SimpleHTTPRequestHandler):
             warning = profanity_status_for_ip(self.client_address[0], message)
             if warning:
                 reply = (
-                    "You are permanently banned from Aether AI for breaking the TOS."
+                    "You are permanently banned from Aether for breaking the TOS."
                     if warning["banned"]
                     else "Profanity warning."
                 )
@@ -1224,13 +1271,13 @@ class AetherHandler(SimpleHTTPRequestHandler):
         except APIStatusError as exc:
             self.send_json({"reply": groq_error_message(exc)}, status=200)
         except (APIConnectionError, APITimeoutError):
-            self.send_json({"reply": "I could not connect to Groq. Check your internet connection."}, status=200)
+            self.send_json({"reply": "I could not connect right now. Check your internet connection."}, status=200)
         except urllib.error.HTTPError as exc:
             self.send_json({"reply": http_error_message(exc)}, status=200)
         except urllib.error.URLError:
             self.send_json({"reply": "I could not connect to the weather service. Check your internet connection."}, status=200)
         except TimeoutError:
-            self.send_json({"reply": "The model request timed out. Try again."}, status=200)
+            self.send_json({"reply": "That took too long. Try again."}, status=200)
         except Exception as exc:
             self.send_json({"reply": f"Server error: {exc}"}, status=200)
 
@@ -1280,12 +1327,12 @@ def groq_error_message(exc: APIStatusError) -> str:
         detail = str(exc)
 
     if status_code in {401, 403}:
-        return "The Groq API key was rejected. Check GROQ_API_KEY in .env."
+        return "A setup key was rejected. Check the backend settings."
     if status_code == 404:
-        return "The selected Groq model was not found. Check AETHER_GROQ_MODEL."
+        return "A backend setting was not found. Check the backend settings."
     if status_code == 429:
-        return "The Groq account is rate limited or out of quota. Try again later."
-    return detail or f"The Groq request failed with HTTP {status_code}."
+        return "The backend is rate limited right now. Try again later."
+    return detail or f"The request failed with HTTP {status_code}."
 
 
 def main() -> None:
