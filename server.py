@@ -5,6 +5,7 @@ import hashlib
 import os
 import re
 import secrets
+import socket
 import subprocess
 import urllib.error
 import urllib.parse
@@ -405,6 +406,18 @@ def local_mac_addresses() -> set[str]:
     except Exception:
         return set()
     return {normalize_mac(match.group(0)) for match in re.finditer(r"(?:[0-9A-Fa-f]{2}[-:]){5}[0-9A-Fa-f]{2}", result.stdout)}
+
+
+def local_network_ips() -> list[str]:
+    ips: set[str] = set()
+    try:
+        hostname = socket.gethostname()
+        for ip in socket.gethostbyname_ex(hostname)[2]:
+            if ip and not ip.startswith("127."):
+                ips.add(ip)
+    except OSError:
+        pass
+    return sorted(ips)
 
 
 def mac_for_ip(ip_address: str) -> str:
@@ -1128,8 +1141,12 @@ def groq_error_message(exc: APIStatusError) -> str:
 def main() -> None:
     load_dotenv()
     port = int(os.getenv("AETHER_PORT", "8765"))
-    server = ThreadingHTTPServer(("127.0.0.1", port), AetherHandler)
-    print(f"Aether AI running at http://127.0.0.1:{port}/")
+    host = os.getenv("AETHER_HOST", "0.0.0.0").strip() or "0.0.0.0"
+    server = ThreadingHTTPServer((host, port), AetherHandler)
+    print(f"Aether AI listening on {host}:{port}")
+    print(f"Open locally: http://127.0.0.1:{port}/")
+    for ip in local_network_ips():
+        print(f"Open from phone on same Wi-Fi: http://{ip}:{port}/")
     server.serve_forever()
 
 
