@@ -116,7 +116,17 @@ function defaultApiEndpoint() {
 
 function configuredPublicApiEndpoint() {
   const value = String(window.AETHER_API_ENDPOINT || "").trim();
-  return /^https?:\/\/[^/]+\/api\/chat\/?$/i.test(value) ? value.replace(/\/+$/, "") : "";
+  if (!/^https?:\/\//i.test(value)) return "";
+  try {
+    const url = new URL(value);
+    if (url.pathname === "/" || url.pathname === "") {
+      url.pathname = "/api/chat";
+      return url.toString().replace(/\/+$/, "");
+    }
+    return /\/api\/chat\/?$/i.test(url.pathname) ? url.toString().replace(/\/+$/, "") : "";
+  } catch {
+    return "";
+  }
 }
 
 function canUseRelativeApi() {
