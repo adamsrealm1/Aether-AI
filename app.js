@@ -37,6 +37,8 @@ const Aether = {
     accountError: "",
     accountPasswordVisible: false,
     serverOnline: false,
+    clerkReady: false,
+    clerkError: "",
   },
 };
 
@@ -44,6 +46,7 @@ let messageVisibilityObserver = null;
 let rateMeterTimer = null;
 let rateLimitCountdownTimer = null;
 let serverStatusTimer = null;
+let clerkSyncTimer = null;
 const thoughtTimerTimeouts = new Map();
 const PROFANITY_LIMIT = 6;
 const PROFANITY_PATTERNS = [
@@ -76,7 +79,6 @@ const storage = {
     Aether.config.apiEndpoint = defaultApiEndpoint();
     Aether.state.chats = readJson("aether.chats", []);
     Aether.state.activeChatId = localStorage.getItem("aether.activeChatId");
-    Aether.state.accountSession = localStorage.getItem("aether.accountSession") || "";
     Aether.state.account = readJson("aether.account", null);
 
     if (!Aether.state.chats.length) {
@@ -94,11 +96,7 @@ const storage = {
     localStorage.setItem("aether.config", JSON.stringify(Aether.config));
     localStorage.setItem("aether.chats", JSON.stringify(Aether.state.chats));
     localStorage.setItem("aether.activeChatId", Aether.state.activeChatId || "");
-    if (Aether.state.accountSession) {
-      localStorage.setItem("aether.accountSession", Aether.state.accountSession);
-    } else {
-      localStorage.removeItem("aether.accountSession");
-    }
+    localStorage.removeItem("aether.accountSession");
     if (Aether.state.account) {
       localStorage.setItem("aether.account", JSON.stringify(Aether.state.account));
     } else {
@@ -153,6 +151,124 @@ function readJson(key, fallback) {
   }
 }
 
+function hasClerkConfig() {
+  return Boolean(String(window.CLERK_PUBLISHABLE_KEY || "").trim() && String(window.CLERK_FRONTEND_API || "").trim());
+}
+
+async function initClerkAuth() {
+  if (!hasClerkConfig()) {
+    Aether.state.clerkError = "Missing Clerk configuration.";
+    return;
+  }
+  try {
+    await loadScriptOnce("clerk-ui-sdk", `https://${String(window.CLERK_FRONTEND_API).trim()}/npm/@clerk/ui@1/dist/ui.browser.js`);
+    await loadScriptOnce(
+      "clerk-js-sdk",
+      `https://${String(window.CLERK_FRONTEND_API).trim()}/npm/@clerk/clerk-js@6/dist/clerk.browser.js`,
+      { "data-clerk-publishable-key": String(window.CLERK_PUBLISHABLE_KEY).trim() },
+    );
+    await window.Clerk.load({ ui: { ClerkUI: window.__internal_ClerkUICtor } });
+    Aether.state.clerkReady = true;
+    Aether.state.clerkError = "";
+    await syncClerkAccount();
+    if (clerkSyncTimer) clearInterval(clerkSyncTimer);
+    clerkSyncTimer = setInterval(syncClerkAccount, 4000);
+    render();
+  } catch (error) {
+    Aether.state.clerkReady = false;
+    Aether.state.clerkError = "Could not load Clerk.";
+    render();
+  }
+}
+
+function loadScriptOnce(id, src, attributes = {}) {
+  const existing = document.getElementById(id);
+  if (existing) {
+    return existing.dataset.loaded === "true"
+      ? Promise.resolve(existing)
+      : new Promise((resolve, reject) => {
+          existing.addEventListener("load", () => resolve(existing), { once: true });
+          existing.addEventListener("error", reject, { once: true });
+        });
+  }
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.id = id;
+    script.src = src;
+    script.async = true;
+    script.crossOrigin = "anonymous";
+    Object.entries(attributes).forEach(([key, value]) => script.setAttribute(key, value));
+    script.addEventListener("load", () => {
+      script.dataset.loaded = "true";
+      resolve(script);
+    });
+    script.addEventListener("error", reject);
+    document.head.appendChild(script);
+  });
+}
+
+async function syncClerkAccount() {
+  if (!window.Clerk || !Aether.state.clerkReady) return;
+  await refreshClerkToken();
+  const user = window.Clerk.user;
+  if (window.Clerk.isSignedIn && user) {
+    Aether.state.account = clerkPublicAccount(user);
+  } else {
+    Aether.state.account = null;
+    Aether.state.accountSession = "";
+    Aether.state.isAdmin = false;
+    Aether.state.adminView = false;
+    Aether.state.adminData = null;
+  }
+  storage.save();
+  updateAccountTabDom();
+  checkAdminStatus();
+}
+
+function clerkPublicAccount(user) {
+  const email = user.primaryEmailAddress?.emailAddress || user.emailAddresses?.[0]?.emailAddress || "";
+  const username = user.username || email || user.id;
+  return {
+    username,
+    displayName: user.fullName || [user.firstName, user.lastName].filter(Boolean).join(" ") || username,
+    email,
+    clerkId: user.id,
+    isAdmin: Boolean(Aether.state.account?.isAdmin),
+  };
+}
+
+async function refreshClerkToken() {
+  if (!window.Clerk?.session) {
+    Aether.state.accountSession = "";
+    return "";
+  }
+  try {
+    Aether.state.accountSession = (await window.Clerk.session.getToken()) || "";
+  } catch {
+    Aether.state.accountSession = "";
+  }
+  return Aether.state.accountSession;
+}
+
+function updateAccountTabDom() {
+  const tab = document.querySelector(".account-tab");
+  if (!tab) return;
+  tab.textContent = Aether.state.account ? Aether.state.account.displayName || Aether.state.account.username : "Sign in";
+}
+
+function mountClerkAuth(mode = "") {
+  const slot = document.getElementById("clerk-auth-slot");
+  if (!slot || !window.Clerk || !Aether.state.clerkReady) return;
+  slot.innerHTML = "";
+  if (Aether.state.account && window.Clerk.mountUserProfile) {
+    window.Clerk.mountUserProfile(slot);
+  } else if (mode === "sign-up" && window.Clerk.mountSignUp) {
+    window.Clerk.mountSignUp(slot);
+  } else if (window.Clerk.mountSignIn) {
+    window.Clerk.mountSignIn(slot);
+  }
+}
+
 function createChat(title) {
   return {
     id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
@@ -179,6 +295,7 @@ function bootstrap() {
   render();
   checkAdminStatus();
   startServerStatusPolling();
+  initClerkAuth();
 }
 
 function bindGlobalEvents() {
@@ -196,15 +313,11 @@ function bindGlobalEvents() {
     }
     if (action === "show-register") {
       event.preventDefault();
-      Aether.state.accountModal = "register";
-      Aether.state.accountError = "";
-      render();
+      mountClerkAuth("sign-up");
     }
     if (action === "show-login") {
       event.preventDefault();
-      Aether.state.accountModal = "login";
-      Aether.state.accountError = "";
-      render();
+      mountClerkAuth("sign-in");
     }
     if (action === "logout-account") {
       event.preventDefault();
@@ -219,7 +332,7 @@ function bindGlobalEvents() {
 }
 
 function openAccountModal() {
-  Aether.state.accountModal = Aether.state.account ? "profile" : "login";
+  Aether.state.accountModal = Aether.state.account ? "profile" : "sign-in";
   Aether.state.accountError = "";
   render();
 }
@@ -266,6 +379,7 @@ function render() {
   `;
 
   bindEvents(root);
+  mountClerkAuth();
   observeMessageVisibility();
   scrollChatToBottom();
 }
@@ -388,7 +502,7 @@ function renderShortMessagePopup() {
       <div class="warning-modal compact-modal">
         <h2>Message too short</h2>
         <p>Your message must have at least 2 letters.</p>
-        <button class="warning-understand" data-action="close-short-message">I understand</button>
+        <button class="warning-understand" data-action="close-short-message">Okay.</button>
       </div>
     </div>
   `;
@@ -400,9 +514,9 @@ function renderRateLimitPopup() {
   return `
     <div class="warning-overlay compact" role="dialog" aria-modal="true">
       <div class="warning-modal compact-modal">
-        <h2>Rate limit reached</h2>
-        <p>Wait ${Number(rate.resetInSeconds || 0)} seconds. Guests get 5, signed-in users get 30, and admins get 60 messages every 60 seconds.</p>
-        <button class="warning-understand" data-action="close-rate-limit">I understand</button>
+        <h2>Oops!</h2>
+        <p>Wait ${Number(rate.resetInSeconds || 0)} seconds to use <strong>Aether<strong> AI again.</p>
+        <button class="warning-understand" data-action="close-rate-limit">Okay.</button>
       </div>
     </div>
   `;
@@ -459,55 +573,38 @@ function renderReportPopup() {
 
 function renderAccountModal() {
   if (!Aether.state.accountModal) return "";
-  const isRegister = Aether.state.accountModal === "register";
   const account = Aether.state.account;
-  const passwordType = Aether.state.accountPasswordVisible ? "text" : "password";
+  const clerkConfigured = hasClerkConfig();
   return `
     <div class="account-overlay" role="dialog" aria-modal="true" aria-labelledby="account-title">
       <div class="account-modal">
         <button class="modal-close" type="button" data-action="close-account" aria-label="Close">X</button>
         ${
-          account
+          !clerkConfigured
+            ? `
+              <h2 id="account-title">Connect Clerk</h2>
+              <p class="account-subtitle">Add your Clerk keys in config.js, then refresh this page.</p>
+              <div class="account-card-row"><span>Needed</span><strong>Publishable key</strong></div>
+              <div class="account-card-row"><span>Needed</span><strong>Frontend API</strong></div>
+            `
+            : account
             ? `
               <h2 id="account-title">${escapeHtml(account.displayName || account.username)}</h2>
-              <p class="account-subtitle">${account.isAdmin ? "Admin account" : "Signed in account"}</p>
+              <p class="account-subtitle">${account.isAdmin ? "Admin account" : "Signed in with Clerk"}</p>
               <div class="account-card-row">
-                <span>Username</span>
+                <span>Account</span>
                 <strong>${escapeHtml(account.username)}</strong>
               </div>
-              ${Aether.state.accountError ? `<p class="account-error">${escapeHtml(Aether.state.accountError)}</p>` : ""}
-              <form class="account-form profile-form" data-action="update-account">
-                <input name="displayName" value="${escapeHtml(account.displayName || "")}" placeholder="Display name" autocomplete="name">
-                <input name="username" value="${escapeHtml(account.username)}" placeholder="Username" autocomplete="username">
-                <div class="password-heading">
-                  <span>Password</span>
-                  <button class="link-button inline" type="button" data-action="toggle-profile-password">
-                    ${Aether.state.accountPasswordVisible ? "Hide password" : "Show password"}
-                  </button>
-                </div>
-                <input name="currentPassword" type="${passwordType}" placeholder="Current password" autocomplete="current-password">
-                <input name="newPassword" type="${passwordType}" placeholder="New password" autocomplete="new-password">
-                <p class="account-note">Saved passwords are protected, so the current password cannot be displayed. Use these fields to change it.</p>
-                <button class="primary-button" type="submit">Save changes</button>
-              </form>
+              <div id="clerk-auth-slot" class="clerk-auth-slot"></div>
               <div class="modal-actions">
                 <button class="secondary-button" type="button" data-action="logout-account">Sign out</button>
-                <button class="danger-button" type="button" data-action="delete-own-account">Delete account</button>
               </div>
             `
             : `
-              <h2 id="account-title">${isRegister ? "Create account" : "Sign in"}</h2>
-              <p class="account-subtitle">Accounts are optional. You can keep using Aether as a guest.</p>
+              <h2 id="account-title">Sign in</h2>
+              <p class="account-subtitle">Use Clerk to sign in or create an account.</p>
               ${Aether.state.accountError ? `<p class="account-error">${escapeHtml(Aether.state.accountError)}</p>` : ""}
-              <form class="account-form" data-action="${isRegister ? "register-account" : "login-account"}">
-                ${isRegister ? `<input name="displayName" placeholder="Display name" autocomplete="name">` : ""}
-                <input name="username" placeholder="Username" autocomplete="username">
-                <input name="password" type="password" placeholder="Password" autocomplete="${isRegister ? "new-password" : "current-password"}">
-                <button class="primary-button" type="submit">${isRegister ? "Create account" : "Sign in"}</button>
-              </form>
-              <button class="link-button" type="button" data-action="${isRegister ? "show-login" : "show-register"}">
-                ${isRegister ? "I already have an account" : "Create a new account"}
-              </button>
+              <div id="clerk-auth-slot" class="clerk-auth-slot"></div>
             `
         }
       </div>
@@ -977,9 +1074,10 @@ async function getAssistantReply(text) {
   if (Aether.config.apiEndpoint) {
     try {
       const location = await locationForWeatherRequest(text);
+      const headers = await authHeaders({ "Content-Type": "text/plain;charset=UTF-8" });
       const response = await fetch(Aether.config.apiEndpoint, {
         method: "POST",
-        headers: { "Content-Type": "text/plain;charset=UTF-8", ...authHeaders() },
+        headers,
         body: JSON.stringify({ message: text, chat: activeChat().messages, location }),
       });
       const data = await response.json();
@@ -1085,7 +1183,7 @@ async function pingServerStatus() {
   const wasBanned = Boolean(Aether.state.ban?.banned);
   try {
     const response = await fetch(apiUrl("/api/admin/status"), {
-      headers: authHeaders(),
+      headers: await authHeaders(),
       cache: "no-store",
     });
     if (!response.ok) throw new Error(`Status failed with HTTP ${response.status}`);
@@ -1137,7 +1235,7 @@ function resetExpiredRateLimitWindow() {
   rate.used = 0;
   rate.remaining = limit;
   rate.percentUsed = 0;
-  rate.resetInSeconds = 60;
+  rate.resetInSeconds = 120;
   animateRateMeterTo(100);
 }
 
@@ -1198,7 +1296,7 @@ function rateColor(percent) {
 
 async function checkAdminStatus() {
   try {
-    const response = await fetch(apiUrl("/api/admin/status"), { headers: authHeaders(), cache: "no-store" });
+    const response = await fetch(apiUrl("/api/admin/status"), { headers: await authHeaders(), cache: "no-store" });
     if (!response.ok) throw new Error(`Status failed with HTTP ${response.status}`);
     const data = await response.json();
     setServerOnline(true);
@@ -1224,72 +1322,18 @@ async function checkAdminStatus() {
 
 async function loginAccount(event) {
   event.preventDefault();
-  const form = event.currentTarget;
-  let data;
-  try {
-    data = await postJson("/api/account/login", {
-      username: form.elements.username.value,
-      password: form.elements.password.value,
-    });
-  } catch (error) {
-    Aether.state.accountError = backendUnavailableMessage();
-    render();
-    return;
-  }
-  if (!data.ok) {
-    Aether.state.accountError = data.error || "Could not sign in.";
-    render();
-    return;
-  }
-  Aether.state.accountSession = data.session;
-  Aether.state.account = data.account;
-  Aether.state.accountModal = null;
-  Aether.state.accountError = "";
-  storage.save();
-  await checkAdminStatus();
-  render();
+  mountClerkAuth("sign-in");
 }
 
 async function registerAccount(event) {
   event.preventDefault();
-  const form = event.currentTarget;
-  const username = form.elements.username.value;
-  const password = form.elements.password.value;
-  let created;
-  try {
-    created = await postJson("/api/account/register", {
-      displayName: form.elements.displayName.value,
-      username,
-      password,
-    });
-  } catch (error) {
-    Aether.state.accountError = backendUnavailableMessage();
-    render();
-    return;
-  }
-  if (!created.ok) {
-    Aether.state.accountError = created.error || "Could not create account.";
-    render();
-    return;
-  }
-  const loggedIn = await postJson("/api/account/login", { username, password });
-  if (!loggedIn.ok) {
-    Aether.state.accountModal = "login";
-    Aether.state.accountError = "Account created. Sign in to continue.";
-    render();
-    return;
-  }
-  Aether.state.accountSession = loggedIn.session;
-  Aether.state.account = loggedIn.account;
-  Aether.state.accountModal = null;
-  Aether.state.accountError = "";
-  storage.save();
-  await checkAdminStatus();
-  render();
+  mountClerkAuth("sign-up");
 }
 
 async function logoutAccount() {
-  await postJson("/api/account/logout", {});
+  if (window.Clerk?.signOut) {
+    await window.Clerk.signOut();
+  }
   Aether.state.account = null;
   Aether.state.accountSession = "";
   Aether.state.accountModal = null;
@@ -1303,58 +1347,11 @@ async function logoutAccount() {
 
 async function updateOwnAccount(event) {
   event.preventDefault();
-  const form = event.currentTarget;
-  let data;
-  try {
-    data = await postJson("/api/account/update", {
-      displayName: form.elements.displayName.value,
-      username: form.elements.username.value,
-      currentPassword: form.elements.currentPassword.value,
-      newPassword: form.elements.newPassword.value,
-    });
-  } catch (error) {
-    Aether.state.accountError = backendUnavailableMessage();
-    render();
-    return;
-  }
-  if (!data.ok) {
-    Aether.state.accountError = data.error || "Could not update account.";
-    render();
-    return;
-  }
-  Aether.state.account = data.account;
-  Aether.state.accountError = "Account updated.";
-  form.elements.currentPassword.value = "";
-  form.elements.newPassword.value = "";
-  storage.save();
-  await checkAdminStatus();
-  render();
+  mountClerkAuth("profile");
 }
 
 async function deleteOwnAccount() {
-  if (!confirm("Delete your account permanently?")) return;
-  let data;
-  try {
-    data = await postJson("/api/account/delete", {});
-  } catch (error) {
-    Aether.state.accountError = backendUnavailableMessage();
-    render();
-    return;
-  }
-  if (!data.ok) {
-    Aether.state.accountError = data.error || "Could not delete account.";
-    render();
-    return;
-  }
-  Aether.state.account = null;
-  Aether.state.accountSession = "";
-  Aether.state.accountModal = null;
-  Aether.state.isAdmin = false;
-  Aether.state.adminView = false;
-  Aether.state.adminData = null;
-  storage.save();
-  await checkAdminStatus();
-  render();
+  mountClerkAuth("profile");
 }
 
 function openReportPopup(messageId) {
@@ -1385,7 +1382,7 @@ async function submitReport(event) {
 
   await fetch(apiUrl("/api/report"), {
     method: "POST",
-    headers: jsonHeaders(),
+    headers: await jsonHeaders(),
     body: JSON.stringify({
       ...report,
       reason,
@@ -1408,7 +1405,7 @@ async function loadAdminData() {
   Aether.state.adminLoading = true;
   render();
   try {
-    const response = await fetch(apiUrl("/api/admin/reports"), { headers: authHeaders() });
+    const response = await fetch(apiUrl("/api/admin/reports"), { headers: await authHeaders() });
     if (!response.ok) throw new Error("Admin access required.");
     Aether.state.adminData = await response.json();
   } catch {
@@ -1527,7 +1524,7 @@ async function deleteAccount(username) {
 async function postJson(path, payload) {
   const response = await fetch(apiUrl(path), {
     method: "POST",
-    headers: jsonHeaders(),
+    headers: await jsonHeaders(),
     body: JSON.stringify(payload),
   });
   if (!response.ok) {
@@ -1544,14 +1541,24 @@ function backendUnavailableMessage() {
   return `Could not reach ${apiUrl("/api/account/login")}. ${backendLaunchMessage()}`;
 }
 
-function authHeaders() {
-  return Aether.state.accountSession ? { "X-Aether-Session": Aether.state.accountSession } : {};
+async function authHeaders(base = {}) {
+  const token = await refreshClerkToken();
+  const headers = { ...base };
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  if (Aether.state.account) {
+    headers["X-Aether-Clerk-Name"] = Aether.state.account.displayName || "";
+    headers["X-Aether-Clerk-Email"] = Aether.state.account.email || "";
+    headers["X-Aether-Clerk-Username"] = Aether.state.account.username || "";
+  }
+  return headers;
 }
 
-function jsonHeaders() {
+async function jsonHeaders() {
   return {
     "Content-Type": "application/json",
-    ...authHeaders(),
+    ...(await authHeaders()),
   };
 }
 
@@ -2468,6 +2475,22 @@ function injectStyles() {
     }
     .account-card-row strong {
       color: #fff;
+    }
+    .clerk-auth-slot {
+      display: grid;
+      margin-top: 14px;
+      overflow: hidden;
+      border-radius: 14px;
+    }
+    .clerk-auth-slot:empty::before {
+      content: "Loading sign in...";
+      display: grid;
+      place-items: center;
+      min-height: 120px;
+      color: #bfdbfe;
+      border: 1px solid rgba(191, 219, 254, 0.16);
+      border-radius: 14px;
+      background: rgba(191, 219, 254, 0.06);
     }
     .link-button {
       margin-top: 14px;

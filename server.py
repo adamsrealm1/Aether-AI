@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import json
-import hashlib
 import os
 import re
-import secrets
 import socket
 import subprocess
 import urllib.error
@@ -17,6 +15,12 @@ from uuid import uuid4
 
 from groq import APIConnectionError, APIStatusError, APITimeoutError, Groq
 
+try:
+    from clerk_backend_api import AuthenticateRequestOptions, authenticate_request
+except ImportError:
+    AuthenticateRequestOptions = None
+    authenticate_request = None
+
 ROOT = Path(__file__).resolve().parent
 PROFANITY_STORE_PATH = ROOT / "profanity.js"
 REPORTS_STORE_PATH = ROOT / "reports.json"
@@ -28,7 +32,6 @@ ADMIN_RATE_LIMIT = 60
 RATE_LIMIT_WINDOW_SECONDS = 60
 LEGACY_ADMIN_MACS = {"10:FF:E0:3F:09:F5"}
 RATE_LIMITS: dict[str, dict] = {}
-SUPABASE_LAST_STATUS = {"connected": False, "lastError": "", "lastAction": ""}
 PROFANITY_PATTERNS = [
     re.compile(pattern, re.I)
     for pattern in [
@@ -69,111 +72,33 @@ WEATHER_CODES = {
 }
 
 
-def supabase_url() -> str:
-    url = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
-    for suffix in ("/rest/v1", "/rest/v1/"):
-        if url.endswith(suffix.rstrip("/")):
-            url = url[: -len(suffix.rstrip("/"))]
-    return url.rstrip("/")
-
-
-def supabase_service_key() -> str:
-    return os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
-
-
-def supabase_enabled() -> bool:
-    return bool(supabase_url() and supabase_service_key())
-
-
-def supabase_headers() -> dict:
-    key = supabase_service_key()
-    return {
-        "Content-Type": "application/json",
-        "apikey": key,
-        "Authorization": f"Bearer {key}",
-    }
-
-
-def supabase_store_url(name: str = "") -> str:
-    base = f"{supabase_url()}/rest/v1/aether_store"
-    if not name:
-        return base
-    query_name = urllib.parse.quote(name)
-    return f"{base}?name=eq.{query_name}&select=data"
-
-
-def load_supabase_store(name: str, fallback: dict) -> dict | None:
-    if not supabase_enabled():
-        SUPABASE_LAST_STATUS.update({"connected": False, "lastError": "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY.", "lastAction": "disabled"})
-        return None
-
-    try:
-        request = urllib.request.Request(
-            supabase_store_url(name),
-            headers=supabase_headers(),
-            method="GET",
-        )
-        with urllib.request.urlopen(request, timeout=8) as response:
-            rows = json.loads(response.read().decode("utf-8") or "[]")
-    except (OSError, urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as exc:
-        error = supabase_error_text(exc)
-        SUPABASE_LAST_STATUS.update({"connected": False, "lastError": error, "lastAction": f"load:{name}"})
-        print(f"Supabase load failed for {name}: {error}")
-        return None
-
-    SUPABASE_LAST_STATUS.update({"connected": True, "lastError": "", "lastAction": f"load:{name}"})
-    if rows:
-        data = rows[0].get("data")
-        return data if isinstance(data, dict) else fallback
-
-    save_supabase_store(name, fallback)
-    return fallback
-
-
-def save_supabase_store(name: str, store: dict) -> bool:
-    if not supabase_enabled():
-        SUPABASE_LAST_STATUS.update({"connected": False, "lastError": "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY.", "lastAction": "disabled"})
-        return False
-
-    payload = json.dumps([{"name": name, "data": store}]).encode("utf-8")
-    headers = {
-        **supabase_headers(),
-        "Prefer": "resolution=merge-duplicates,return=minimal",
-    }
-    try:
-        request = urllib.request.Request(
-            f"{supabase_url()}/rest/v1/aether_store?on_conflict=name",
-            data=payload,
-            headers=headers,
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=8):
-            SUPABASE_LAST_STATUS.update({"connected": True, "lastError": "", "lastAction": f"save:{name}"})
-            return True
-    except (OSError, urllib.error.URLError, urllib.error.HTTPError) as exc:
-        error = supabase_error_text(exc)
-        SUPABASE_LAST_STATUS.update({"connected": False, "lastError": error, "lastAction": f"save:{name}"})
-        print(f"Supabase save failed for {name}: {error}")
-        return False
-
-
-def supabase_error_text(exc: Exception) -> str:
-    if isinstance(exc, urllib.error.HTTPError):
-        try:
-            body = exc.read().decode("utf-8", errors="replace").strip()
-        except Exception:
-            body = ""
-        return f"HTTP {exc.code}" + (f": {body[:300]}" if body else "")
-    return str(exc)
-
-
 def storage_status() -> dict:
     return {
-        "supabaseEnabled": supabase_enabled(),
-        "supabaseConnected": bool(SUPABASE_LAST_STATUS.get("connected")),
-        "supabaseLastAction": SUPABASE_LAST_STATUS.get("lastAction", ""),
-        "supabaseLastError": SUPABASE_LAST_STATUS.get("lastError", ""),
+        "type": "local-files",
+        "clerkConfigured": bool(os.getenv("CLERK_SECRET_KEY", "").strip()),
+        "clerkBackendInstalled": bool(authenticate_request and AuthenticateRequestOptions),
     }
+
+
+class ClerkRequestAdapter:
+    def __init__(self, headers) -> None:
+        self.headers = {key: value for key, value in headers.items()}
+
+
+def clerk_authorized_parties() -> list[str]:
+    return [item.strip() for item in os.getenv("CLERK_AUTHORIZED_PARTIES", "").split(",") if item.strip()]
+
+
+def clerk_jwt_key() -> str | None:
+    value = os.getenv("CLERK_JWT_KEY", "").strip()
+    return value.replace("\\n", "\n") if value else None
+
+
+def clerk_claim_user_id(state) -> str:
+    payload = getattr(state, "payload", None) or getattr(state, "claims", None) or {}
+    if not isinstance(payload, dict):
+        payload = {}
+    return str(getattr(state, "user_id", "") or payload.get("sub") or "").strip()
 
 
 def default_profanity_store() -> dict:
@@ -197,9 +122,6 @@ def load_profanity_store() -> dict:
             except json.JSONDecodeError:
                 store = default_profanity_store()
 
-    supabase_store = load_supabase_store("profanity", store)
-    if supabase_store:
-        store = supabase_store
     store.setdefault("warnedUsers", {})
     store.setdefault("bannedUsers", {})
     store.setdefault("bannedMacs", {})
@@ -214,7 +136,6 @@ def load_profanity_store() -> dict:
 
 
 def save_profanity_store(store: dict) -> None:
-    save_supabase_store("profanity", store)
     body = json.dumps(store, indent=2, sort_keys=True)
     PROFANITY_STORE_PATH.write_text(f"window.AETHER_PROFANITY_STORE = {body};\n", encoding="utf-8")
 
@@ -233,20 +154,15 @@ def load_reports_store() -> dict:
         except json.JSONDecodeError:
             store = default_reports_store()
     store.setdefault("reports", [])
-    supabase_store = load_supabase_store("reports", store)
-    if supabase_store:
-        supabase_store.setdefault("reports", [])
-        return supabase_store
     return store
 
 
 def save_reports_store(store: dict) -> None:
-    save_supabase_store("reports", store)
     REPORTS_STORE_PATH.write_text(json.dumps(store, indent=2, sort_keys=True), encoding="utf-8")
 
 
 def default_accounts_store() -> dict:
-    return {"users": {}, "sessions": {}}
+    return {"users": {}}
 
 
 def load_accounts_store() -> dict:
@@ -265,19 +181,10 @@ def load_accounts_store() -> dict:
             except json.JSONDecodeError:
                 store = default_accounts_store()
     store.setdefault("users", {})
-    store.setdefault("sessions", {})
-    supabase_store = load_supabase_store("accounts", store)
-    if supabase_store:
-        supabase_store.setdefault("users", {})
-        supabase_store.setdefault("sessions", {})
-        return supabase_store
     return store
 
 
 def save_accounts_store(store: dict) -> None:
-    saved_to_supabase = save_supabase_store("accounts", store)
-    if supabase_enabled() and not saved_to_supabase:
-        raise RuntimeError("Account storage is not connected. Check Supabase settings in Render.")
     body = json.dumps(store, indent=2, sort_keys=True)
     ACCOUNTS_STORE_PATH.write_text(f"window.AETHER_ACCOUNTS = {body};\n", encoding="utf-8")
 
@@ -286,149 +193,92 @@ def normalize_username(username: str) -> str:
     return re.sub(r"\s+", "", username.strip().lower())[:32]
 
 
-def public_account(username: str, account: dict) -> dict:
+def public_account(user_id: str, account: dict) -> dict:
     return {
-        "username": username,
-        "displayName": account.get("displayName") or username,
+        "username": account.get("username") or user_id,
+        "displayName": account.get("displayName") or account.get("username") or user_id,
         "isAdmin": bool(account.get("isAdmin")),
+        "clerkId": user_id,
+        "email": account.get("email", ""),
         "createdAt": account.get("createdAt", ""),
         "lastLoginAt": account.get("lastLoginAt", ""),
     }
-
-
-def hash_password(password: str, salt: str) -> str:
-    return hashlib.sha256(f"{salt}:{password}".encode("utf-8")).hexdigest()
-
-
-def create_account(username: str, password: str, display_name: str = "") -> dict:
-    username = normalize_username(username)
-    if not username:
-        raise ValueError("Enter a username.")
-    if len(password) < 4:
-        raise ValueError("Password must be at least 4 characters.")
-
-    store = load_accounts_store()
-    if username in store["users"]:
-        raise ValueError("That username already exists.")
-
-    now = datetime.now().astimezone().isoformat()
-    salt = secrets.token_hex(16)
-    store["users"][username] = {
-        "displayName": display_name.strip()[:40] or username,
-        "passwordSalt": salt,
-        "passwordHash": hash_password(password, salt),
-        "isAdmin": False,
-        "createdAt": now,
-        "lastLoginAt": "",
-    }
-    save_accounts_store(store)
-    return public_account(username, store["users"][username])
-
-
-def login_account(username: str, password: str) -> dict:
-    username = normalize_username(username)
-    store = load_accounts_store()
-    account = store["users"].get(username)
-    if not account or account.get("passwordHash") != hash_password(password, account.get("passwordSalt", "")):
-        raise ValueError("Username or password is incorrect.")
-
-    token = secrets.token_urlsafe(32)
-    now = datetime.now().astimezone().isoformat()
-    account["lastLoginAt"] = now
-    store["sessions"][token] = {"username": username, "createdAt": now}
-    save_accounts_store(store)
-    return {"session": token, "account": public_account(username, account)}
-
-
-def update_account(session_token: str, username: str = "", display_name: str = "", current_password: str = "", new_password: str = "") -> dict:
-    current_username, account = account_for_session(session_token)
-    if not account or not current_username:
-        raise ValueError("Sign in first.")
-
-    store = load_accounts_store()
-    account = store["users"].get(current_username)
-    if not account:
-        raise ValueError("Account not found.")
-
-    next_username = normalize_username(username or current_username)
-    if not next_username:
-        raise ValueError("Enter a username.")
-    if next_username != current_username and next_username in store["users"]:
-        raise ValueError("That username already exists.")
-
-    if display_name.strip():
-        account["displayName"] = display_name.strip()[:40]
-
-    if new_password:
-        if len(new_password) < 4:
-            raise ValueError("Password must be at least 4 characters.")
-        if account.get("passwordHash") != hash_password(current_password, account.get("passwordSalt", "")):
-            raise ValueError("Current password is incorrect.")
-        salt = secrets.token_hex(16)
-        account["passwordSalt"] = salt
-        account["passwordHash"] = hash_password(new_password, salt)
-        account["passwordUpdatedAt"] = datetime.now().astimezone().isoformat()
-
-    if next_username != current_username:
-        store["users"][next_username] = account
-        store["users"].pop(current_username, None)
-        for session in store["sessions"].values():
-            if session.get("username") == current_username:
-                session["username"] = next_username
-        current_username = next_username
-
-    account["updatedAt"] = datetime.now().astimezone().isoformat()
-    save_accounts_store(store)
-    return public_account(current_username, account)
 
 
 def account_for_session(session_token: str) -> tuple[str, dict] | tuple[None, None]:
     if not session_token:
         return None, None
     store = load_accounts_store()
-    session = store["sessions"].get(session_token)
-    if not session:
-        return None, None
-    username = session.get("username", "")
-    account = store["users"].get(username)
+    account = store["users"].get(session_token)
     if not account:
         return None, None
-    return username, account
+    return session_token, account
 
 
-def logout_account(session_token: str) -> None:
+def account_key_for_identifier(store: dict, identifier: str) -> str:
+    identifier = identifier.strip()
+    if identifier in store.get("users", {}):
+        return identifier
+    normalized = normalize_username(identifier)
+    for user_id, account in store.get("users", {}).items():
+        names = [
+            user_id,
+            account.get("username", ""),
+            account.get("displayName", ""),
+            account.get("email", ""),
+        ]
+        if any(normalize_username(value) == normalized for value in names if value):
+            return user_id
+    return ""
+
+
+def sync_clerk_account(user_id: str, display_name: str = "", email: str = "", username: str = "") -> dict:
+    if not user_id:
+        raise ValueError("Missing Clerk user.")
     store = load_accounts_store()
-    store["sessions"].pop(session_token, None)
+    now = datetime.now().astimezone().isoformat()
+    account = store["users"].setdefault(
+        user_id,
+        {
+            "displayName": display_name.strip()[:80] or username.strip()[:80] or user_id,
+            "username": username.strip()[:80] or email.strip()[:120] or user_id,
+            "email": email.strip()[:160],
+            "isAdmin": False,
+            "createdAt": now,
+            "lastLoginAt": "",
+        },
+    )
+    if display_name.strip():
+        account["displayName"] = display_name.strip()[:80]
+    if username.strip():
+        account["username"] = username.strip()[:80]
+    elif email.strip():
+        account["username"] = email.strip()[:120]
+    if email.strip():
+        account["email"] = email.strip()[:160]
+    account["lastLoginAt"] = now
     save_accounts_store(store)
-
-
-def delete_current_account(session_token: str) -> bool:
-    username, account = account_for_session(session_token)
-    if not account or not username:
-        raise ValueError("Sign in first.")
-    return delete_account(username)
+    return public_account(user_id, account)
 
 
 def set_account_admin(username: str, is_admin: bool) -> dict:
-    username = normalize_username(username)
     store = load_accounts_store()
-    account = store["users"].get(username)
+    user_id = account_key_for_identifier(store, username)
+    account = store["users"].get(user_id)
     if not account:
         raise ValueError("Account not found.")
     account["isAdmin"] = bool(is_admin)
     account["adminUpdatedAt"] = datetime.now().astimezone().isoformat()
     save_accounts_store(store)
-    return public_account(username, account)
+    return public_account(user_id, account)
 
 
 def delete_account(username: str) -> bool:
-    username = normalize_username(username)
     store = load_accounts_store()
-    existed = username in store["users"]
-    store["users"].pop(username, None)
-    store["sessions"] = {
-        token: session for token, session in store["sessions"].items() if session.get("username") != username
-    }
+    user_id = account_key_for_identifier(store, username)
+    existed = bool(user_id)
+    if user_id:
+        store["users"].pop(user_id, None)
     save_accounts_store(store)
     return existed
 
@@ -955,7 +805,7 @@ class AetherHandler(SimpleHTTPRequestHandler):
     def end_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Aether-Session")
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Aether-Clerk-Email, X-Aether-Clerk-Name, X-Aether-Clerk-Username")
         super().end_headers()
 
     def do_OPTIONS(self) -> None:
@@ -991,41 +841,16 @@ class AetherHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         if self.path == "/api/account/register":
-            try:
-                payload = self.read_json_body()
-                account = create_account(
-                    str(payload.get("username", "")),
-                    str(payload.get("password", "")),
-                    str(payload.get("displayName", "")),
-                )
-                self.send_json({"ok": True, "account": account})
-            except ValueError as exc:
-                self.send_json({"ok": False, "error": str(exc)}, status=400)
-            except RuntimeError as exc:
-                self.send_json({"ok": False, "error": str(exc)}, status=503)
+            self.send_json({"ok": False, "error": "Use Clerk sign in."}, status=410)
             return
 
         if self.path == "/api/account/login":
-            try:
-                payload = self.read_json_body()
-                self.send_json(
-                    {
-                        "ok": True,
-                        **login_account(str(payload.get("username", "")), str(payload.get("password", ""))),
-                    }
-                )
-            except ValueError as exc:
-                self.send_json({"ok": False, "error": str(exc)}, status=400)
-            except RuntimeError as exc:
-                self.send_json({"ok": False, "error": str(exc)}, status=503)
+            username, account = account_for_session(self.session_token())
+            self.send_json({"ok": bool(account), "account": public_account(username, account) if account else None})
             return
 
         if self.path == "/api/account/logout":
-            try:
-                logout_account(self.session_token())
-                self.send_json({"ok": True})
-            except RuntimeError as exc:
-                self.send_json({"ok": False, "error": str(exc)}, status=503)
+            self.send_json({"ok": True})
             return
 
         if self.path == "/api/account/status":
@@ -1034,29 +859,11 @@ class AetherHandler(SimpleHTTPRequestHandler):
             return
 
         if self.path == "/api/account/update":
-            try:
-                payload = self.read_json_body()
-                account = update_account(
-                    self.session_token(),
-                    str(payload.get("username", "")),
-                    str(payload.get("displayName", "")),
-                    str(payload.get("currentPassword", "")),
-                    str(payload.get("newPassword", "")),
-                )
-                self.send_json({"ok": True, "account": account})
-            except ValueError as exc:
-                self.send_json({"ok": False, "error": str(exc)}, status=400)
-            except RuntimeError as exc:
-                self.send_json({"ok": False, "error": str(exc)}, status=503)
+            self.send_json({"ok": False, "error": "Manage your profile with Clerk."}, status=410)
             return
 
         if self.path == "/api/account/delete":
-            try:
-                self.send_json({"ok": delete_current_account(self.session_token())})
-            except ValueError as exc:
-                self.send_json({"ok": False, "error": str(exc)}, status=400)
-            except RuntimeError as exc:
-                self.send_json({"ok": False, "error": str(exc)}, status=503)
+            self.send_json({"ok": False, "error": "Delete your account from Clerk."}, status=410)
             return
 
         if self.path == "/api/report":
@@ -1290,7 +1097,49 @@ class AetherHandler(SimpleHTTPRequestHandler):
         return payload if isinstance(payload, dict) else {}
 
     def session_token(self) -> str:
-        return self.headers.get("X-Aether-Session", "").strip()
+        cached = getattr(self, "_clerk_user_id", None)
+        if cached is not None:
+            return cached
+        self._clerk_user_id = ""
+        auth_header = self.headers.get("Authorization", "").strip()
+        if not auth_header.lower().startswith("bearer "):
+            return ""
+        if not authenticate_request or not AuthenticateRequestOptions:
+            return ""
+        secret_key = os.getenv("CLERK_SECRET_KEY", "").strip()
+        if not secret_key:
+            return ""
+
+        options = {
+            "secret_key": secret_key,
+            "accepts_token": ["session_token"],
+        }
+        jwt_key = clerk_jwt_key()
+        if jwt_key:
+            options["jwt_key"] = jwt_key
+        authorized_parties = clerk_authorized_parties()
+        if authorized_parties:
+            options["authorized_parties"] = authorized_parties
+        try:
+            state = authenticate_request(
+                ClerkRequestAdapter(self.headers),
+                AuthenticateRequestOptions(**options),
+            )
+        except Exception as exc:
+            print(f"Clerk auth failed: {exc}")
+            return ""
+        if not getattr(state, "is_signed_in", False):
+            return ""
+        user_id = clerk_claim_user_id(state)
+        if user_id:
+            sync_clerk_account(
+                user_id,
+                self.headers.get("X-Aether-Clerk-Name", ""),
+                self.headers.get("X-Aether-Clerk-Email", ""),
+                self.headers.get("X-Aether-Clerk-Username", ""),
+            )
+            self._clerk_user_id = user_id
+        return self._clerk_user_id
 
     def send_json(self, payload: dict, status: int = 200) -> None:
         body = json.dumps(payload).encode("utf-8")
