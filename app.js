@@ -9,6 +9,17 @@ const Aether = {
     thinking: false,
     listening: false,
     warningPopup: null,
+    shortMessagePopup: false,
+    rateLimitPopup: false,
+    ban: null,
+    rateLimit: {
+      limit: 15,
+      used: 0,
+      remaining: 15,
+      percentUsed: 0,
+      resetInSeconds: 0,
+      unlimited: false,
+    },
     reportPopup: null,
     reportNotice: "",
     isAdmin: false,
@@ -204,12 +215,16 @@ function render() {
         <div class="chat-list">
           ${Aether.state.chats.map(chatListItem).join("")}
         </div>
+        ${renderRateLimitMeter()}
       </aside>
 
       ${Aether.state.adminView ? renderAdminPage() : renderChatPage(chat)}
       ${renderWarningPopup()}
+      ${renderShortMessagePopup()}
+      ${renderRateLimitPopup()}
       ${renderReportPopup()}
       ${renderAccountModal()}
+      ${renderBanOverlay()}
     </div>
   `;
 
@@ -246,6 +261,30 @@ function chatListItem(chat) {
     <div class="chat-item-row ${active}">
       <button class="chat-item" data-chat-id="${chat.id}">${escapeHtml(chat.title)}</button>
       <button class="delete-chat" data-delete-chat="${chat.id}" aria-label="Delete ${escapeHtml(chat.title)}">X</button>
+    </div>
+  `;
+}
+
+function renderRateLimitMeter() {
+  const rate = Aether.state.rateLimit || {};
+  if (rate.unlimited) {
+    return `
+      <div class="rate-card unlimited">
+        <div class="rate-percent">∞</div>
+        <div class="rate-track"><span style="width: 100%"></span></div>
+        <div class="rate-label">Unlimited admin messages</div>
+      </div>
+    `;
+  }
+
+  const percent = Math.max(0, Math.min(100, Number(rate.percentUsed || 0)));
+  const remaining = Number(rate.remaining ?? rate.limit ?? 0);
+  const limit = Number(rate.limit || 0);
+  return `
+    <div class="rate-card">
+      <div class="rate-percent">${percent}%</div>
+      <div class="rate-track"><span style="width: ${percent}%"></span></div>
+      <div class="rate-label">${remaining}/${limit} left · resets in ${Number(rate.resetInSeconds || 0)}s</div>
     </div>
   `;
 }
@@ -298,6 +337,44 @@ function renderWarningPopup() {
           reaching 6 will permanently ban you from Aether AI.
         </p>
         <button class="warning-understand" data-action="close-warning">I understand</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderShortMessagePopup() {
+  if (!Aether.state.shortMessagePopup) return "";
+  return `
+    <div class="warning-overlay compact" role="dialog" aria-modal="true">
+      <div class="warning-modal compact-modal">
+        <h2>Message too short</h2>
+        <p>Your message must have at least 2 letters.</p>
+        <button class="warning-understand" data-action="close-short-message">I understand</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderRateLimitPopup() {
+  if (!Aether.state.rateLimitPopup) return "";
+  const rate = Aether.state.rateLimit || {};
+  return `
+    <div class="warning-overlay compact" role="dialog" aria-modal="true">
+      <div class="warning-modal compact-modal">
+        <h2>Rate limit reached</h2>
+        <p>Wait ${Number(rate.resetInSeconds || 0)} seconds, or sign in for 30 messages per minute.</p>
+        <button class="warning-understand" data-action="close-rate-limit">I understand</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderBanOverlay() {
+  if (!Aether.state.ban?.banned) return "";
+  return `
+    <div class="ban-overlay" role="dialog" aria-modal="true">
+      <div class="ban-modal">
+        <h2>You are permanently banned from Aether AI for breaking the TOS.</h2>
       </div>
     </div>
   `;
@@ -405,6 +482,7 @@ function renderAdminPage() {
         <div class="admin-header-actions">
           <button class="secondary-button" data-action="refresh-admin">Refresh</button>
           <button class="danger-button" data-action="clear-ignored">Clear ignored</button>
+          <button class="secondary-button" data-action="reset-rate-limits">Reset limits</button>
         </div>
       </header>
       ${Aether.state.adminLoading ? `<div class="admin-empty">Loading reports...</div>` : ""}
@@ -691,6 +769,14 @@ function bindEvents(root) {
     Aether.state.warningPopup = null;
     render();
   });
+  root.querySelector("[data-action='close-short-message']")?.addEventListener("click", () => {
+    Aether.state.shortMessagePopup = false;
+    render();
+  });
+  root.querySelector("[data-action='close-rate-limit']")?.addEventListener("click", () => {
+    Aether.state.rateLimitPopup = false;
+    render();
+  });
   root.querySelectorAll("[data-report-message]").forEach((button) => {
     button.addEventListener("click", () => openReportPopup(button.dataset.reportMessage));
   });
@@ -705,6 +791,7 @@ function bindEvents(root) {
   syncReportDetails(root.querySelector("[data-action='submit-report']"));
   root.querySelector("[data-action='refresh-admin']")?.addEventListener("click", loadAdminData);
   root.querySelector("[data-action='clear-ignored']")?.addEventListener("click", () => clearReports("ignored"));
+  root.querySelector("[data-action='reset-rate-limits']")?.addEventListener("click", resetRateLimits);
   root.querySelector("[data-action='admin-search']")?.addEventListener("input", (event) => {
     Aether.state.adminSearch = event.currentTarget.value;
     render();
@@ -781,6 +868,16 @@ async function sendMessage(event) {
   const input = form.elements.message;
   const text = input.value.trim();
   if (!text) return;
+  if (!hasMinimumLetters(text)) {
+    Aether.state.shortMessagePopup = true;
+    render();
+    return;
+  }
+  if (isRateLimited()) {
+    Aether.state.rateLimitPopup = true;
+    render();
+    return;
+  }
   if (handleLocalProfanity(text)) {
     input.value = "";
     return;
@@ -792,6 +889,17 @@ async function sendMessage(event) {
 
 async function sendTextMessage(text) {
   if (Aether.state.thinking) return;
+  if (Aether.state.ban?.banned) return;
+  if (!hasMinimumLetters(text)) {
+    Aether.state.shortMessagePopup = true;
+    render();
+    return;
+  }
+  if (isRateLimited()) {
+    Aether.state.rateLimitPopup = true;
+    render();
+    return;
+  }
   if (handleLocalProfanity(text)) return;
 
   const chat = activeChat();
@@ -829,6 +937,16 @@ async function getAssistantReply(text) {
         body: JSON.stringify({ message: text, chat: activeChat().messages, location }),
       });
       const data = await response.json();
+      applyServerStatus(data);
+      if (data.ban) {
+        Aether.state.ban = data.ban;
+        return "";
+      }
+      if (data.rateLimited) {
+        Aether.state.rateLimitPopup = true;
+        render();
+        return "";
+      }
       if (data.warning) {
         showProfanityWarning(data.warning.warnings, data.warning.banned);
         return "";
@@ -1628,7 +1746,6 @@ function injectStyles() {
       opacity: 1;
       transform: translateY(0);
       transition: opacity 520ms ease, filter 520ms ease;
-      animation: messageIn 260ms ease-out both;
     }
     .message-row.user { justify-content: flex-end; }
     .message-row.assistant { justify-content: flex-start; }
@@ -1642,7 +1759,6 @@ function injectStyles() {
       border-radius: 20px;
       padding: 13px 17px;
       box-shadow: 0 18px 50px rgba(0, 0, 0, 0.24);
-      animation: bubbleIn 260ms ease-out both;
     }
     .message-stack {
       display: flex;
@@ -1708,7 +1824,7 @@ function injectStyles() {
         transform: translateY(-2px);
       }
     }
-    .bubble, .thinking {
+    .thinking {
       transition: opacity 520ms ease, transform 520ms ease;
     }
     .bubble::selection {
@@ -1743,7 +1859,6 @@ function injectStyles() {
       border-radius: 20px;
       padding: 11px 17px;
       font-weight: 700;
-      animation: bubbleIn 260ms ease-out both;
     }
     .thinking i {
       width: 7px;
@@ -1757,26 +1872,6 @@ function injectStyles() {
     @keyframes dotJump {
       0%, 100% { transform: translateY(0); opacity: 0.68; }
       45% { transform: translateY(-7px); opacity: 1; }
-    }
-    @keyframes messageIn {
-      from {
-        opacity: 0;
-        transform: translateY(8px);
-      }
-      to {
-        opacity: 1;
-        transform: translateY(0);
-      }
-    }
-    @keyframes bubbleIn {
-      from {
-        opacity: 0;
-        transform: scale(0.985);
-      }
-      to {
-        opacity: 1;
-        transform: scale(1);
-      }
     }
     .composer {
       display: grid;

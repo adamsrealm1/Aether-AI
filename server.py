@@ -9,7 +9,7 @@ import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from uuid import uuid4
@@ -22,6 +22,10 @@ REPORTS_STORE_PATH = ROOT / "reports.json"
 ACCOUNTS_STORE_PATH = ROOT / "accounts.js"
 ADMIN_MAC_ADDRESS = "10:FF:E0:3F:09:F5"
 PROFANITY_LIMIT = 6
+GUEST_RATE_LIMIT = 15
+ACCOUNT_RATE_LIMIT = 30
+RATE_LIMIT_WINDOW_SECONDS = 60
+RATE_LIMITS: dict[str, dict] = {}
 PROFANITY_PATTERNS = [
     re.compile(pattern, re.I)
     for pattern in [
@@ -250,12 +254,9 @@ def contains_profanity(message: str) -> bool:
 
 def profanity_status_for_ip(ip_address: str, message: str) -> dict | None:
     store = load_profanity_store()
-    if ip_address in store["bannedUsers"]:
-        banned = store["bannedUsers"][ip_address]
-        return {"warnings": int(banned.get("warnings", PROFANITY_LIMIT)), "banned": True}
-    mac_address = mac_for_ip(ip_address)
-    if mac_address and mac_address in store["bannedMacs"]:
-        return {"warnings": PROFANITY_LIMIT, "banned": True}
+    ban = ban_status_for_ip(ip_address)
+    if ban["banned"]:
+        return {"warnings": int(ban.get("warnings", PROFANITY_LIMIT)), "banned": True}
 
     if not contains_profanity(message):
         return None
@@ -271,6 +272,28 @@ def profanity_status_for_ip(ip_address: str, message: str) -> dict | None:
 
     save_profanity_store(store)
     return {"warnings": warnings, "banned": banned}
+
+
+def ban_status_for_ip(ip_address: str) -> dict:
+    store = load_profanity_store()
+    if ip_address in store["bannedUsers"]:
+        banned = store["bannedUsers"][ip_address]
+        return {
+            "banned": True,
+            "type": "ip",
+            "warnings": int(banned.get("warnings", PROFANITY_LIMIT)),
+            "reason": banned.get("reason", ""),
+        }
+    mac_address = mac_for_ip(ip_address)
+    if mac_address and mac_address in store["bannedMacs"]:
+        banned = store["bannedMacs"][mac_address]
+        return {
+            "banned": True,
+            "type": "mac",
+            "warnings": PROFANITY_LIMIT,
+            "reason": banned.get("reason", ""),
+        }
+    return {"banned": False}
 
 
 def ban_ip_address(ip_address: str, reason: str = "Admin ban") -> None:
@@ -414,6 +437,71 @@ def is_admin_request(ip_address: str, session_token: str = "") -> bool:
         or ip_address in store.get("adminIps", {})
         or bool(account and account.get("isAdmin"))
     )
+
+
+def rate_limit_key(ip_address: str, session_token: str = "") -> str:
+    username, account = account_for_session(session_token)
+    if account:
+        return f"account:{username}"
+    client_mac = mac_for_ip(ip_address)
+    if client_mac:
+        return f"mac:{client_mac}"
+    return f"ip:{ip_address}"
+
+
+def rate_limit_for_request(ip_address: str, session_token: str = "") -> int | None:
+    if is_admin_request(ip_address, session_token):
+        return None
+    _, account = account_for_session(session_token)
+    return ACCOUNT_RATE_LIMIT if account else GUEST_RATE_LIMIT
+
+
+def rate_limit_status(ip_address: str, session_token: str = "") -> dict:
+    limit = rate_limit_for_request(ip_address, session_token)
+    if limit is None:
+        return {
+            "limit": None,
+            "used": 0,
+            "remaining": None,
+            "percentUsed": 0,
+            "resetInSeconds": 0,
+            "unlimited": True,
+        }
+
+    now = datetime.now().astimezone()
+    key = rate_limit_key(ip_address, session_token)
+    bucket = RATE_LIMITS.get(key)
+    if not bucket or bucket["resetAt"] <= now:
+        bucket = {"count": 0, "resetAt": now + timedelta(seconds=RATE_LIMIT_WINDOW_SECONDS)}
+        RATE_LIMITS[key] = bucket
+
+    used = int(bucket["count"])
+    remaining = max(0, limit - used)
+    reset_in = max(0, int((bucket["resetAt"] - now).total_seconds()))
+    return {
+        "limit": limit,
+        "used": used,
+        "remaining": remaining,
+        "percentUsed": round((used / limit) * 100) if limit else 0,
+        "resetInSeconds": reset_in,
+        "unlimited": False,
+    }
+
+
+def consume_rate_limit(ip_address: str, session_token: str = "") -> dict:
+    status = rate_limit_status(ip_address, session_token)
+    if status["unlimited"]:
+        return {"allowed": True, "rateLimit": status}
+    if status["remaining"] <= 0:
+        return {"allowed": False, "rateLimit": status}
+
+    key = rate_limit_key(ip_address, session_token)
+    RATE_LIMITS[key]["count"] = int(RATE_LIMITS[key]["count"]) + 1
+    return {"allowed": True, "rateLimit": rate_limit_status(ip_address, session_token)}
+
+
+def reset_all_rate_limits() -> None:
+    RATE_LIMITS.clear()
 
 
 def submit_report(payload: dict, ip_address: str, session_token: str = "") -> dict:
@@ -661,12 +749,15 @@ class AetherHandler(SimpleHTTPRequestHandler):
         if self.path == "/api/admin/status":
             username, account = account_for_session(self.session_token())
             is_admin = is_admin_request(self.client_address[0], self.session_token())
+            ban = ban_status_for_ip(self.client_address[0])
             self.send_json(
                 {
                     "isAdmin": is_admin,
                     "clientIp": self.client_address[0],
                     "clientMac": mac_for_ip(self.client_address[0]) if is_admin else "",
                     "account": public_account(username, account) if account else None,
+                    "ban": ban,
+                    "rateLimit": rate_limit_status(self.client_address[0], self.session_token()),
                 }
             )
             return
@@ -871,6 +962,14 @@ class AetherHandler(SimpleHTTPRequestHandler):
             self.send_json({"ok": True, "deleted": clear_reports(status)})
             return
 
+        if self.path == "/api/admin/reset-rate-limits":
+            if not is_admin_request(self.client_address[0], self.session_token()):
+                self.send_json({"error": "Admin access required."}, status=403)
+                return
+            reset_all_rate_limits()
+            self.send_json({"ok": True})
+            return
+
         if self.path != "/api/chat":
             self.send_json({"error": "Not found"}, status=404)
             return
@@ -883,22 +982,41 @@ class AetherHandler(SimpleHTTPRequestHandler):
             if not message:
                 self.send_json({"reply": "Send a message first."})
                 return
+            ban = ban_status_for_ip(self.client_address[0])
+            if ban["banned"]:
+                self.send_json(
+                    {
+                        "reply": "You are permanently banned from Aether AI for breaking the TOS.",
+                        "ban": ban,
+                    }
+                )
+                return
             warning = profanity_status_for_ip(self.client_address[0], message)
             if warning:
                 reply = (
-                    "You are banned from Aether AI for repeated profanity."
+                    "You are permanently banned from Aether AI for breaking the TOS."
                     if warning["banned"]
                     else "Profanity warning."
                 )
                 self.send_json({"reply": reply, "warning": warning})
                 return
+            rate = consume_rate_limit(self.client_address[0], self.session_token())
+            if not rate["allowed"]:
+                self.send_json(
+                    {
+                        "reply": "Rate limit reached. Wait for the next minute or sign in for a higher limit.",
+                        "rateLimited": True,
+                        "rateLimit": rate["rateLimit"],
+                    }
+                )
+                return
             if location and looks_like_weather_request(message):
                 latitude, longitude = coordinates_from_location(location)
                 reply = weather_reply(latitude, longitude)
-                self.send_json({"reply": reply})
+                self.send_json({"reply": reply, "rateLimit": rate["rateLimit"]})
                 return
             reply = groq_reply(message, chat)
-            self.send_json({"reply": reply})
+            self.send_json({"reply": reply, "rateLimit": rate["rateLimit"]})
         except APIStatusError as exc:
             self.send_json({"reply": groq_error_message(exc)}, status=200)
         except (APIConnectionError, APITimeoutError):
