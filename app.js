@@ -105,7 +105,10 @@ const storage = {
 };
 
 function defaultApiEndpoint() {
-  if (location.protocol === "file:" || location.hostname.endsWith("github.io")) {
+  if (canUseRelativeApi()) {
+    return "/api/chat";
+  }
+  if (isStaticLaunch()) {
     return "http://127.0.0.1:8765/api/chat";
   }
   return "/api/chat";
@@ -113,8 +116,16 @@ function defaultApiEndpoint() {
 
 function isValidApiEndpoint(value) {
   if (!value || value.startsWith("github_pat_")) return false;
-  if (value.startsWith("/")) return true;
+  if (value.startsWith("/")) return canUseRelativeApi();
   return /^https?:\/\/[^/]+\/api\/chat\/?$/i.test(value);
+}
+
+function canUseRelativeApi() {
+  return location.protocol === "http:" && ["127.0.0.1", "localhost", "::1"].includes(location.hostname);
+}
+
+function isStaticLaunch() {
+  return location.protocol === "file:" || location.hostname.endsWith("github.io");
 }
 
 function readJson(key, fallback) {
@@ -483,16 +494,17 @@ function renderAccountModal() {
 
 function renderBackendModal() {
   if (!Aether.state.backendModal) return "";
+  const help = backendHelpText();
   return `
     <div class="account-overlay" role="dialog" aria-modal="true" aria-labelledby="backend-title">
       <form class="account-modal" data-action="save-backend">
         <button class="modal-close" type="button" data-action="close-backend" aria-label="Close">X</button>
         <h2 id="backend-title">Backend</h2>
-        <p class="account-subtitle">On a phone, use your computer's Wi-Fi IP address.</p>
+        <p class="account-subtitle">${escapeHtml(help)}</p>
         ${Aether.state.backendError ? `<p class="account-error">${escapeHtml(Aether.state.backendError)}</p>` : ""}
         <div class="account-form">
           <input name="apiEndpoint" value="${escapeHtml(Aether.config.apiEndpoint)}" placeholder="http://192.168.1.20:8765/api/chat" autocomplete="off">
-          <p class="backend-hint">Example: http://192.168.1.20:8765/api/chat</p>
+          <p class="backend-hint">${escapeHtml(backendExampleText())}</p>
           <button class="primary-button" type="submit">Save backend</button>
         </div>
       </form>
@@ -995,7 +1007,7 @@ async function getAssistantReply(text) {
       }
       if (data.reply) return data.reply;
     } catch (error) {
-      return `I could not reach ${Aether.config.apiEndpoint} from ${location.href}. On a phone, start server.py on your computer and set Backend to http://YOUR-COMPUTER-IP:8765/api/chat. If the browser blocks that, open http://YOUR-COMPUTER-IP:8765/ on the phone instead.`;
+      return `I could not reach ${Aether.config.apiEndpoint} from ${location.href}. ${backendLaunchMessage()}`;
     }
   }
 
@@ -1160,7 +1172,9 @@ async function saveBackendEndpoint(event) {
   event.preventDefault();
   const value = event.currentTarget.elements.apiEndpoint.value.trim().replace(/\/+$/, "");
   if (!isValidApiEndpoint(value)) {
-    Aether.state.backendError = "Use a full API URL like http://192.168.1.20:8765/api/chat.";
+    Aether.state.backendError = canUseRelativeApi()
+      ? "Use /api/chat here, or a full URL like http://127.0.0.1:8765/api/chat."
+      : "Use a full API URL like http://127.0.0.1:8765/api/chat or http://192.168.1.134:8765/api/chat.";
     render();
     return;
   }
@@ -1371,7 +1385,7 @@ async function postJson(path, payload) {
 }
 
 function backendUnavailableMessage() {
-  return `Could not reach ${apiUrl("/api/account/login")}. Start server.py, then set Backend to your computer's Wi-Fi IP if you are on a phone.`;
+  return `Could not reach ${apiUrl("/api/account/login")}. ${backendLaunchMessage()}`;
 }
 
 function authHeaders() {
@@ -1390,6 +1404,40 @@ function apiUrl(path) {
     return new URL(path, Aether.config.apiEndpoint).toString();
   }
   return path;
+}
+
+function backendHelpText() {
+  if (canUseRelativeApi()) {
+    return "This local server page should use /api/chat automatically.";
+  }
+  if (location.protocol === "file:") {
+    return "This file page should use your local server at 127.0.0.1.";
+  }
+  if (location.protocol === "https:" && location.hostname.endsWith("github.io")) {
+    return "GitHub Pages is HTTPS. Desktop can use 127.0.0.1, but phones should open the local server page directly unless you have an HTTPS backend.";
+  }
+  return "Use the full API URL for the computer running server.py.";
+}
+
+function backendExampleText() {
+  if (canUseRelativeApi()) return "Recommended here: /api/chat";
+  if (location.protocol === "file:" || location.hostname.endsWith("github.io")) {
+    return "Desktop example: http://127.0.0.1:8765/api/chat. Phone local page: http://192.168.1.134:8765/";
+  }
+  return "Example: http://192.168.1.134:8765/api/chat";
+}
+
+function backendLaunchMessage() {
+  if (canUseRelativeApi()) {
+    return "Start server.py and open http://127.0.0.1:8765/.";
+  }
+  if (location.protocol === "file:") {
+    return "Start server.py. This file page uses http://127.0.0.1:8765/api/chat on this computer.";
+  }
+  if (location.protocol === "https:" && location.hostname.endsWith("github.io")) {
+    return "GitHub Pages cannot reliably call a plain HTTP LAN backend from a phone. Open http://YOUR-COMPUTER-IP:8765/ on the phone, or use an HTTPS tunnel/backend.";
+  }
+  return "Start server.py, then set Backend to the computer's API URL.";
 }
 
 async function locationForWeatherRequest(text) {
