@@ -1143,10 +1143,7 @@ def main() -> None:
     port = int(os.getenv("AETHER_PORT", "8765"))
     host = os.getenv("AETHER_HOST", "0.0.0.0").strip() or "0.0.0.0"
     server = ThreadingHTTPServer((host, port), AetherHandler)
-    print(f"Aether AI listening on {host}:{port}")
-    print(f"Open locally: http://127.0.0.1:{port}/")
-    for ip in local_network_ips():
-        print(f"Open from phone on same Wi-Fi: http://{ip}:{port}/")
+    print(f"Server active.")
     server.serve_forever()
 
 
