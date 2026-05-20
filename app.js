@@ -6,6 +6,7 @@ const Aether = {
   state: {
     chats: [],
     activeChatId: null,
+    composerDraft: "",
     thinking: false,
     listening: false,
     warningPopup: null,
@@ -273,7 +274,7 @@ function renderChatPage(chat) {
         ${Aether.state.thinking ? renderThinking() : ""}
       </div>
       <form class="composer" data-action="send-message">
-        <input name="message" autocomplete="off" placeholder="Send a message here.">
+        <input name="message" autocomplete="off" placeholder="Send a message here." value="${escapeHtml(Aether.state.composerDraft)}">
         <button class="mic-button ${Aether.state.listening ? "listening" : ""}" type="button" data-action="toggle-mic" aria-label="Use microphone">🎤︎︎</button>
         <button type="submit">Send</button>
       </form>
@@ -301,7 +302,7 @@ function renderRateLimitMeter() {
   return `
     <div class="rate-card" style="--rate-color: ${rateColor(displayPercent)}">
       <div class="rate-percent">${displayPercent}%</div>
-      <div class="rate-track"><span style="width: ${displayPercent}%"></span></div>
+      <div class="rate-track"><span class="rate-fill" style="width: ${displayPercent}%"></span></div>
       <div class="rate-label">${remaining}/${limit} left · resets in ${resetInSeconds}s</div>
     </div>
   `;
@@ -770,6 +771,9 @@ function bindEvents(root) {
   });
 
   root.querySelector("[data-action='send-message']")?.addEventListener("submit", sendMessage);
+  root.querySelector(".composer input[name='message']")?.addEventListener("input", (event) => {
+    Aether.state.composerDraft = event.currentTarget.value;
+  });
   root.querySelector("[data-action='toggle-mic']")?.addEventListener("click", toggleMic);
   root.querySelector("[data-action='close-warning']")?.addEventListener("click", () => {
     Aether.state.warningPopup = null;
@@ -869,6 +873,7 @@ async function sendMessage(event) {
   const form = event.currentTarget;
   const input = form.elements.message;
   const text = input.value.trim();
+  Aether.state.composerDraft = input.value;
   if (!text) return;
   if (!hasMinimumLetters(text)) {
     Aether.state.shortMessagePopup = true;
@@ -886,6 +891,7 @@ async function sendMessage(event) {
   }
 
   input.value = "";
+  Aether.state.composerDraft = "";
   await sendTextMessage(text);
 }
 
@@ -1021,6 +1027,7 @@ function updateRateLimit(rateLimit) {
     ...rateLimit,
   };
   animateRateMeterTo(ratePercent(Aether.state.rateLimit));
+  updateRateMeterDom();
 }
 
 function startRateLimitCountdown() {
@@ -1032,14 +1039,14 @@ function startRateLimitCountdown() {
     if (!Number.isFinite(current)) return;
     if (current <= 0) {
       resetExpiredRateLimitWindow();
-      render();
+      updateRateMeterDom();
       return;
     }
     rate.resetInSeconds = Math.max(0, current - 1);
     if (rate.resetInSeconds === 0) {
       resetExpiredRateLimitWindow();
     }
-    render();
+    updateRateMeterDom();
   }, 1000);
 }
 
@@ -1071,8 +1078,25 @@ function animateRateMeterTo(targetPercent) {
       return;
     }
     Aether.state.rateMeter.displayPercent = current + (targetPercent > current ? 1 : -1);
-    render();
+    updateRateMeterDom();
   }, 24);
+}
+
+function updateRateMeterDom() {
+  const card = document.querySelector(".rate-card");
+  if (!card) return;
+  const rate = Aether.state.rateLimit || {};
+  const limit = Math.max(1, Number(rate.limit || 10));
+  const remaining = Math.max(0, Math.min(limit, Number(rate.remaining ?? limit)));
+  const displayPercent = clampPercent(Aether.state.rateMeter?.displayPercent ?? ratePercent(rate));
+  const resetInSeconds = Math.max(0, Number(rate.resetInSeconds || 0));
+  card.style.setProperty("--rate-color", rateColor(displayPercent));
+  const percentElement = card.querySelector(".rate-percent");
+  if (percentElement) percentElement.textContent = `${displayPercent}%`;
+  const fillElement = card.querySelector(".rate-fill");
+  if (fillElement) fillElement.style.width = `${displayPercent}%`;
+  const labelElement = card.querySelector(".rate-label");
+  if (labelElement) labelElement.textContent = `${remaining}/${limit} left · resets in ${resetInSeconds}s`;
 }
 
 function ratePercent(rate) {
