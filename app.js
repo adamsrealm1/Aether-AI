@@ -526,7 +526,7 @@ function renderAdminPage() {
           </form>
           <form class="manual-form" data-action="grant-admin-mac">
             <label>Give admin by MAC</label>
-            <input name="value" placeholder="10:FF:E0:3F:09:F5" autocomplete="off">
+            <input name="value" placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off">
             <input name="note" placeholder="Note" autocomplete="off">
             <button class="primary-button" type="submit">Give admin</button>
           </form>
@@ -549,7 +549,7 @@ function renderAdminPage() {
           </form>
           <form class="manual-form" data-action="manual-ban-mac">
             <label>Ban MAC</label>
-            <input name="mac" placeholder="10:FF:E0:3F:09:F5" autocomplete="off">
+            <input name="mac" placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off">
             <input name="reason" placeholder="Reason" autocomplete="off">
             <button class="danger-button" type="submit">Ban MAC</button>
           </form>
@@ -619,7 +619,7 @@ function renderAdminPage() {
                     <div class="ban-row">
                       <strong>${escapeHtml(mac)}</strong>
                       <span>${escapeHtml(info.note || "Admin")}</span>
-                      <button class="secondary-button" data-revoke-admin-mac="${escapeHtml(mac)}" ${info.primary ? "disabled" : ""}>${info.primary ? "Primary" : "Revoke"}</button>
+                      <button class="secondary-button" data-revoke-admin-mac="${escapeHtml(mac)}">Revoke</button>
                     </div>
                   `,
                 )

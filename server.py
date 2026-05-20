@@ -21,11 +21,11 @@ ROOT = Path(__file__).resolve().parent
 PROFANITY_STORE_PATH = ROOT / "profanity.js"
 REPORTS_STORE_PATH = ROOT / "reports.json"
 ACCOUNTS_STORE_PATH = ROOT / "accounts.js"
-ADMIN_MAC_ADDRESS = "10:FF:E0:3F:09:F5"
 PROFANITY_LIMIT = 6
 GUEST_RATE_LIMIT = 15
 ACCOUNT_RATE_LIMIT = 30
 RATE_LIMIT_WINDOW_SECONDS = 60
+LEGACY_ADMIN_MACS = {"10:FF:E0:3F:09:F5"}
 RATE_LIMITS: dict[str, dict] = {}
 PROFANITY_PATTERNS = [
     re.compile(pattern, re.I)
@@ -72,6 +72,7 @@ def default_profanity_store() -> dict:
 
 
 def load_profanity_store() -> dict:
+    changed = False
     if not PROFANITY_STORE_PATH.exists():
         store = default_profanity_store()
         save_profanity_store(store)
@@ -90,6 +91,11 @@ def load_profanity_store() -> dict:
     store.setdefault("bannedMacs", {})
     store.setdefault("adminMacs", {})
     store.setdefault("adminIps", {})
+    for legacy_mac in LEGACY_ADMIN_MACS:
+        if store["adminMacs"].pop(normalize_mac(legacy_mac), None) is not None:
+            changed = True
+    if changed:
+        save_profanity_store(store)
     return store
 
 
@@ -312,8 +318,6 @@ def ban_mac_address(mac_address: str, reason: str = "Admin MAC ban") -> str:
     normalized_mac = normalize_mac(mac_address)
     if not normalized_mac:
         raise ValueError("Missing MAC address.")
-    if normalized_mac == normalize_mac(ADMIN_MAC_ADDRESS):
-        raise ValueError("Cannot ban the configured admin MAC address.")
     store = load_profanity_store()
     store["bannedMacs"][normalized_mac] = {
         "bannedAt": datetime.now().astimezone().isoformat(),
@@ -373,8 +377,6 @@ def grant_admin_ip(ip_address: str, note: str = "Granted by admin") -> str:
 
 def revoke_admin_mac(mac_address: str) -> str:
     normalized_mac = normalize_mac(mac_address)
-    if normalized_mac == normalize_mac(ADMIN_MAC_ADDRESS):
-        raise ValueError("Cannot revoke the primary admin MAC address.")
     store = load_profanity_store()
     store["adminMacs"].pop(normalized_mac, None)
     save_profanity_store(store)
@@ -421,9 +423,6 @@ def local_network_ips() -> list[str]:
 
 
 def mac_for_ip(ip_address: str) -> str:
-    if ip_address in {"127.0.0.1", "::1"}:
-        return normalize_mac(ADMIN_MAC_ADDRESS)
-
     try:
         result = subprocess.run(
             ["arp", "-a", ip_address],
@@ -443,8 +442,7 @@ def is_admin_request(ip_address: str, session_token: str = "") -> bool:
     client_mac = mac_for_ip(ip_address)
     _, account = account_for_session(session_token)
     return (
-        client_mac == normalize_mac(ADMIN_MAC_ADDRESS)
-        or client_mac in store.get("adminMacs", {})
+        client_mac in store.get("adminMacs", {})
         or ip_address in store.get("adminIps", {})
         or bool(account and account.get("isAdmin"))
     )
@@ -545,6 +543,12 @@ def admin_payload(ip_address: str) -> dict:
     open_reports = [report for report in reports if report.get("status") == "open"]
     unique_reporters = sorted({report.get("reporterIp", "") for report in reports if report.get("reporterIp")})
     recent_macs = sorted({report.get("reporterMac", "") for report in reports if report.get("reporterMac")})
+    legacy_macs = {normalize_mac(mac) for mac in LEGACY_ADMIN_MACS}
+    admin_macs = {
+        normalize_mac(mac): info
+        for mac, info in profanity.get("adminMacs", {}).items()
+        if normalize_mac(mac) not in legacy_macs
+    }
     return {
         "reports": reports,
         "bannedUsers": profanity.get("bannedUsers", {}),
@@ -554,14 +558,7 @@ def admin_payload(ip_address: str) -> dict:
             public_account(username, account)
             for username, account in sorted(accounts.get("users", {}).items())
         ],
-        "adminMacs": {
-            normalize_mac(ADMIN_MAC_ADDRESS): {
-                "grantedAt": "primary",
-                "note": "Primary admin",
-                "primary": True,
-            },
-            **profanity.get("adminMacs", {}),
-        },
+        "adminMacs": admin_macs,
         "adminIps": profanity.get("adminIps", {}),
         "stats": {
             "totalReports": len(reports),
@@ -571,7 +568,7 @@ def admin_payload(ip_address: str) -> dict:
             "bannedMacs": len(profanity.get("bannedMacs", {})),
             "warnedUsers": len(profanity.get("warnedUsers", {})),
             "uniqueReporters": len(unique_reporters),
-            "adminMacs": len(profanity.get("adminMacs", {})) + 1,
+            "adminMacs": len(admin_macs),
             "adminIps": len(profanity.get("adminIps", {})),
             "accounts": len(accounts.get("users", {})),
             "adminAccounts": len([account for account in accounts.get("users", {}).values() if account.get("isAdmin")]),
