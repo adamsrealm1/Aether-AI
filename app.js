@@ -32,8 +32,6 @@ const Aether = {
     accountSession: "",
     accountModal: null,
     accountError: "",
-    backendModal: false,
-    backendError: "",
   },
 };
 
@@ -65,12 +63,10 @@ const storage = {
   load() {
     const savedConfig = readJson("aether.config", {});
     for (const key of Object.keys(savedConfig)) {
+      if (key === "apiEndpoint") continue;
       Aether.config[key] = savedConfig[key];
     }
-    if (!isValidApiEndpoint(Aether.config.apiEndpoint)) {
-      Aether.config.apiEndpoint = defaultApiEndpoint();
-      storage.save();
-    }
+    Aether.config.apiEndpoint = defaultApiEndpoint();
     Aether.state.chats = readJson("aether.chats", []);
     Aether.state.activeChatId = localStorage.getItem("aether.activeChatId");
     Aether.state.accountSession = localStorage.getItem("aether.accountSession") || "";
@@ -114,18 +110,17 @@ function defaultApiEndpoint() {
   return "/api/chat";
 }
 
-function isValidApiEndpoint(value) {
-  if (!value || value.startsWith("github_pat_")) return false;
-  if (value.startsWith("/")) return canUseRelativeApi();
-  return /^https?:\/\/[^/]+\/api\/chat\/?$/i.test(value);
-}
-
 function canUseRelativeApi() {
   return location.protocol === "http:" && ["127.0.0.1", "localhost", "::1"].includes(location.hostname);
 }
 
 function isStaticLaunch() {
   return location.protocol === "file:" || location.hostname.endsWith("github.io");
+}
+
+function shouldShowBlankForPhoneSite() {
+  const isPhone = /Android|iPhone|iPod|Mobile/i.test(navigator.userAgent) || Math.min(screen.width, screen.height) < 760;
+  return isPhone && location.protocol === "https:" && location.hostname.endsWith("github.io");
 }
 
 function readJson(key, fallback) {
@@ -156,6 +151,12 @@ function activeChat() {
 }
 
 function bootstrap() {
+  if (shouldShowBlankForPhoneSite()) {
+    document.documentElement.style.background = "#fff";
+    document.body.style.background = "#fff";
+    document.body.innerHTML = "";
+    return;
+  }
   injectStyles();
   storage.load();
   bindGlobalEvents();
@@ -192,14 +193,6 @@ function bindGlobalEvents() {
       event.preventDefault();
       logoutAccount();
     }
-    if (action === "open-backend") {
-      event.preventDefault();
-      openBackendModal();
-    }
-    if (action === "close-backend") {
-      event.preventDefault();
-      closeBackendModal();
-    }
   });
 }
 
@@ -212,18 +205,6 @@ function openAccountModal() {
 function closeAccountModal() {
   Aether.state.accountModal = null;
   Aether.state.accountError = "";
-  render();
-}
-
-function openBackendModal() {
-  Aether.state.backendModal = true;
-  Aether.state.backendError = "";
-  render();
-}
-
-function closeBackendModal() {
-  Aether.state.backendModal = false;
-  Aether.state.backendError = "";
   render();
 }
 
@@ -242,7 +223,6 @@ function render() {
         <button class="account-tab" data-action="open-account">
           ${Aether.state.account ? escapeHtml(Aether.state.account.displayName || Aether.state.account.username) : "Sign in"}
         </button>
-        <button class="backend-tab" data-action="open-backend">Backend</button>
         ${Aether.state.isAdmin ? `<button class="admin-tab ${Aether.state.adminView ? "active" : ""}" data-action="admin-view" aria-label="Admin dashboard">Admin</button>` : ""}
         <div class="chat-list">
           ${Aether.state.chats.map(chatListItem).join("")}
@@ -256,7 +236,6 @@ function render() {
       ${renderRateLimitPopup()}
       ${renderReportPopup()}
       ${renderAccountModal()}
-      ${renderBackendModal()}
       ${renderBanOverlay()}
     </div>
   `;
@@ -488,26 +467,6 @@ function renderAccountModal() {
             `
         }
       </div>
-    </div>
-  `;
-}
-
-function renderBackendModal() {
-  if (!Aether.state.backendModal) return "";
-  const help = backendHelpText();
-  return `
-    <div class="account-overlay" role="dialog" aria-modal="true" aria-labelledby="backend-title">
-      <form class="account-modal" data-action="save-backend">
-        <button class="modal-close" type="button" data-action="close-backend" aria-label="Close">X</button>
-        <h2 id="backend-title">Backend</h2>
-        <p class="account-subtitle">${escapeHtml(help)}</p>
-        ${Aether.state.backendError ? `<p class="account-error">${escapeHtml(Aether.state.backendError)}</p>` : ""}
-        <div class="account-form">
-          <input name="apiEndpoint" value="${escapeHtml(Aether.config.apiEndpoint)}" placeholder="http://192.168.1.20:8765/api/chat" autocomplete="off">
-          <p class="backend-hint">${escapeHtml(backendExampleText())}</p>
-          <button class="primary-button" type="submit">Save backend</button>
-        </div>
-      </form>
     </div>
   `;
 }
@@ -784,7 +743,6 @@ function bindEvents(root) {
   });
   root.querySelector("[data-action='login-account']")?.addEventListener("submit", loginAccount);
   root.querySelector("[data-action='register-account']")?.addEventListener("submit", registerAccount);
-  root.querySelector("[data-action='save-backend']")?.addEventListener("submit", saveBackendEndpoint);
 
   root.querySelector("[data-action='admin-view']")?.addEventListener("click", () => {
     Aether.state.adminView = true;
@@ -1168,24 +1126,6 @@ async function logoutAccount() {
   render();
 }
 
-async function saveBackendEndpoint(event) {
-  event.preventDefault();
-  const value = event.currentTarget.elements.apiEndpoint.value.trim().replace(/\/+$/, "");
-  if (!isValidApiEndpoint(value)) {
-    Aether.state.backendError = canUseRelativeApi()
-      ? "Use /api/chat here, or a full URL like http://127.0.0.1:8765/api/chat."
-      : "Use a full API URL like http://127.0.0.1:8765/api/chat or http://192.168.1.134:8765/api/chat.";
-    render();
-    return;
-  }
-  Aether.config.apiEndpoint = value;
-  Aether.state.backendModal = false;
-  Aether.state.backendError = "";
-  storage.save();
-  await checkAdminStatus();
-  render();
-}
-
 function openReportPopup(messageId) {
   const chat = activeChat();
   const message = chat?.messages.find((item) => item.id === messageId);
@@ -1404,27 +1344,6 @@ function apiUrl(path) {
     return new URL(path, Aether.config.apiEndpoint).toString();
   }
   return path;
-}
-
-function backendHelpText() {
-  if (canUseRelativeApi()) {
-    return "This local server page should use /api/chat automatically.";
-  }
-  if (location.protocol === "file:") {
-    return "This file page should use your local server at 127.0.0.1.";
-  }
-  if (location.protocol === "https:" && location.hostname.endsWith("github.io")) {
-    return "GitHub Pages is HTTPS. Desktop can use 127.0.0.1, but phones should open the local server page directly unless you have an HTTPS backend.";
-  }
-  return "Use the full API URL for the computer running server.py.";
-}
-
-function backendExampleText() {
-  if (canUseRelativeApi()) return "Recommended here: /api/chat";
-  if (location.protocol === "file:" || location.hostname.endsWith("github.io")) {
-    return "Desktop example: http://127.0.0.1:8765/api/chat. Phone local page: http://192.168.1.134:8765/";
-  }
-  return "Example: http://192.168.1.134:8765/api/chat";
 }
 
 function backendLaunchMessage() {
@@ -1724,7 +1643,7 @@ function injectStyles() {
       backdrop-filter: blur(18px);
       min-width: 0;
     }
-    .brand, .new-chat, .account-tab, .backend-tab, .admin-tab, .chat-item, .delete-chat, .report-message, .composer button, .primary-button, .secondary-button, .danger-button, .modal-close, .link-button { border: 0; }
+    .brand, .new-chat, .account-tab, .admin-tab, .chat-item, .delete-chat, .report-message, .composer button, .primary-button, .secondary-button, .danger-button, .modal-close, .link-button { border: 0; }
     .brand {
       display: flex;
       align-items: center;
@@ -1753,7 +1672,7 @@ function injectStyles() {
       background: #dbeafe;
       font-weight: 740;
     }
-    .account-tab, .backend-tab {
+    .account-tab {
       display: block;
       width: 100%;
       min-height: 38px;
@@ -1767,12 +1686,7 @@ function injectStyles() {
       white-space: nowrap;
       padding: 0 12px;
     }
-    .backend-tab {
-      margin-top: -6px;
-      color: #bfdbfe;
-      background: rgba(14, 165, 233, 0.1);
-    }
-    .account-tab:hover, .account-tab:focus-visible, .backend-tab:hover, .backend-tab:focus-visible {
+    .account-tab:hover, .account-tab:focus-visible {
       color: #07111f;
       background: #dbeafe;
       outline: none;
@@ -2234,13 +2148,6 @@ function injectStyles() {
     .account-form input:focus {
       border-color: rgba(191, 219, 254, 0.72);
       box-shadow: 0 0 0 3px rgba(191, 219, 254, 0.12);
-    }
-    .backend-hint {
-      margin: -2px 0 2px;
-      color: #93c5fd;
-      font-size: 13px;
-      line-height: 1.35;
-      overflow-wrap: anywhere;
     }
     .account-error {
       margin: 0 0 12px;
