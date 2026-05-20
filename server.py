@@ -22,8 +22,9 @@ PROFANITY_STORE_PATH = ROOT / "profanity.js"
 REPORTS_STORE_PATH = ROOT / "reports.json"
 ACCOUNTS_STORE_PATH = ROOT / "accounts.js"
 PROFANITY_LIMIT = 6
-GUEST_RATE_LIMIT = 15
+GUEST_RATE_LIMIT = 10
 ACCOUNT_RATE_LIMIT = 30
+ADMIN_RATE_LIMIT = 60
 RATE_LIMIT_WINDOW_SECONDS = 60
 LEGACY_ADMIN_MACS = {"10:FF:E0:3F:09:F5"}
 RATE_LIMITS: dict[str, dict] = {}
@@ -458,25 +459,15 @@ def rate_limit_key(ip_address: str, session_token: str = "") -> str:
     return f"ip:{ip_address}"
 
 
-def rate_limit_for_request(ip_address: str, session_token: str = "") -> int | None:
+def rate_limit_for_request(ip_address: str, session_token: str = "") -> int:
     if is_admin_request(ip_address, session_token):
-        return None
+        return ADMIN_RATE_LIMIT
     _, account = account_for_session(session_token)
     return ACCOUNT_RATE_LIMIT if account else GUEST_RATE_LIMIT
 
 
 def rate_limit_status(ip_address: str, session_token: str = "") -> dict:
     limit = rate_limit_for_request(ip_address, session_token)
-    if limit is None:
-        return {
-            "limit": None,
-            "used": 0,
-            "remaining": None,
-            "percentUsed": 0,
-            "resetInSeconds": 0,
-            "unlimited": True,
-        }
-
     now = datetime.now().astimezone()
     key = rate_limit_key(ip_address, session_token)
     bucket = RATE_LIMITS.get(key)
@@ -493,14 +484,11 @@ def rate_limit_status(ip_address: str, session_token: str = "") -> dict:
         "remaining": remaining,
         "percentUsed": round((used / limit) * 100) if limit else 0,
         "resetInSeconds": reset_in,
-        "unlimited": False,
     }
 
 
 def consume_rate_limit(ip_address: str, session_token: str = "") -> dict:
     status = rate_limit_status(ip_address, session_token)
-    if status["unlimited"]:
-        return {"allowed": True, "rateLimit": status}
     if status["remaining"] <= 0:
         return {"allowed": False, "rateLimit": status}
 

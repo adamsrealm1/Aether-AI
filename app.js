@@ -13,12 +13,11 @@ const Aether = {
     rateLimitPopup: false,
     ban: null,
     rateLimit: {
-      limit: 15,
+      limit: 10,
       used: 0,
-      remaining: 15,
+      remaining: 10,
       percentUsed: 0,
-      resetInSeconds: 0,
-      unlimited: false,
+      resetInSeconds: 60,
     },
     reportPopup: null,
     reportNotice: "",
@@ -287,24 +286,15 @@ function chatListItem(chat) {
 
 function renderRateLimitMeter() {
   const rate = Aether.state.rateLimit || {};
-  if (rate.unlimited) {
-    return `
-      <div class="rate-card unlimited">
-        <div class="rate-percent">∞</div>
-        <div class="rate-track"><span style="width: 100%"></span></div>
-        <div class="rate-label">Unlimited admin messages</div>
-      </div>
-    `;
-  }
-
-  const percent = Math.max(0, Math.min(100, Number(rate.percentUsed || 0)));
-  const remaining = Number(rate.remaining ?? rate.limit ?? 0);
-  const limit = Number(rate.limit || 0);
+  const limit = Math.max(1, Number(rate.limit || 10));
+  const remaining = Math.max(0, Math.min(limit, Number(rate.remaining ?? limit)));
+  const percent = Math.round((remaining / limit) * 100);
+  const resetInSeconds = Math.max(0, Number(rate.resetInSeconds || 0));
   return `
     <div class="rate-card">
       <div class="rate-percent">${percent}%</div>
       <div class="rate-track"><span style="width: ${percent}%"></span></div>
-      <div class="rate-label">${remaining}/${limit} left · resets in ${Number(rate.resetInSeconds || 0)}s</div>
+      <div class="rate-label">${remaining}/${limit} left · resets in ${resetInSeconds}s</div>
     </div>
   `;
 }
@@ -382,7 +372,7 @@ function renderRateLimitPopup() {
     <div class="warning-overlay compact" role="dialog" aria-modal="true">
       <div class="warning-modal compact-modal">
         <h2>Rate limit reached</h2>
-        <p>Wait ${Number(rate.resetInSeconds || 0)} seconds, or sign in for 30 messages per minute.</p>
+        <p>Wait ${Number(rate.resetInSeconds || 0)} seconds. Guests get 10, signed-in users get 30, and admins get 60 messages every 60 seconds.</p>
         <button class="warning-understand" data-action="close-rate-limit">I understand</button>
       </div>
     </div>
@@ -1004,7 +994,7 @@ function hasMinimumLetters(text) {
 
 function isRateLimited() {
   const rate = Aether.state.rateLimit;
-  return Boolean(rate && !rate.unlimited && Number(rate.remaining) <= 0);
+  return Boolean(rate && Number(rate.remaining) <= 0);
 }
 
 function applyServerStatus(data) {
@@ -1722,9 +1712,6 @@ function injectStyles() {
       border-radius: inherit;
       background: #f8fbff;
       transition: width 240ms ease;
-    }
-    .rate-card.unlimited .rate-track span {
-      background: #bfdbfe;
     }
     .rate-label {
       color: #bfdbfe;
