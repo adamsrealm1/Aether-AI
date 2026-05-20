@@ -21,6 +21,10 @@ const Aether = {
     },
     reportPopup: null,
     reportNotice: "",
+    rateMeter: {
+      displayPercent: 100,
+      targetPercent: 100,
+    },
     isAdmin: false,
     adminView: false,
     adminData: null,
@@ -36,6 +40,8 @@ const Aether = {
 
 let speechRecognition = null;
 let messageVisibilityObserver = null;
+let rateMeterTimer = null;
+let rateLimitCountdownTimer = null;
 const thoughtTimerTimeouts = new Map();
 const PROFANITY_LIMIT = 6;
 const PROFANITY_PATTERNS = [
@@ -167,6 +173,7 @@ function bootstrap() {
   injectStyles();
   storage.load();
   bindGlobalEvents();
+  startRateLimitCountdown();
   render();
   checkAdminStatus();
 }
@@ -288,12 +295,13 @@ function renderRateLimitMeter() {
   const rate = Aether.state.rateLimit || {};
   const limit = Math.max(1, Number(rate.limit || 10));
   const remaining = Math.max(0, Math.min(limit, Number(rate.remaining ?? limit)));
-  const percent = Math.round((remaining / limit) * 100);
+  const targetPercent = Math.round((remaining / limit) * 100);
+  const displayPercent = clampPercent(Aether.state.rateMeter?.displayPercent ?? targetPercent);
   const resetInSeconds = Math.max(0, Number(rate.resetInSeconds || 0));
   return `
-    <div class="rate-card">
-      <div class="rate-percent">${percent}%</div>
-      <div class="rate-track"><span style="width: ${percent}%"></span></div>
+    <div class="rate-card" style="--rate-color: ${rateColor(displayPercent)}">
+      <div class="rate-percent">${displayPercent}%</div>
+      <div class="rate-track"><span style="width: ${displayPercent}%"></span></div>
       <div class="rate-label">${remaining}/${limit} left · resets in ${resetInSeconds}s</div>
     </div>
   `;
@@ -993,17 +1001,96 @@ function hasMinimumLetters(text) {
 }
 
 function isRateLimited() {
+  resetExpiredRateLimitWindow();
   const rate = Aether.state.rateLimit;
   return Boolean(rate && Number(rate.remaining) <= 0);
 }
 
 function applyServerStatus(data) {
   if (data.rateLimit) {
-    Aether.state.rateLimit = data.rateLimit;
+    updateRateLimit(data.rateLimit);
   }
   if (data.ban) {
     Aether.state.ban = data.ban;
   }
+}
+
+function updateRateLimit(rateLimit) {
+  Aether.state.rateLimit = {
+    ...Aether.state.rateLimit,
+    ...rateLimit,
+  };
+  animateRateMeterTo(ratePercent(Aether.state.rateLimit));
+}
+
+function startRateLimitCountdown() {
+  if (rateLimitCountdownTimer) clearInterval(rateLimitCountdownTimer);
+  rateLimitCountdownTimer = setInterval(() => {
+    const rate = Aether.state.rateLimit;
+    if (!rate) return;
+    const current = Number(rate.resetInSeconds);
+    if (!Number.isFinite(current)) return;
+    if (current <= 0) {
+      resetExpiredRateLimitWindow();
+      render();
+      return;
+    }
+    rate.resetInSeconds = Math.max(0, current - 1);
+    if (rate.resetInSeconds === 0) {
+      resetExpiredRateLimitWindow();
+    }
+    render();
+  }, 1000);
+}
+
+function resetExpiredRateLimitWindow() {
+  const rate = Aether.state.rateLimit;
+  if (!rate) return;
+  const limit = Number(rate.limit || 0);
+  if (!limit || Number(rate.resetInSeconds || 0) > 0) return;
+  rate.used = 0;
+  rate.remaining = limit;
+  rate.percentUsed = 0;
+  rate.resetInSeconds = 60;
+  animateRateMeterTo(100);
+}
+
+function animateRateMeterTo(targetPercent) {
+  targetPercent = clampPercent(targetPercent);
+  Aether.state.rateMeter.targetPercent = targetPercent;
+  if (!Number.isFinite(Number(Aether.state.rateMeter.displayPercent))) {
+    Aether.state.rateMeter.displayPercent = targetPercent;
+  }
+  if (rateMeterTimer) clearInterval(rateMeterTimer);
+
+  rateMeterTimer = setInterval(() => {
+    const current = clampPercent(Aether.state.rateMeter.displayPercent);
+    if (current === targetPercent) {
+      clearInterval(rateMeterTimer);
+      rateMeterTimer = null;
+      return;
+    }
+    Aether.state.rateMeter.displayPercent = current + (targetPercent > current ? 1 : -1);
+    render();
+  }, 24);
+}
+
+function ratePercent(rate) {
+  const limit = Math.max(1, Number(rate?.limit || 10));
+  const remaining = Math.max(0, Math.min(limit, Number(rate?.remaining ?? limit)));
+  return Math.round((remaining / limit) * 100);
+}
+
+function clampPercent(value) {
+  return Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
+}
+
+function rateColor(percent) {
+  const t = 1 - clampPercent(percent) / 100;
+  const white = [248, 251, 255];
+  const red = [239, 68, 68];
+  const mixed = white.map((channel, index) => Math.round(channel + (red[index] - channel) * t));
+  return `rgb(${mixed[0]}, ${mixed[1]}, ${mixed[2]})`;
 }
 
 async function checkAdminStatus() {
@@ -1682,6 +1769,7 @@ function injectStyles() {
       min-height: 0;
     }
     .rate-card {
+      --rate-color: #f8fbff;
       margin-top: auto;
       display: grid;
       gap: 10px;
@@ -1692,11 +1780,12 @@ function injectStyles() {
       color: #dbeafe;
     }
     .rate-percent {
-      color: #f8fbff;
+      color: var(--rate-color);
       font-size: 34px;
       line-height: 1;
       text-align: center;
       font-weight: 760;
+      transition: color 140ms linear;
     }
     .rate-track {
       height: 28px;
@@ -1710,8 +1799,10 @@ function injectStyles() {
       height: 100%;
       min-width: 0;
       border-radius: inherit;
-      background: #f8fbff;
-      transition: width 240ms ease;
+      background: var(--rate-color);
+      transition:
+        width 120ms linear,
+        background-color 140ms linear;
     }
     .rate-label {
       color: #bfdbfe;
