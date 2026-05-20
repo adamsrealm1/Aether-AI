@@ -152,7 +152,20 @@ function readJson(key, fallback) {
 }
 
 function hasClerkConfig() {
-  return Boolean(String(window.CLERK_PUBLISHABLE_KEY || "").trim() && String(window.CLERK_FRONTEND_API || "").trim());
+  return Boolean(String(window.CLERK_PUBLISHABLE_KEY || "").trim());
+}
+
+function clerkFrontendDomain() {
+  const configured = String(window.CLERK_FRONTEND_API || "").trim();
+  if (configured) {
+    return configured.replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
+  }
+  const publishableKey = String(window.CLERK_PUBLISHABLE_KEY || "").trim();
+  try {
+    return atob(publishableKey.split("_")[2]).slice(0, -1);
+  } catch {
+    return "";
+  }
 }
 
 async function initClerkAuth() {
@@ -160,11 +173,17 @@ async function initClerkAuth() {
     Aether.state.clerkError = "Missing Clerk configuration.";
     return;
   }
+  const clerkDomain = clerkFrontendDomain();
+  if (!clerkDomain) {
+    Aether.state.clerkError = "Invalid Clerk key.";
+    render();
+    return;
+  }
   try {
-    await loadScriptOnce("clerk-ui-sdk", `https://${String(window.CLERK_FRONTEND_API).trim()}/npm/@clerk/ui@1/dist/ui.browser.js`);
+    await loadScriptOnce("clerk-ui-sdk", `https://${clerkDomain}/npm/@clerk/ui@1/dist/ui.browser.js`);
     await loadScriptOnce(
       "clerk-js-sdk",
-      `https://${String(window.CLERK_FRONTEND_API).trim()}/npm/@clerk/clerk-js@6/dist/clerk.browser.js`,
+      `https://${clerkDomain}/npm/@clerk/clerk-js@6/dist/clerk.browser.js`,
       { "data-clerk-publishable-key": String(window.CLERK_PUBLISHABLE_KEY).trim() },
     );
     await window.Clerk.load({ ui: { ClerkUI: window.__internal_ClerkUICtor } });
@@ -174,9 +193,10 @@ async function initClerkAuth() {
     if (clerkSyncTimer) clearInterval(clerkSyncTimer);
     clerkSyncTimer = setInterval(syncClerkAccount, 4000);
     render();
+    mountClerkAuth();
   } catch (error) {
     Aether.state.clerkReady = false;
-    Aether.state.clerkError = "Could not load Clerk.";
+    Aether.state.clerkError = "Could not load Clerk. Check the publishable key and allowed domains.";
     render();
   }
 }
@@ -258,7 +278,12 @@ function updateAccountTabDom() {
 
 function mountClerkAuth(mode = "") {
   const slot = document.getElementById("clerk-auth-slot");
-  if (!slot || !window.Clerk || !Aether.state.clerkReady) return;
+  if (!slot) return;
+  if (Aether.state.clerkError) {
+    slot.innerHTML = `<div class="clerk-error">${escapeHtml(Aether.state.clerkError)}</div>`;
+    return;
+  }
+  if (!window.Clerk || !Aether.state.clerkReady) return;
   slot.innerHTML = "";
   if (Aether.state.account && window.Clerk.mountUserProfile) {
     window.Clerk.mountUserProfile(slot);
@@ -583,9 +608,8 @@ function renderAccountModal() {
           !clerkConfigured
             ? `
               <h2 id="account-title">Connect Clerk</h2>
-              <p class="account-subtitle">Add your Clerk keys in config.js, then refresh this page.</p>
+              <p class="account-subtitle">Add your Clerk publishable key in config.js, then refresh this page.</p>
               <div class="account-card-row"><span>Needed</span><strong>Publishable key</strong></div>
-              <div class="account-card-row"><span>Needed</span><strong>Frontend API</strong></div>
             `
             : account
             ? `
@@ -2381,7 +2405,7 @@ function injectStyles() {
     }
     .account-modal {
       position: relative;
-      width: min(420px, 100%);
+      width: min(460px, 100%);
       border-radius: 20px;
       border: 1px solid rgba(191, 219, 254, 0.28);
       background: linear-gradient(145deg, rgba(7, 20, 38, 0.98), rgba(2, 6, 23, 0.98));
@@ -2491,6 +2515,18 @@ function injectStyles() {
       border: 1px solid rgba(191, 219, 254, 0.16);
       border-radius: 14px;
       background: rgba(191, 219, 254, 0.06);
+    }
+    .clerk-error {
+      display: grid;
+      place-items: center;
+      min-height: 120px;
+      color: #fecaca;
+      text-align: center;
+      line-height: 1.45;
+      border: 1px solid rgba(248, 113, 113, 0.26);
+      border-radius: 14px;
+      background: rgba(127, 29, 29, 0.22);
+      padding: 16px;
     }
     .link-button {
       margin-top: 14px;
