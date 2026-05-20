@@ -91,7 +91,7 @@ const storage = {
 };
 
 function defaultApiEndpoint() {
-  if (location.protocol === "file:") {
+  if (location.protocol === "file:" || location.hostname.endsWith("github.io")) {
     return "http://127.0.0.1:8765/api/chat";
   }
   return "/api/chat";
@@ -99,7 +99,7 @@ function defaultApiEndpoint() {
 
 function isValidApiEndpoint(value) {
   if (!value || value.startsWith("github_pat_")) return false;
-  if (location.protocol === "file:") {
+  if (location.protocol === "file:" || location.hostname.endsWith("github.io")) {
     return value.startsWith("http://127.0.0.1:8765/");
   }
   return value.startsWith("/");
@@ -122,7 +122,7 @@ function createChat(title) {
       {
         id: createId(),
         role: "assistant",
-        content: "Hey there! I'm Aether. What's on your mind?",
+        content: "Hi there! I'm Aether. What's on your mind today?",
       },
     ],
   };
@@ -192,7 +192,7 @@ function render() {
     <div class="app-shell">
       <aside class="sidebar">
         <button class="brand" data-action="home" aria-label="Aether AI home">
-        <img src="assets/Aether.png" alt="Aether" width="90" height="90">
+        <img src="assets/Aether.png" alt="Aether" width="60" height="60">
           <span>Aether AI</span>
         </button>
         <button class="new-chat" data-action="new-chat">+ New conversation</button>
@@ -890,10 +890,17 @@ async function checkAdminStatus() {
 async function loginAccount(event) {
   event.preventDefault();
   const form = event.currentTarget;
-  const data = await postJson("/api/account/login", {
-    username: form.elements.username.value,
-    password: form.elements.password.value,
-  });
+  let data;
+  try {
+    data = await postJson("/api/account/login", {
+      username: form.elements.username.value,
+      password: form.elements.password.value,
+    });
+  } catch (error) {
+    Aether.state.accountError = backendUnavailableMessage();
+    render();
+    return;
+  }
   if (!data.ok) {
     Aether.state.accountError = data.error || "Could not sign in.";
     render();
@@ -913,11 +920,18 @@ async function registerAccount(event) {
   const form = event.currentTarget;
   const username = form.elements.username.value;
   const password = form.elements.password.value;
-  const created = await postJson("/api/account/register", {
-    displayName: form.elements.displayName.value,
-    username,
-    password,
-  });
+  let created;
+  try {
+    created = await postJson("/api/account/register", {
+      displayName: form.elements.displayName.value,
+      username,
+      password,
+    });
+  } catch (error) {
+    Aether.state.accountError = backendUnavailableMessage();
+    render();
+    return;
+  }
   if (!created.ok) {
     Aether.state.accountError = created.error || "Could not create account.";
     render();
@@ -1134,7 +1148,18 @@ async function postJson(path, payload) {
     headers: jsonHeaders(),
     body: JSON.stringify(payload),
   });
+  if (!response.ok) {
+    try {
+      return await response.json();
+    } catch {
+      throw new Error(`Request failed with HTTP ${response.status}`);
+    }
+  }
   return response.json();
+}
+
+function backendUnavailableMessage() {
+  return `Could not reach ${apiUrl("/api/account/login")}. Start server.py, then try again.`;
 }
 
 function authHeaders() {
