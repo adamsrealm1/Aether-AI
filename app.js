@@ -10,10 +10,9 @@
     sidebarSearch: "",
     toast: "",
     thinking: false,
-    warningPopup: null,
+    profanityPopup: false,
     rateLimitPopup: false,
     voiceListening: false,
-    ban: null,
     rateLimit: {
       limit: 300,
       used: 0,
@@ -40,8 +39,8 @@ let voiceTranscript = "";
 let voiceAutoSending = false;
 const thoughtTimerTimeouts = new Map();
 const LOCATION_TIME_PERMISSION_MESSAGE = "Accept Aether's permission to view your location to see what timezone you are in.";
+const PROFANITY_BLOCK_MESSAGE = "You cant send Aether a message with profanity in it. You can try again without profanity in your message.";
 const VOICE_AUTO_SEND_DELAY_MS = 1800;
-const PROFANITY_LIMIT = 6;
 const PROFANITY_PATTERNS = [
   /\bass\b/i,
   /\basshole\b/i,
@@ -213,9 +212,8 @@ function render() {
       </aside>
 
       ${renderChatPage(chat)}
-      ${renderWarningPopup()}
+      ${renderProfanityPopup()}
       ${renderRateLimitPopup()}
-      ${renderBanOverlay()}
       ${renderToast()}
     </div>
   `;
@@ -244,7 +242,10 @@ function renderChatPage(chat) {
       </div>
       <div class="composer-area">
         <form class="composer" data-action="send-message">
-          <textarea name="message" autocomplete="off" rows="1" placeholder="Send a message here.">${escapeHtml(Aether.state.composerDraft)}</textarea>
+          <div class="composer-input-wrap">
+            <div class="composer-highlights" aria-hidden="true">${renderHighlightedComposerText(Aether.state.composerDraft)}</div>
+            <textarea name="message" autocomplete="off" rows="1" placeholder="Send a message here." spellcheck="true">${escapeHtml(Aether.state.composerDraft)}</textarea>
+          </div>
           <button class="voice-button ${Aether.state.voiceListening ? "listening" : ""}" type="button" data-action="voice-input" aria-label="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}" aria-pressed="${Aether.state.voiceListening ? "true" : "false"}" title="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}"${Aether.state.thinking ? " disabled" : ""}>Mic</button>
           <button type="submit">Send</button>
         </form>
@@ -351,19 +352,14 @@ function renderThinking() {
   `;
 }
 
-function renderWarningPopup() {
-  if (!Aether.state.warningPopup) return "";
-  const warnings = Aether.state.warningPopup.warnings;
-  const banned = warnings >= PROFANITY_LIMIT;
+function renderProfanityPopup() {
+  if (!Aether.state.profanityPopup) return "";
   return `
     <div class="warning-overlay" role="dialog" aria-modal="true" aria-labelledby="warning-title">
       <div class="warning-modal">
-        <h2 id="warning-title">${banned ? "You are permanently banned from Aether." : "Oops!"}</h2>
-        <p>
-          You used a blocked word in your message, you have ${warnings} warnings,
-          reaching 6 will permanently ban you from Aether.
-        </p>
-        <button class="warning-understand" data-action="close-warning">I understand</button>
+        <h2 id="warning-title">Oops!</h2>
+        <p>${escapeHtml(PROFANITY_BLOCK_MESSAGE)}</p>
+        <button class="warning-understand" data-action="close-profanity">I understand</button>
       </div>
     </div>
   `;
@@ -382,18 +378,6 @@ function renderRateLimitPopup() {
     </div>
   `;
 }
-
-function renderBanOverlay() {
-  if (!Aether.state.ban?.banned) return "";
-  return `
-    <div class="ban-overlay" role="dialog" aria-modal="true">
-      <div class="ban-modal">
-        <h2>You are permanently banned from Aether for breaking the TOS.</h2>
-      </div>
-    </div>
-  `;
-}
-
 
 function bindEvents(root) {
   root.querySelector("[data-action='home']")?.addEventListener("click", () => {
@@ -418,17 +402,25 @@ function bindEvents(root) {
   const composerInput = root.querySelector(".composer textarea[name='message']");
   composerInput?.addEventListener("input", (event) => {
     Aether.state.composerDraft = event.currentTarget.value;
+    if (!containsProfanity(Aether.state.composerDraft)) {
+      Aether.state.profanityPopup = false;
+    }
     syncComposerHeight(event.currentTarget);
+    updateProfanityHighlightDom(event.currentTarget);
   });
+  composerInput?.addEventListener("scroll", () => syncComposerHighlightScroll(composerInput));
   composerInput?.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
       event.currentTarget.form?.requestSubmit();
     }
   });
-  if (composerInput) syncComposerHeight(composerInput);
-  root.querySelector("[data-action='close-warning']")?.addEventListener("click", () => {
-    Aether.state.warningPopup = null;
+  if (composerInput) {
+    syncComposerHeight(composerInput);
+    updateProfanityHighlightDom(composerInput);
+  }
+  root.querySelector("[data-action='close-profanity']")?.addEventListener("click", () => {
+    Aether.state.profanityPopup = false;
     render();
   });
   root.querySelector("[data-action='close-rate-limit']")?.addEventListener("click", () => {
@@ -512,6 +504,32 @@ function renameCurrentChat() {
 function syncComposerHeight(textarea) {
   textarea.style.height = "auto";
   textarea.style.height = `${Math.min(180, Math.max(42, textarea.scrollHeight))}px`;
+  const highlights = textarea.closest(".composer-input-wrap")?.querySelector(".composer-highlights");
+  if (highlights) {
+    highlights.style.height = textarea.style.height;
+  }
+  syncComposerHighlightScroll(textarea);
+}
+
+function syncComposerHighlightScroll(textarea) {
+  const highlights = textarea.closest(".composer-input-wrap")?.querySelector(".composer-highlights");
+  if (!highlights) return;
+  highlights.scrollTop = textarea.scrollTop;
+  highlights.scrollLeft = textarea.scrollLeft;
+}
+
+function updateProfanityHighlightDom(textarea) {
+  const highlights = textarea.closest(".composer-input-wrap")?.querySelector(".composer-highlights");
+  if (!highlights) return;
+  highlights.innerHTML = renderHighlightedComposerText(textarea.value);
+  syncComposerHighlightScroll(textarea);
+}
+
+function renderHighlightedComposerText(text) {
+  const value = String(text || "");
+  if (!value) return "";
+  const combined = new RegExp(`(${PROFANITY_PATTERNS.map((pattern) => pattern.source).join("|")})`, "gi");
+  return escapeHtml(value).replace(combined, (match) => `<mark>${match}</mark>`);
 }
 
 async function sendMessage(event) {
@@ -530,8 +548,8 @@ async function sendMessage(event) {
     return;
   }
   if (handleLocalProfanity(text)) {
-    input.value = "";
-    Aether.state.composerDraft = "";
+    syncComposerHeight(input);
+    updateProfanityHighlightDom(input);
     return;
   }
 
@@ -542,7 +560,6 @@ async function sendMessage(event) {
 
 async function sendTextMessage(text, options = {}) {
   if (Aether.state.thinking) return;
-  if (Aether.state.ban?.banned) return;
   if (isRateLimited()) {
     Aether.state.rateLimitPopup = true;
     render();
@@ -775,17 +792,14 @@ async function fetchAssistantReply(text, location = null) {
           retryDelayMs = nextRetryDelay(retryDelayMs);
           continue;
         }
-        if (data.ban) {
-          Aether.state.ban = data.ban;
-          return "";
-        }
         if (data.rateLimited) {
           Aether.state.rateLimitPopup = true;
           render();
           return "";
         }
-        if (data.warning) {
-          showProfanityWarning(data.warning.warnings, data.warning.banned);
+        if (data.profanityBlocked) {
+          Aether.state.profanityPopup = true;
+          render();
           return "";
         }
         if (data.reply) return data.reply;
@@ -808,31 +822,13 @@ function nextRetryDelay(currentDelayMs) {
 
 function handleLocalProfanity(text) {
   if (!containsProfanity(text)) return false;
-
-  const store = window.AETHER_PROFANITY_STORE || { warnedUsers: {}, bannedUsers: {} };
-  const key = "browser";
-  const currentWarnings = Number(store.warnedUsers?.[key]?.warnings || 0) + 1;
-  store.warnedUsers = store.warnedUsers || {};
-  store.bannedUsers = store.bannedUsers || {};
-  store.warnedUsers[key] = { warnings: currentWarnings, updatedAt: new Date().toISOString() };
-  if (currentWarnings >= PROFANITY_LIMIT) {
-    store.bannedUsers[key] = { warnings: currentWarnings, bannedAt: new Date().toISOString() };
-  }
-  window.AETHER_PROFANITY_STORE = store;
-  showProfanityWarning(currentWarnings, currentWarnings >= PROFANITY_LIMIT);
+  Aether.state.profanityPopup = true;
+  render();
   return true;
 }
 
 function containsProfanity(text) {
   return PROFANITY_PATTERNS.some((pattern) => pattern.test(text));
-}
-
-function showProfanityWarning(warnings, banned) {
-  Aether.state.warningPopup = { warnings, banned };
-  if (banned) {
-    Aether.state.ban = { banned: true };
-  }
-  render();
 }
 
 function isRateLimited() {
@@ -844,9 +840,6 @@ function isRateLimited() {
 function applyServerStatus(data) {
   if (data.rateLimit) {
     updateRateLimit(data.rateLimit);
-  }
-  if (data.ban) {
-    Aether.state.ban = data.ban;
   }
 }
 
@@ -873,7 +866,6 @@ function startServerStatusPolling() {
 }
 
 async function pingServerStatus() {
-  const wasBanned = Boolean(Aether.state.ban?.banned);
   try {
     const response = await fetch(apiUrl("/api/status"), {
       headers: await authHeaders(),
@@ -883,9 +875,6 @@ async function pingServerStatus() {
     const data = await response.json();
     setServerOnline(true);
     applyServerStatus(data);
-    if (Boolean(Aether.state.ban?.banned) !== wasBanned) {
-      render();
-    }
   } catch {
     setServerOnline(false);
   }
@@ -988,7 +977,6 @@ function rateColor(percent) {
 }
 
 async function checkServerStatus() {
-  const wasBanned = Boolean(Aether.state.ban?.banned);
   try {
     const response = await fetch(apiUrl("/api/status"), { cache: "no-store" });
     if (!response.ok) throw new Error(`Status failed with HTTP ${response.status}`);
@@ -996,11 +984,7 @@ async function checkServerStatus() {
     setServerOnline(true);
     applyServerStatus(data);
     storage.save();
-    if (Boolean(Aether.state.ban?.banned) !== wasBanned) {
-      render();
-    } else {
-      updateRateMeterDom();
-    }
+    updateRateMeterDom();
   } catch {
     setServerOnline(false);
   }
@@ -1869,12 +1853,42 @@ function injectStyles() {
       background: rgba(5, 10, 20, 0.92);
       box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
     }
+    .composer-input-wrap {
+      position: relative;
+      min-height: 42px;
+      max-height: 180px;
+      overflow: hidden;
+    }
+    .composer-highlights {
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+      min-height: 42px;
+      max-height: 180px;
+      overflow: hidden;
+      padding: 10px 14px;
+      color: #fff;
+      white-space: pre-wrap;
+      overflow-wrap: break-word;
+      line-height: 1.4;
+      pointer-events: none;
+    }
+    .composer-highlights mark {
+      border-radius: 5px;
+      color: #fff;
+      background: rgba(239, 68, 68, 0.7);
+      box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.2);
+    }
     .composer textarea {
+      position: relative;
+      z-index: 1;
+      width: 100%;
       min-height: 42px;
       max-height: 180px;
       border: 0;
       outline: 0;
-      color: #fff;
+      color: transparent;
+      caret-color: #fff;
       background: transparent;
       padding: 10px 14px;
       resize: none;
@@ -1979,32 +1993,6 @@ function injectStyles() {
     }
     .compact-modal {
       width: min(380px, 100%);
-    }
-    .ban-overlay {
-      position: fixed;
-      inset: 0;
-      z-index: 60;
-      display: grid;
-      place-items: center;
-      padding: 24px;
-      background: rgba(0, 0, 0, 0.82);
-      backdrop-filter: blur(14px);
-    }
-    .ban-modal {
-      width: min(620px, 100%);
-      border: 1px solid rgba(248, 113, 113, 0.28);
-      border-radius: 20px;
-      background: linear-gradient(145deg, rgba(47, 8, 16, 0.96), rgba(2, 6, 23, 0.98));
-      box-shadow: 0 30px 90px rgba(0, 0, 0, 0.62);
-      padding: 34px;
-      text-align: center;
-    }
-    .ban-modal h2 {
-      margin: 0;
-      color: #fff;
-      font-size: clamp(26px, 4vw, 42px);
-      line-height: 1.12;
-      letter-spacing: 0;
     }
     .warning-understand {
       height: 44px;

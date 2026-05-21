@@ -13,8 +13,7 @@ from flask import Flask, jsonify, request, send_from_directory
 from groq import APIConnectionError, APIStatusError, APITimeoutError, Groq
 
 ROOT = Path(__file__).resolve().parent
-PROFANITY_STORE_PATH = ROOT / "profanity.js"
-PROFANITY_LIMIT = 6
+PROFANITY_BLOCK_MESSAGE = "You cant send Aether a message with profanity in it. You can try again without profanity in your message."
 GUEST_RATE_LIMIT = 300
 RATE_LIMIT_WINDOW_SECONDS = 60
 RATE_LIMITS: dict[str, dict] = {}
@@ -59,76 +58,8 @@ WEATHER_CODES = {
 }
 
 
-def default_profanity_store() -> dict:
-    return {"warnedUsers": {}, "bannedUsers": {}}
-
-
-def load_profanity_store() -> dict:
-    changed = False
-    if not PROFANITY_STORE_PATH.exists():
-        store = default_profanity_store()
-        body = json.dumps(store, indent=2, sort_keys=True)
-        PROFANITY_STORE_PATH.write_text(f"window.AETHER_PROFANITY_STORE = {body};\n", encoding="utf-8")
-    else:
-        text = PROFANITY_STORE_PATH.read_text(encoding="utf-8")
-        match = re.search(r"window\.AETHER_PROFANITY_STORE\s*=\s*(\{.*\})\s*;?\s*$", text, re.S)
-        if not match:
-            store = default_profanity_store()
-        else:
-            try:
-                store = json.loads(match.group(1))
-            except json.JSONDecodeError:
-                store = default_profanity_store()
-
-    store.setdefault("warnedUsers", {})
-    store.setdefault("bannedUsers", {})
-    if changed:
-        save_profanity_store(store)
-    return store
-
-
-def save_profanity_store(store: dict) -> None:
-    body = json.dumps(store, indent=2, sort_keys=True)
-    PROFANITY_STORE_PATH.write_text(f"window.AETHER_PROFANITY_STORE = {body};\n", encoding="utf-8")
-
-
 def contains_profanity(message: str) -> bool:
     return any(pattern.search(message) for pattern in PROFANITY_PATTERNS)
-
-
-def profanity_status_for_ip(ip_address: str, message: str) -> dict | None:
-    store = load_profanity_store()
-    ban = ban_status_for_ip(ip_address)
-    if ban["banned"]:
-        return {"warnings": int(ban.get("warnings", PROFANITY_LIMIT)), "banned": True}
-
-    if not contains_profanity(message):
-        return None
-
-    now = datetime.now().astimezone().isoformat()
-    warned = store["warnedUsers"].get(ip_address, {})
-    warnings = int(warned.get("warnings", 0)) + 1
-    store["warnedUsers"][ip_address] = {"warnings": warnings, "updatedAt": now}
-
-    banned = warnings >= PROFANITY_LIMIT
-    if banned:
-        store["bannedUsers"][ip_address] = {"warnings": warnings, "bannedAt": now}
-
-    save_profanity_store(store)
-    return {"warnings": warnings, "banned": banned}
-
-
-def ban_status_for_ip(ip_address: str) -> dict:
-    store = load_profanity_store()
-    if ip_address in store["bannedUsers"]:
-        banned = store["bannedUsers"][ip_address]
-        return {
-            "banned": True,
-            "type": "ip",
-            "warnings": int(banned.get("warnings", PROFANITY_LIMIT)),
-            "reason": banned.get("reason", ""),
-        }
-    return {"banned": False}
 
 def rate_limit_key() -> str:
     return "global"
@@ -418,20 +349,8 @@ def chat_response(payload: dict, ip_address: str) -> dict:
     location = payload.get("location")
     if not message:
         return {"reply": "Send a message first."}
-    ban = ban_status_for_ip(ip_address)
-    if ban["banned"]:
-        return {
-            "reply": "You are permanently banned from Aether for breaking the TOS.",
-            "ban": ban,
-        }
-    warning = profanity_status_for_ip(ip_address, message)
-    if warning:
-        reply = (
-            "You are permanently banned from Aether for breaking the TOS."
-            if warning["banned"]
-            else "Profanity warning."
-        )
-        return {"reply": reply, "warning": warning}
+    if contains_profanity(message):
+        return {"reply": PROFANITY_BLOCK_MESSAGE, "profanityBlocked": True}
     if looks_like_location_time_request(message) and not location:
         return {"reply": "Accept Aether's permission to view your location to see what timezone you are in."}
     rate = consume_rate_limit(ip_address)
@@ -468,11 +387,9 @@ def index():
 
 @app.get("/api/status")
 def api_status():
-    ip_address = client_ip()
     return jsonify(
         {
-            "ban": ban_status_for_ip(ip_address),
-            "rateLimit": rate_limit_status(ip_address),
+            "rateLimit": rate_limit_status(),
         }
     )
 
