@@ -229,7 +229,7 @@ def groq_models() -> list[str]:
     if configured_model:
         candidates.append(configured_model)
 
-    candidates.append("qwen/qwen3-32b")
+    candidates.append("llama-3.1-8b-instant")
 
     models = []
     seen = set()
