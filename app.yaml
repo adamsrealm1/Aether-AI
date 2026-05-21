@@ -5,7 +5,7 @@ package: .
 env:
   PYTHONEXECUTABLE: /bin/python
   PYTHONPATH: /app
-  AETHER_GROQ_MODELS: llama-3.1-8b-instant,qwen/qwen3-32b,openai/gpt-oss-120b
+  AETHER_GROQ_MODELS: openai/gpt-oss-120b,llama-3.1-8b-instant,qwen/qwen3-32b
 cli_args:
 - -m
 - flask

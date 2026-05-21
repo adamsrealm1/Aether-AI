@@ -160,7 +160,7 @@ def groq_models() -> list[str]:
     if configured_model:
         candidates.append(configured_model)
 
-    candidates.append("llama-3.1-8b-instant")
+    candidates.extend(["openai/gpt-oss-120b", "llama-3.1-8b-instant", "qwen/qwen3-32b"])
 
     models = []
     seen = set()
