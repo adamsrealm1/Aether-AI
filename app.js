@@ -12,6 +12,7 @@
     thinking: false,
     warningPopup: null,
     rateLimitPopup: false,
+    voiceListening: false,
     ban: null,
     rateLimit: {
       limit: 300,
@@ -32,8 +33,14 @@ let messageVisibilityObserver = null;
 let rateMeterTimer = null;
 let rateLimitCountdownTimer = null;
 let serverStatusTimer = null;
+let voiceRecognition = null;
+let voiceSilenceTimer = null;
+let voiceBaseDraft = "";
+let voiceTranscript = "";
+let voiceAutoSending = false;
 const thoughtTimerTimeouts = new Map();
 const LOCATION_TIME_PERMISSION_MESSAGE = "Accept Aether's permission to view your location to see what timezone you are in.";
+const VOICE_AUTO_SEND_DELAY_MS = 1800;
 const PROFANITY_LIMIT = 6;
 const PROFANITY_PATTERNS = [
   /\bass\b/i,
@@ -238,6 +245,7 @@ function renderChatPage(chat) {
       <div class="composer-area">
         <form class="composer" data-action="send-message">
           <textarea name="message" autocomplete="off" rows="1" placeholder="Send a message here.">${escapeHtml(Aether.state.composerDraft)}</textarea>
+          <button class="voice-button ${Aether.state.voiceListening ? "listening" : ""}" type="button" data-action="voice-input" aria-label="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}" aria-pressed="${Aether.state.voiceListening ? "true" : "false"}" title="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}"${Aether.state.thinking ? " disabled" : ""}>Mic</button>
           <button type="submit">Send</button>
         </form>
         <p class="composer-note">Aether can make mistakes. Check important info.</p>
@@ -406,6 +414,7 @@ function bindEvents(root) {
   bindChatListEvents(root);
 
   root.querySelector("[data-action='send-message']")?.addEventListener("submit", sendMessage);
+  root.querySelector("[data-action='voice-input']")?.addEventListener("click", toggleVoiceInput);
   const composerInput = root.querySelector(".composer textarea[name='message']");
   composerInput?.addEventListener("input", (event) => {
     Aether.state.composerDraft = event.currentTarget.value;
@@ -508,6 +517,7 @@ function syncComposerHeight(textarea) {
 async function sendMessage(event) {
   event.preventDefault();
   if (Aether.state.thinking) return;
+  stopVoiceInput({ keepDraft: true });
 
   const form = event.currentTarget;
   const input = form.elements.message;
@@ -585,6 +595,143 @@ async function getAssistantReply(text) {
     return `It is ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`;
   }
   return "Call-limit reached.";
+}
+
+function speechRecognitionConstructor() {
+  return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+}
+
+function toggleVoiceInput() {
+  if (Aether.state.thinking) return;
+  if (Aether.state.voiceListening) {
+    stopVoiceInput({ keepDraft: true });
+    return;
+  }
+  startVoiceInput();
+}
+
+function startVoiceInput() {
+  const Recognition = speechRecognitionConstructor();
+  if (!Recognition) {
+    showToast("Voice input is not supported in this browser.");
+    return;
+  }
+
+  const input = document.querySelector(".composer textarea[name='message']");
+  if (!input) return;
+
+  stopVoiceInput({ keepDraft: true, silent: true });
+  voiceBaseDraft = input.value.trim();
+  voiceTranscript = "";
+  voiceAutoSending = false;
+  voiceRecognition = new Recognition();
+  voiceRecognition.lang = navigator.language || "en-US";
+  voiceRecognition.continuous = true;
+  voiceRecognition.interimResults = true;
+  voiceRecognition.maxAlternatives = 1;
+
+  voiceRecognition.onresult = handleVoiceResult;
+  voiceRecognition.onerror = (event) => {
+    clearVoiceSilenceTimer();
+    Aether.state.voiceListening = false;
+    updateVoiceButtonDom();
+    if (event.error !== "aborted" && event.error !== "no-speech") {
+      showToast("Voice input stopped.");
+    }
+  };
+  voiceRecognition.onend = () => {
+    if (!voiceAutoSending) {
+      Aether.state.voiceListening = false;
+      updateVoiceButtonDom();
+    }
+  };
+
+  try {
+    voiceRecognition.start();
+    Aether.state.voiceListening = true;
+    updateVoiceButtonDom();
+    input.focus();
+  } catch {
+    Aether.state.voiceListening = false;
+    updateVoiceButtonDom();
+  }
+}
+
+function handleVoiceResult(event) {
+  let transcript = "";
+  for (let index = 0; index < event.results.length; index += 1) {
+    transcript += event.results[index][0]?.transcript || "";
+  }
+  voiceTranscript = transcript.trim();
+  applyVoiceTranscript();
+  scheduleVoiceAutoSend();
+}
+
+function applyVoiceTranscript() {
+  const input = document.querySelector(".composer textarea[name='message']");
+  if (!input) return;
+  const nextText = [voiceBaseDraft, voiceTranscript].filter(Boolean).join(" ").trim();
+  input.value = nextText;
+  Aether.state.composerDraft = nextText;
+  syncComposerHeight(input);
+}
+
+function scheduleVoiceAutoSend() {
+  clearVoiceSilenceTimer();
+  if (!voiceTranscript) return;
+  voiceSilenceTimer = setTimeout(() => {
+    autoSendVoiceTranscript();
+  }, VOICE_AUTO_SEND_DELAY_MS);
+}
+
+function autoSendVoiceTranscript() {
+  const form = document.querySelector("[data-action='send-message']");
+  const input = form?.elements?.message;
+  const text = input?.value?.trim() || "";
+  if (!form || !text || Aether.state.thinking) return;
+  voiceAutoSending = true;
+  stopVoiceInput({ keepDraft: true, silent: true });
+  form.requestSubmit();
+}
+
+function stopVoiceInput(options = {}) {
+  clearVoiceSilenceTimer();
+  if (voiceRecognition) {
+    const recognition = voiceRecognition;
+    voiceRecognition = null;
+    recognition.onresult = null;
+    recognition.onerror = null;
+    recognition.onend = null;
+    try {
+      recognition.stop();
+    } catch {
+      try {
+        recognition.abort();
+      } catch {}
+    }
+  }
+  voiceBaseDraft = options.keepDraft ? Aether.state.composerDraft : "";
+  voiceTranscript = "";
+  Aether.state.voiceListening = false;
+  updateVoiceButtonDom();
+  if (!options.silent) storage.save();
+}
+
+function clearVoiceSilenceTimer() {
+  if (voiceSilenceTimer) {
+    clearTimeout(voiceSilenceTimer);
+    voiceSilenceTimer = null;
+  }
+}
+
+function updateVoiceButtonDom() {
+  const button = document.querySelector("[data-action='voice-input']");
+  if (!button) return;
+  const listening = Boolean(Aether.state.voiceListening);
+  button.classList.toggle("listening", listening);
+  button.setAttribute("aria-pressed", listening ? "true" : "false");
+  button.setAttribute("aria-label", listening ? "Stop voice input" : "Start voice input");
+  button.setAttribute("title", listening ? "Stop voice input" : "Start voice input");
 }
 
 async function getLocationTimeReply(text) {
@@ -1699,7 +1846,7 @@ function injectStyles() {
     }
     .composer {
       display: grid;
-      grid-template-columns: 1fr auto;
+      grid-template-columns: 1fr auto auto;
       align-items: end;
       gap: 10px;
       width: 100%;
@@ -1735,10 +1882,37 @@ function injectStyles() {
       font-weight: 800;
       transition: background 160ms ease, transform 160ms ease;
     }
+    .composer .voice-button {
+      min-width: 52px;
+      width: 52px;
+      color: #dbeafe;
+      background: rgba(148, 163, 184, 0.16);
+      border: 1px solid rgba(191, 219, 254, 0.18);
+      overflow: hidden;
+    }
+    .composer .voice-button.listening {
+      color: #07111f;
+      background: #a7f3d0;
+      box-shadow: 0 0 0 6px rgba(167, 243, 208, 0.12);
+      animation: micPulse 1.05s ease-in-out infinite;
+    }
+    .composer .voice-button:disabled {
+      opacity: 0.48;
+      cursor: not-allowed;
+      transform: none;
+    }
     .composer button:hover, .composer button:focus-visible {
       background: #a7f3d0;
       outline: none;
       transform: translateY(-1px);
+    }
+    @keyframes micPulse {
+      0%, 100% {
+        box-shadow: 0 0 0 4px rgba(167, 243, 208, 0.12);
+      }
+      50% {
+        box-shadow: 0 0 0 9px rgba(167, 243, 208, 0.22);
+      }
     }
     .composer-note {
       margin: 0;
