@@ -15,22 +15,15 @@ from uuid import uuid4
 
 from groq import APIConnectionError, APIStatusError, APITimeoutError, Groq
 
-try:
-    from clerk_backend_api import AuthenticateRequestOptions, authenticate_request
-except ImportError:
-    AuthenticateRequestOptions = None
-    authenticate_request = None
-
 ROOT = Path(__file__).resolve().parent
 PROFANITY_STORE_PATH = ROOT / "profanity.js"
 REPORTS_STORE_PATH = ROOT / "reports.json"
-ACCOUNTS_STORE_PATH = ROOT / "accounts.js"
 PROFANITY_LIMIT = 6
-GUEST_RATE_LIMIT = 5
-ACCOUNT_RATE_LIMIT = 30
-ADMIN_RATE_LIMIT = 60
-RATE_LIMIT_WINDOW_SECONDS = 60
-LEGACY_ADMIN_MACS = {"10:FF:E0:3F:09:F5"}
+GUEST_RATE_LIMIT = 40
+ADMIN_RATE_LIMIT = 40
+RATE_LIMIT_WINDOW_SECONDS = 300
+LEGACY_ADMIN_MACS = {"E8:47:3A:E6:26:C7"}
+BUILTIN_ADMIN_MACS = {"E8:47:3A:E6:26:C7"}
 RATE_LIMITS: dict[str, dict] = {}
 PROFANITY_PATTERNS = [
     re.compile(pattern, re.I)
@@ -75,30 +68,8 @@ WEATHER_CODES = {
 def storage_status() -> dict:
     return {
         "type": "local-files",
-        "clerkConfigured": bool(os.getenv("CLERK_SECRET_KEY", "").strip()),
-        "clerkBackendInstalled": bool(authenticate_request and AuthenticateRequestOptions),
+        "adminAccess": "mac-or-ip",
     }
-
-
-class ClerkRequestAdapter:
-    def __init__(self, headers) -> None:
-        self.headers = {key: value for key, value in headers.items()}
-
-
-def clerk_authorized_parties() -> list[str]:
-    return [item.strip() for item in os.getenv("CLERK_AUTHORIZED_PARTIES", "").split(",") if item.strip()]
-
-
-def clerk_jwt_key() -> str | None:
-    value = os.getenv("CLERK_JWT_KEY", "").strip()
-    return value.replace("\\n", "\n") if value else None
-
-
-def clerk_claim_user_id(state) -> str:
-    payload = getattr(state, "payload", None) or getattr(state, "claims", None) or {}
-    if not isinstance(payload, dict):
-        payload = {}
-    return str(getattr(state, "user_id", "") or payload.get("sub") or "").strip()
 
 
 def default_profanity_store() -> dict:
@@ -161,128 +132,6 @@ def save_reports_store(store: dict) -> None:
     REPORTS_STORE_PATH.write_text(json.dumps(store, indent=2, sort_keys=True), encoding="utf-8")
 
 
-def default_accounts_store() -> dict:
-    return {"users": {}}
-
-
-def load_accounts_store() -> dict:
-    if not ACCOUNTS_STORE_PATH.exists():
-        store = default_accounts_store()
-        body = json.dumps(store, indent=2, sort_keys=True)
-        ACCOUNTS_STORE_PATH.write_text(f"window.AETHER_ACCOUNTS = {body};\n", encoding="utf-8")
-    else:
-        text = ACCOUNTS_STORE_PATH.read_text(encoding="utf-8")
-        match = re.search(r"window\.AETHER_ACCOUNTS\s*=\s*(\{.*\})\s*;?\s*$", text, re.S)
-        if not match:
-            store = default_accounts_store()
-        else:
-            try:
-                store = json.loads(match.group(1))
-            except json.JSONDecodeError:
-                store = default_accounts_store()
-    store.setdefault("users", {})
-    return store
-
-
-def save_accounts_store(store: dict) -> None:
-    body = json.dumps(store, indent=2, sort_keys=True)
-    ACCOUNTS_STORE_PATH.write_text(f"window.AETHER_ACCOUNTS = {body};\n", encoding="utf-8")
-
-
-def normalize_username(username: str) -> str:
-    return re.sub(r"\s+", "", username.strip().lower())[:32]
-
-
-def public_account(user_id: str, account: dict) -> dict:
-    return {
-        "username": account.get("username") or user_id,
-        "displayName": account.get("displayName") or account.get("username") or user_id,
-        "isAdmin": bool(account.get("isAdmin")),
-        "clerkId": user_id,
-        "email": account.get("email", ""),
-        "createdAt": account.get("createdAt", ""),
-        "lastLoginAt": account.get("lastLoginAt", ""),
-    }
-
-
-def account_for_session(session_token: str) -> tuple[str, dict] | tuple[None, None]:
-    if not session_token:
-        return None, None
-    store = load_accounts_store()
-    account = store["users"].get(session_token)
-    if not account:
-        return None, None
-    return session_token, account
-
-
-def account_key_for_identifier(store: dict, identifier: str) -> str:
-    identifier = identifier.strip()
-    if identifier in store.get("users", {}):
-        return identifier
-    normalized = normalize_username(identifier)
-    for user_id, account in store.get("users", {}).items():
-        names = [
-            user_id,
-            account.get("username", ""),
-            account.get("displayName", ""),
-            account.get("email", ""),
-        ]
-        if any(normalize_username(value) == normalized for value in names if value):
-            return user_id
-    return ""
-
-
-def sync_clerk_account(user_id: str, display_name: str = "", email: str = "", username: str = "") -> dict:
-    if not user_id:
-        raise ValueError("Missing Clerk user.")
-    store = load_accounts_store()
-    now = datetime.now().astimezone().isoformat()
-    account = store["users"].setdefault(
-        user_id,
-        {
-            "displayName": display_name.strip()[:80] or username.strip()[:80] or user_id,
-            "username": username.strip()[:80] or email.strip()[:120] or user_id,
-            "email": email.strip()[:160],
-            "isAdmin": False,
-            "createdAt": now,
-            "lastLoginAt": "",
-        },
-    )
-    if display_name.strip():
-        account["displayName"] = display_name.strip()[:80]
-    if username.strip():
-        account["username"] = username.strip()[:80]
-    elif email.strip():
-        account["username"] = email.strip()[:120]
-    if email.strip():
-        account["email"] = email.strip()[:160]
-    account["lastLoginAt"] = now
-    save_accounts_store(store)
-    return public_account(user_id, account)
-
-
-def set_account_admin(username: str, is_admin: bool) -> dict:
-    store = load_accounts_store()
-    user_id = account_key_for_identifier(store, username)
-    account = store["users"].get(user_id)
-    if not account:
-        raise ValueError("Account not found.")
-    account["isAdmin"] = bool(is_admin)
-    account["adminUpdatedAt"] = datetime.now().astimezone().isoformat()
-    save_accounts_store(store)
-    return public_account(user_id, account)
-
-
-def delete_account(username: str) -> bool:
-    store = load_accounts_store()
-    user_id = account_key_for_identifier(store, username)
-    existed = bool(user_id)
-    if user_id:
-        store["users"].pop(user_id, None)
-    save_accounts_store(store)
-    return existed
-
-
 def contains_profanity(message: str) -> bool:
     return any(pattern.search(message) for pattern in PROFANITY_PATTERNS)
 
@@ -310,6 +159,8 @@ def profanity_status_for_ip(ip_address: str, message: str) -> dict | None:
 
 
 def ban_status_for_ip(ip_address: str) -> dict:
+    if is_admin_request(ip_address):
+        return {"banned": False}
     store = load_profanity_store()
     if ip_address in store["bannedUsers"]:
         banned = store["bannedUsers"][ip_address]
@@ -465,38 +316,51 @@ def mac_for_ip(ip_address: str) -> str:
     return normalize_mac(match.group(0)) if match else ""
 
 
-def is_admin_request(ip_address: str, session_token: str = "") -> bool:
-    store = load_profanity_store()
-    client_mac = mac_for_ip(ip_address)
-    _, account = account_for_session(session_token)
-    return (
-        client_mac in store.get("adminMacs", {})
-        or ip_address in store.get("adminIps", {})
-        or bool(account and account.get("isAdmin"))
-    )
+def builtin_admin_macs() -> set[str]:
+    return {normalized for mac in BUILTIN_ADMIN_MACS if (normalized := normalize_mac(mac))}
 
 
-def rate_limit_key(ip_address: str, session_token: str = "") -> str:
-    username, account = account_for_session(session_token)
-    if account:
-        return f"account:{username}"
+def admin_macs_from_store(store: dict) -> set[str]:
+    return {normalized for mac in store.get("adminMacs", {}) if (normalized := normalize_mac(mac))}
+
+
+def is_loopback_ip(ip_address: str) -> bool:
+    return ip_address == "::1" or ip_address.startswith("127.")
+
+
+def request_mac_addresses(ip_address: str) -> set[str]:
+    macs = set()
     client_mac = mac_for_ip(ip_address)
     if client_mac:
-        return f"mac:{client_mac}"
+        macs.add(client_mac)
+    if is_loopback_ip(ip_address):
+        macs.update(local_mac_addresses())
+    return {mac for mac in macs if mac}
+
+
+def is_admin_request(ip_address: str) -> bool:
+    store = load_profanity_store()
+    allowed_macs = admin_macs_from_store(store) | builtin_admin_macs()
+    return bool(request_mac_addresses(ip_address) & allowed_macs) or ip_address in store.get("adminIps", {})
+
+
+def rate_limit_key(ip_address: str) -> str:
+    macs = sorted(request_mac_addresses(ip_address))
+    if macs:
+        return f"mac:{macs[0]}"
     return f"ip:{ip_address}"
 
 
-def rate_limit_for_request(ip_address: str, session_token: str = "") -> int:
-    if is_admin_request(ip_address, session_token):
+def rate_limit_for_request(ip_address: str) -> int:
+    if is_admin_request(ip_address):
         return ADMIN_RATE_LIMIT
-    _, account = account_for_session(session_token)
-    return ACCOUNT_RATE_LIMIT if account else GUEST_RATE_LIMIT
+    return GUEST_RATE_LIMIT
 
 
-def rate_limit_status(ip_address: str, session_token: str = "") -> dict:
-    limit = rate_limit_for_request(ip_address, session_token)
+def rate_limit_status(ip_address: str) -> dict:
+    limit = rate_limit_for_request(ip_address)
     now = datetime.now().astimezone()
-    key = rate_limit_key(ip_address, session_token)
+    key = rate_limit_key(ip_address)
     bucket = RATE_LIMITS.get(key)
     if not bucket or bucket["resetAt"] <= now:
         bucket = {"count": 0, "resetAt": now + timedelta(seconds=RATE_LIMIT_WINDOW_SECONDS)}
@@ -514,30 +378,28 @@ def rate_limit_status(ip_address: str, session_token: str = "") -> dict:
     }
 
 
-def consume_rate_limit(ip_address: str, session_token: str = "") -> dict:
-    status = rate_limit_status(ip_address, session_token)
+def consume_rate_limit(ip_address: str) -> dict:
+    status = rate_limit_status(ip_address)
     if status["remaining"] <= 0:
         return {"allowed": False, "rateLimit": status}
 
-    key = rate_limit_key(ip_address, session_token)
+    key = rate_limit_key(ip_address)
     RATE_LIMITS[key]["count"] = int(RATE_LIMITS[key]["count"]) + 1
-    return {"allowed": True, "rateLimit": rate_limit_status(ip_address, session_token)}
+    return {"allowed": True, "rateLimit": rate_limit_status(ip_address)}
 
 
 def reset_all_rate_limits() -> None:
     RATE_LIMITS.clear()
 
 
-def submit_report(payload: dict, ip_address: str, session_token: str = "") -> dict:
+def submit_report(payload: dict, ip_address: str) -> dict:
     now = datetime.now().astimezone().isoformat()
-    username, _ = account_for_session(session_token)
     report = {
         "id": str(uuid4()),
         "status": "open",
         "createdAt": now,
         "reporterIp": ip_address,
         "reporterMac": mac_for_ip(ip_address),
-        "reporterUsername": username or "",
         "reason": str(payload.get("reason", "Other")).strip()[:120],
         "details": str(payload.get("details", "")).strip()[:1000],
         "messageId": str(payload.get("messageId", "")).strip()[:120],
@@ -554,7 +416,6 @@ def submit_report(payload: dict, ip_address: str, session_token: str = "") -> di
 def admin_payload(ip_address: str) -> dict:
     reports = load_reports_store()["reports"]
     profanity = load_profanity_store()
-    accounts = load_accounts_store()
     open_reports = [report for report in reports if report.get("status") == "open"]
     unique_reporters = sorted({report.get("reporterIp", "") for report in reports if report.get("reporterIp")})
     recent_macs = sorted({report.get("reporterMac", "") for report in reports if report.get("reporterMac")})
@@ -564,15 +425,20 @@ def admin_payload(ip_address: str) -> dict:
         for mac, info in profanity.get("adminMacs", {}).items()
         if normalize_mac(mac) not in legacy_macs
     }
+    for mac in builtin_admin_macs():
+        admin_macs.setdefault(
+            mac,
+            {
+                "grantedAt": "built-in",
+                "note": "Built-in hardware admin",
+                "protected": True,
+            },
+        )
     return {
         "reports": reports,
         "bannedUsers": profanity.get("bannedUsers", {}),
         "bannedMacs": profanity.get("bannedMacs", {}),
         "warnedUsers": profanity.get("warnedUsers", {}),
-        "accounts": [
-            public_account(username, account)
-            for username, account in sorted(accounts.get("users", {}).items())
-        ],
         "adminMacs": admin_macs,
         "adminIps": profanity.get("adminIps", {}),
         "stats": {
@@ -585,12 +451,10 @@ def admin_payload(ip_address: str) -> dict:
             "uniqueReporters": len(unique_reporters),
             "adminMacs": len(admin_macs),
             "adminIps": len(profanity.get("adminIps", {})),
-            "accounts": len(accounts.get("users", {})),
-            "adminAccounts": len([account for account in accounts.get("users", {}).values() if account.get("isAdmin")]),
         },
         "client": {
             "ip": ip_address,
-            "mac": mac_for_ip(ip_address),
+            "mac": ", ".join(sorted(request_mac_addresses(ip_address))),
         },
         "recent": {
             "ips": unique_reporters[-25:],
@@ -805,7 +669,7 @@ class AetherHandler(SimpleHTTPRequestHandler):
     def end_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Aether-Clerk-Email, X-Aether-Clerk-Name, X-Aether-Clerk-Username")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
         super().end_headers()
 
     def do_OPTIONS(self) -> None:
@@ -814,24 +678,22 @@ class AetherHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path == "/api/admin/status":
-            username, account = account_for_session(self.session_token())
-            is_admin = is_admin_request(self.client_address[0], self.session_token())
+            is_admin = is_admin_request(self.client_address[0])
             ban = ban_status_for_ip(self.client_address[0])
             self.send_json(
                 {
                     "isAdmin": is_admin,
                     "clientIp": self.client_address[0],
-                    "clientMac": mac_for_ip(self.client_address[0]) if is_admin else "",
-                    "account": public_account(username, account) if account else None,
+                    "clientMac": ", ".join(sorted(request_mac_addresses(self.client_address[0]))) if is_admin else "",
                     "ban": ban,
-                    "rateLimit": rate_limit_status(self.client_address[0], self.session_token()),
+                    "rateLimit": rate_limit_status(self.client_address[0]),
                     "storage": storage_status(),
                 }
             )
             return
 
         if self.path == "/api/admin/reports":
-            if not is_admin_request(self.client_address[0], self.session_token()):
+            if not is_admin_request(self.client_address[0]):
                 self.send_json({"error": "Admin access required."}, status=403)
                 return
             self.send_json(admin_payload(self.client_address[0]))
@@ -840,42 +702,16 @@ class AetherHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self) -> None:
-        if self.path == "/api/account/register":
-            self.send_json({"ok": False, "error": "Use Clerk sign in."}, status=410)
-            return
-
-        if self.path == "/api/account/login":
-            username, account = account_for_session(self.session_token())
-            self.send_json({"ok": bool(account), "account": public_account(username, account) if account else None})
-            return
-
-        if self.path == "/api/account/logout":
-            self.send_json({"ok": True})
-            return
-
-        if self.path == "/api/account/status":
-            username, account = account_for_session(self.session_token())
-            self.send_json({"account": public_account(username, account) if account else None})
-            return
-
-        if self.path == "/api/account/update":
-            self.send_json({"ok": False, "error": "Manage your profile with Clerk."}, status=410)
-            return
-
-        if self.path == "/api/account/delete":
-            self.send_json({"ok": False, "error": "Delete your account from Clerk."}, status=410)
-            return
-
         if self.path == "/api/report":
             try:
-                report = submit_report(self.read_json_body(), self.client_address[0], self.session_token())
+                report = submit_report(self.read_json_body(), self.client_address[0])
                 self.send_json({"ok": True, "report": report})
             except Exception as exc:
                 self.send_json({"ok": False, "error": f"Report error: {exc}"}, status=200)
             return
 
         if self.path == "/api/admin/report":
-            if not is_admin_request(self.client_address[0], self.session_token()):
+            if not is_admin_request(self.client_address[0]):
                 self.send_json({"error": "Admin access required."}, status=403)
                 return
             payload = self.read_json_body()
@@ -887,7 +723,7 @@ class AetherHandler(SimpleHTTPRequestHandler):
             return
 
         if self.path == "/api/admin/ban":
-            if not is_admin_request(self.client_address[0], self.session_token()):
+            if not is_admin_request(self.client_address[0]):
                 self.send_json({"error": "Admin access required."}, status=403)
                 return
             payload = self.read_json_body()
@@ -900,7 +736,7 @@ class AetherHandler(SimpleHTTPRequestHandler):
             return
 
         if self.path == "/api/admin/ban-mac":
-            if not is_admin_request(self.client_address[0], self.session_token()):
+            if not is_admin_request(self.client_address[0]):
                 self.send_json({"error": "Admin access required."}, status=403)
                 return
             payload = self.read_json_body()
@@ -915,7 +751,7 @@ class AetherHandler(SimpleHTTPRequestHandler):
             return
 
         if self.path == "/api/admin/unban":
-            if not is_admin_request(self.client_address[0], self.session_token()):
+            if not is_admin_request(self.client_address[0]):
                 self.send_json({"error": "Admin access required."}, status=403)
                 return
             payload = self.read_json_body()
@@ -928,7 +764,7 @@ class AetherHandler(SimpleHTTPRequestHandler):
             return
 
         if self.path == "/api/admin/unban-mac":
-            if not is_admin_request(self.client_address[0], self.session_token()):
+            if not is_admin_request(self.client_address[0]):
                 self.send_json({"error": "Admin access required."}, status=403)
                 return
             payload = self.read_json_body()
@@ -937,7 +773,7 @@ class AetherHandler(SimpleHTTPRequestHandler):
             return
 
         if self.path == "/api/admin/reset-warnings":
-            if not is_admin_request(self.client_address[0], self.session_token()):
+            if not is_admin_request(self.client_address[0]):
                 self.send_json({"error": "Admin access required."}, status=403)
                 return
             payload = self.read_json_body()
@@ -950,7 +786,7 @@ class AetherHandler(SimpleHTTPRequestHandler):
             return
 
         if self.path == "/api/admin/grant":
-            if not is_admin_request(self.client_address[0], self.session_token()):
+            if not is_admin_request(self.client_address[0]):
                 self.send_json({"error": "Admin access required."}, status=403)
                 return
             payload = self.read_json_body()
@@ -967,7 +803,7 @@ class AetherHandler(SimpleHTTPRequestHandler):
             return
 
         if self.path == "/api/admin/revoke":
-            if not is_admin_request(self.client_address[0], self.session_token()):
+            if not is_admin_request(self.client_address[0]):
                 self.send_json({"error": "Admin access required."}, status=403)
                 return
             payload = self.read_json_body()
@@ -982,28 +818,8 @@ class AetherHandler(SimpleHTTPRequestHandler):
                 self.send_json({"ok": False, "error": str(exc)}, status=400)
             return
 
-        if self.path == "/api/admin/account-admin":
-            if not is_admin_request(self.client_address[0], self.session_token()):
-                self.send_json({"error": "Admin access required."}, status=403)
-                return
-            payload = self.read_json_body()
-            try:
-                account = set_account_admin(str(payload.get("username", "")), bool(payload.get("isAdmin")))
-                self.send_json({"ok": True, "account": account})
-            except ValueError as exc:
-                self.send_json({"ok": False, "error": str(exc)}, status=400)
-            return
-
-        if self.path == "/api/admin/delete-account":
-            if not is_admin_request(self.client_address[0], self.session_token()):
-                self.send_json({"error": "Admin access required."}, status=403)
-                return
-            payload = self.read_json_body()
-            self.send_json({"ok": delete_account(str(payload.get("username", "")))})
-            return
-
         if self.path == "/api/admin/delete-report":
-            if not is_admin_request(self.client_address[0], self.session_token()):
+            if not is_admin_request(self.client_address[0]):
                 self.send_json({"error": "Admin access required."}, status=403)
                 return
             payload = self.read_json_body()
@@ -1012,7 +828,7 @@ class AetherHandler(SimpleHTTPRequestHandler):
             return
 
         if self.path == "/api/admin/clear-reports":
-            if not is_admin_request(self.client_address[0], self.session_token()):
+            if not is_admin_request(self.client_address[0]):
                 self.send_json({"error": "Admin access required."}, status=403)
                 return
             payload = self.read_json_body()
@@ -1021,7 +837,7 @@ class AetherHandler(SimpleHTTPRequestHandler):
             return
 
         if self.path == "/api/admin/reset-rate-limits":
-            if not is_admin_request(self.client_address[0], self.session_token()):
+            if not is_admin_request(self.client_address[0]):
                 self.send_json({"error": "Admin access required."}, status=403)
                 return
             reset_all_rate_limits()
@@ -1058,11 +874,11 @@ class AetherHandler(SimpleHTTPRequestHandler):
                 )
                 self.send_json({"reply": reply, "warning": warning})
                 return
-            rate = consume_rate_limit(self.client_address[0], self.session_token())
+            rate = consume_rate_limit(self.client_address[0])
             if not rate["allowed"]:
                 self.send_json(
                     {
-                        "reply": "Rate limit reached. Wait for the next minute or sign in for a higher limit.",
+                        "reply": "Rate limit reached. Wait up to 5 minutes.",
                         "rateLimited": True,
                         "rateLimit": rate["rateLimit"],
                     }
@@ -1096,51 +912,6 @@ class AetherHandler(SimpleHTTPRequestHandler):
         payload = json.loads(body.decode("utf-8"))
         return payload if isinstance(payload, dict) else {}
 
-    def session_token(self) -> str:
-        cached = getattr(self, "_clerk_user_id", None)
-        if cached is not None:
-            return cached
-        self._clerk_user_id = ""
-        auth_header = self.headers.get("Authorization", "").strip()
-        if not auth_header.lower().startswith("bearer "):
-            return ""
-        if not authenticate_request or not AuthenticateRequestOptions:
-            return ""
-        secret_key = os.getenv("CLERK_SECRET_KEY", "").strip()
-        if not secret_key:
-            return ""
-
-        options = {
-            "secret_key": secret_key,
-            "accepts_token": ["session_token"],
-        }
-        jwt_key = clerk_jwt_key()
-        if jwt_key:
-            options["jwt_key"] = jwt_key
-        authorized_parties = clerk_authorized_parties()
-        if authorized_parties:
-            options["authorized_parties"] = authorized_parties
-        try:
-            state = authenticate_request(
-                ClerkRequestAdapter(self.headers),
-                AuthenticateRequestOptions(**options),
-            )
-        except Exception as exc:
-            print(f"Clerk auth failed: {exc}")
-            return ""
-        if not getattr(state, "is_signed_in", False):
-            return ""
-        user_id = clerk_claim_user_id(state)
-        if user_id:
-            sync_clerk_account(
-                user_id,
-                self.headers.get("X-Aether-Clerk-Name", ""),
-                self.headers.get("X-Aether-Clerk-Email", ""),
-                self.headers.get("X-Aether-Clerk-Username", ""),
-            )
-            self._clerk_user_id = user_id
-        return self._clerk_user_id
-
     def send_json(self, payload: dict, status: int = 200) -> None:
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
@@ -1162,7 +933,7 @@ def http_error_message(exc: urllib.error.HTTPError) -> str:
     if exc.code == 404:
         return "The weather endpoint was not found."
     if exc.code == 429:
-        return "The account is rate limited or out of quota. Try again later."
+        return "The backend is rate limited or out of quota. Try again later."
     return detail or f"The request failed with HTTP {exc.code}."
 
 

@@ -13,11 +13,11 @@ const Aether = {
     rateLimitPopup: false,
     ban: null,
     rateLimit: {
-      limit: 5,
+      limit: 40,
       used: 0,
-      remaining: 5,
+      remaining: 40,
       percentUsed: 0,
-      resetInSeconds: 60,
+      resetInSeconds: 300,
     },
     reportPopup: null,
     reportNotice: "",
@@ -31,14 +31,7 @@ const Aether = {
     adminLoading: false,
     adminSearch: "",
     adminStatusFilter: "open",
-    account: null,
-    accountSession: "",
-    accountModal: null,
-    accountError: "",
-    accountPasswordVisible: false,
     serverOnline: false,
-    clerkReady: false,
-    clerkError: "",
   },
 };
 
@@ -46,7 +39,6 @@ let messageVisibilityObserver = null;
 let rateMeterTimer = null;
 let rateLimitCountdownTimer = null;
 let serverStatusTimer = null;
-let clerkSyncTimer = null;
 const thoughtTimerTimeouts = new Map();
 const PROFANITY_LIMIT = 6;
 const PROFANITY_PATTERNS = [
@@ -79,7 +71,6 @@ const storage = {
     Aether.config.apiEndpoint = defaultApiEndpoint();
     Aether.state.chats = readJson("aether.chats", []);
     Aether.state.activeChatId = localStorage.getItem("aether.activeChatId");
-    Aether.state.account = readJson("aether.account", null);
 
     if (!Aether.state.chats.length) {
       const chat = createChat("New conversation");
@@ -96,22 +87,16 @@ const storage = {
     localStorage.setItem("aether.config", JSON.stringify(Aether.config));
     localStorage.setItem("aether.chats", JSON.stringify(Aether.state.chats));
     localStorage.setItem("aether.activeChatId", Aether.state.activeChatId || "");
-    localStorage.removeItem("aether.accountSession");
-    if (Aether.state.account) {
-      localStorage.setItem("aether.account", JSON.stringify(Aether.state.account));
-    } else {
-      localStorage.removeItem("aether.account");
-    }
   },
 };
 
 function defaultApiEndpoint() {
+  if (canUseRelativeApi()) {
+    return "/api/chat";
+  }
   const publicEndpoint = configuredPublicApiEndpoint();
   if (publicEndpoint) {
     return publicEndpoint;
-  }
-  if (canUseRelativeApi()) {
-    return "/api/chat";
   }
   if (isStaticLaunch()) {
     return "http://127.0.0.1:8765/api/chat";
@@ -151,149 +136,6 @@ function readJson(key, fallback) {
   }
 }
 
-function hasClerkConfig() {
-  return Boolean(String(window.CLERK_PUBLISHABLE_KEY || "").trim());
-}
-
-function clerkFrontendDomain() {
-  const configured = String(window.CLERK_FRONTEND_API || "").trim();
-  if (configured) {
-    return configured.replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
-  }
-  const publishableKey = String(window.CLERK_PUBLISHABLE_KEY || "").trim();
-  try {
-    return atob(publishableKey.split("_")[2]).slice(0, -1);
-  } catch {
-    return "";
-  }
-}
-
-async function initClerkAuth() {
-  if (!hasClerkConfig()) {
-    Aether.state.clerkError = "Missing Clerk configuration.";
-    return;
-  }
-  const clerkDomain = clerkFrontendDomain();
-  if (!clerkDomain) {
-    Aether.state.clerkError = "Invalid Clerk key.";
-    render();
-    return;
-  }
-  try {
-    await loadScriptOnce("clerk-ui-sdk", `https://${clerkDomain}/npm/@clerk/ui@1/dist/ui.browser.js`);
-    await loadScriptOnce(
-      "clerk-js-sdk",
-      `https://${clerkDomain}/npm/@clerk/clerk-js@6/dist/clerk.browser.js`,
-      { "data-clerk-publishable-key": String(window.CLERK_PUBLISHABLE_KEY).trim() },
-    );
-    await window.Clerk.load({ ui: { ClerkUI: window.__internal_ClerkUICtor } });
-    Aether.state.clerkReady = true;
-    Aether.state.clerkError = "";
-    await syncClerkAccount();
-    if (clerkSyncTimer) clearInterval(clerkSyncTimer);
-    clerkSyncTimer = setInterval(syncClerkAccount, 4000);
-    render();
-    mountClerkAuth();
-  } catch (error) {
-    Aether.state.clerkReady = false;
-    Aether.state.clerkError = "Could not load Clerk. Check the publishable key and allowed domains.";
-    render();
-  }
-}
-
-function loadScriptOnce(id, src, attributes = {}) {
-  const existing = document.getElementById(id);
-  if (existing) {
-    return existing.dataset.loaded === "true"
-      ? Promise.resolve(existing)
-      : new Promise((resolve, reject) => {
-          existing.addEventListener("load", () => resolve(existing), { once: true });
-          existing.addEventListener("error", reject, { once: true });
-        });
-  }
-  return new Promise((resolve, reject) => {
-    const script = document.createElement("script");
-    script.id = id;
-    script.src = src;
-    script.async = true;
-    script.crossOrigin = "anonymous";
-    Object.entries(attributes).forEach(([key, value]) => script.setAttribute(key, value));
-    script.addEventListener("load", () => {
-      script.dataset.loaded = "true";
-      resolve(script);
-    });
-    script.addEventListener("error", reject);
-    document.head.appendChild(script);
-  });
-}
-
-async function syncClerkAccount() {
-  if (!window.Clerk || !Aether.state.clerkReady) return;
-  await refreshClerkToken();
-  const user = window.Clerk.user;
-  if (window.Clerk.isSignedIn && user) {
-    Aether.state.account = clerkPublicAccount(user);
-  } else {
-    Aether.state.account = null;
-    Aether.state.accountSession = "";
-    Aether.state.isAdmin = false;
-    Aether.state.adminView = false;
-    Aether.state.adminData = null;
-  }
-  storage.save();
-  updateAccountTabDom();
-  checkAdminStatus();
-}
-
-function clerkPublicAccount(user) {
-  const email = user.primaryEmailAddress?.emailAddress || user.emailAddresses?.[0]?.emailAddress || "";
-  const username = user.username || email || user.id;
-  return {
-    username,
-    displayName: user.fullName || [user.firstName, user.lastName].filter(Boolean).join(" ") || username,
-    email,
-    clerkId: user.id,
-    isAdmin: Boolean(Aether.state.account?.isAdmin),
-  };
-}
-
-async function refreshClerkToken() {
-  if (!window.Clerk?.session) {
-    Aether.state.accountSession = "";
-    return "";
-  }
-  try {
-    Aether.state.accountSession = (await window.Clerk.session.getToken()) || "";
-  } catch {
-    Aether.state.accountSession = "";
-  }
-  return Aether.state.accountSession;
-}
-
-function updateAccountTabDom() {
-  const tab = document.querySelector(".account-tab");
-  if (!tab) return;
-  tab.textContent = Aether.state.account ? Aether.state.account.displayName || Aether.state.account.username : "Sign in";
-}
-
-function mountClerkAuth(mode = "") {
-  const slot = document.getElementById("clerk-auth-slot");
-  if (!slot) return;
-  if (Aether.state.clerkError) {
-    slot.innerHTML = `<div class="clerk-error">${escapeHtml(Aether.state.clerkError)}</div>`;
-    return;
-  }
-  if (!window.Clerk || !Aether.state.clerkReady) return;
-  slot.innerHTML = "";
-  if (Aether.state.account && window.Clerk.mountUserProfile) {
-    window.Clerk.mountUserProfile(slot);
-  } else if (mode === "sign-up" && window.Clerk.mountSignUp) {
-    window.Clerk.mountSignUp(slot);
-  } else if (window.Clerk.mountSignIn) {
-    window.Clerk.mountSignIn(slot);
-  }
-}
-
 function createChat(title) {
   return {
     id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
@@ -315,57 +157,10 @@ function activeChat() {
 function bootstrap() {
   injectStyles();
   storage.load();
-  bindGlobalEvents();
   startRateLimitCountdown();
   render();
   checkAdminStatus();
   startServerStatusPolling();
-  initClerkAuth();
-}
-
-function bindGlobalEvents() {
-  document.addEventListener("click", (event) => {
-    const actionElement = event.target.closest("[data-action]");
-    if (!actionElement) return;
-    const action = actionElement.dataset.action;
-    if (action === "open-account") {
-      event.preventDefault();
-      openAccountModal();
-    }
-    if (action === "close-account") {
-      event.preventDefault();
-      closeAccountModal();
-    }
-    if (action === "show-register") {
-      event.preventDefault();
-      mountClerkAuth("sign-up");
-    }
-    if (action === "show-login") {
-      event.preventDefault();
-      mountClerkAuth("sign-in");
-    }
-    if (action === "logout-account") {
-      event.preventDefault();
-      logoutAccount();
-    }
-    if (action === "toggle-profile-password") {
-      event.preventDefault();
-      Aether.state.accountPasswordVisible = !Aether.state.accountPasswordVisible;
-      render();
-    }
-  });
-}
-
-function openAccountModal() {
-  Aether.state.accountModal = Aether.state.account ? "profile" : "sign-in";
-  Aether.state.accountError = "";
-  render();
-}
-
-function closeAccountModal() {
-  Aether.state.accountModal = null;
-  Aether.state.accountError = "";
-  render();
 }
 
 function render() {
@@ -383,9 +178,6 @@ function render() {
           </span>
         </button>
         <button class="new-chat" data-action="new-chat">+ New conversation</button>
-        <button class="account-tab" data-action="open-account">
-          ${Aether.state.account ? escapeHtml(Aether.state.account.displayName || Aether.state.account.username) : "Sign in"}
-        </button>
         ${Aether.state.isAdmin ? `<button class="admin-tab ${Aether.state.adminView ? "active" : ""}" data-action="admin-view" aria-label="Admin dashboard">Admin</button>` : ""}
         <div class="chat-list">
           ${Aether.state.chats.map(chatListItem).join("")}
@@ -398,13 +190,11 @@ function render() {
       ${renderShortMessagePopup()}
       ${renderRateLimitPopup()}
       ${renderReportPopup()}
-      ${renderAccountModal()}
       ${renderBanOverlay()}
     </div>
   `;
 
   bindEvents(root);
-  mountClerkAuth();
   observeMessageVisibility();
   scrollChatToBottom();
 }
@@ -453,7 +243,7 @@ function chatListItem(chat) {
 
 function renderRateLimitMeter() {
   const rate = Aether.state.rateLimit || {};
-  const limit = Math.max(1, Number(rate.limit || 5));
+  const limit = Math.max(1, Number(rate.limit || 40));
   const remaining = Math.max(0, Math.min(limit, Number(rate.remaining ?? limit)));
   const targetPercent = Math.round((remaining / limit) * 100);
   const displayPercent = clampPercent(Aether.state.rateMeter?.displayPercent ?? targetPercent);
@@ -476,11 +266,15 @@ function renderMessage(message) {
     message.role === "assistant" && !message.typing
       ? `<button class="report-message" data-report-message="${escapeHtml(messageId)}" aria-label="Report this message" title="Report this message">⚑</button>`
       : "";
+  const copyButton =
+    message.role === "assistant" && !message.typing
+      ? `<button class="copy-message" data-copy-message="${escapeHtml(messageId)}" aria-label="Copy this message" title="Copy this message">Copy</button>`
+      : "";
   const thoughtTime =
     message.role === "assistant" && !message.typing && message.showThoughtTime && Number.isFinite(message.thoughtTimeMs)
       ? `<span class="thought-time">Thought for ${escapeHtml(formatThoughtTime(message.thoughtTimeMs))}</span>`
       : "";
-  const messageControls = reportButton || thoughtTime ? `<div class="message-controls">${reportButton}${thoughtTime}</div>` : "";
+  const messageControls = reportButton || copyButton || thoughtTime ? `<div class="message-controls">${copyButton}${reportButton}${thoughtTime}</div>` : "";
   return `
     <div class="message-row ${roleClass}${typingClass}" data-message-id="${escapeHtml(messageId)}">
       <div class="message-stack">
@@ -540,7 +334,7 @@ function renderRateLimitPopup() {
     <div class="warning-overlay compact" role="dialog" aria-modal="true">
       <div class="warning-modal compact-modal">
         <h2>Oops!</h2>
-        <p>Wait ${Number(rate.resetInSeconds || 0)} seconds to use <strong>Aether<strong> AI again.</p>
+        <p>Wait ${Number(rate.resetInSeconds || 0)} seconds to use <strong>Aether</strong> AI again.</p>
         <button class="warning-understand" data-action="close-rate-limit">Okay.</button>
       </div>
     </div>
@@ -596,46 +390,6 @@ function renderReportPopup() {
   `;
 }
 
-function renderAccountModal() {
-  if (!Aether.state.accountModal) return "";
-  const account = Aether.state.account;
-  const clerkConfigured = hasClerkConfig();
-  return `
-    <div class="account-overlay" role="dialog" aria-modal="true" aria-labelledby="account-title">
-      <div class="account-modal">
-        <button class="modal-close" type="button" data-action="close-account" aria-label="Close">X</button>
-        ${
-          !clerkConfigured
-            ? `
-              <h2 id="account-title">Connect Clerk</h2>
-              <p class="account-subtitle">Add your Clerk publishable key in config.js, then refresh this page.</p>
-              <div class="account-card-row"><span>Needed</span><strong>Publishable key</strong></div>
-            `
-            : account
-            ? `
-              <h2 id="account-title">${escapeHtml(account.displayName || account.username)}</h2>
-              <p class="account-subtitle">${account.isAdmin ? "Admin account" : "Signed in with Clerk"}</p>
-              <div class="account-card-row">
-                <span>Account</span>
-                <strong>${escapeHtml(account.username)}</strong>
-              </div>
-              <div id="clerk-auth-slot" class="clerk-auth-slot"></div>
-              <div class="modal-actions">
-                <button class="secondary-button" type="button" data-action="logout-account">Sign out</button>
-              </div>
-            `
-            : `
-              <h2 id="account-title">Sign in</h2>
-              <p class="account-subtitle">Use Clerk to sign in or create an account.</p>
-              ${Aether.state.accountError ? `<p class="account-error">${escapeHtml(Aether.state.accountError)}</p>` : ""}
-              <div id="clerk-auth-slot" class="clerk-auth-slot"></div>
-            `
-        }
-      </div>
-    </div>
-  `;
-}
-
 function renderAdminPage() {
   const data = Aether.state.adminData;
   const reports = filteredAdminReports(data?.reports || []);
@@ -644,10 +398,8 @@ function renderAdminPage() {
   const bannedMacs = data?.bannedMacs || {};
   const adminMacs = data?.adminMacs || {};
   const adminIps = data?.adminIps || {};
-  const accounts = data?.accounts || [];
-  const adminAccounts = accounts.filter((account) => account.isAdmin);
   const bannedTotal = Number(stats.bannedUsers || 0) + Number(stats.bannedMacs || 0);
-  const adminIdentityTotal = Number(stats.adminMacs || 0) + Number(stats.adminAccounts || 0);
+  const adminIdentityTotal = Number(stats.adminMacs || 0) + Number(stats.adminIps || 0);
   return `
     <main class="admin-page">
       <div class="animated-bg">
@@ -669,29 +421,24 @@ function renderAdminPage() {
         <div><strong>${Number(stats.openReports || 0)}</strong><span>Open reports</span></div>
         <div><strong>${Number(stats.totalReports || 0)}</strong><span>Total reports</span></div>
         <div><strong>${bannedTotal}</strong><span>Banned IPs/MACs</span></div>
-        <div><strong>${adminIdentityTotal}</strong><span>Admin MACs/accounts</span></div>
+        <div><strong>${adminIdentityTotal}</strong><span>Admin access rules</span></div>
         <div><strong>${Number(stats.adminIps || 0)}</strong><span>Admin IPs</span></div>
-        <div><strong>${Number(stats.accounts || 0)}</strong><span>Accounts</span></div>
+        <div><strong>${Number(stats.uniqueReporters || 0)}</strong><span>Reporter IPs</span></div>
       </section>
       <section class="admin-panel">
-        <h2>Give admin</h2>
+        <h2>Access rules</h2>
         <div class="manual-grid">
-          <form class="manual-form" data-action="grant-admin-user">
-            <label>Give admin by username</label>
-            <input name="username" placeholder="username" autocomplete="off">
-            <button class="primary-button" type="submit">Give admin</button>
-          </form>
           <form class="manual-form" data-action="grant-admin-mac">
-            <label>Give admin by MAC</label>
+            <label>Allow MAC</label>
             <input name="value" placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off">
             <input name="note" placeholder="Note" autocomplete="off">
-            <button class="primary-button" type="submit">Give admin</button>
+            <button class="primary-button" type="submit">Allow</button>
           </form>
           <form class="manual-form" data-action="grant-admin-ip">
-            <label>Give admin by IP</label>
+            <label>Allow IP</label>
             <input name="value" placeholder="127.0.0.1" autocomplete="off">
             <input name="note" placeholder="Note" autocomplete="off">
-            <button class="primary-button" type="submit">Give admin</button>
+            <button class="primary-button" type="submit">Allow</button>
           </form>
         </div>
       </section>
@@ -767,7 +514,7 @@ function renderAdminPage() {
       </section>
       <section class="admin-panel">
         <h2>Admins</h2>
-        <h3>Admin MACs & accounts</h3>
+        <h3>Admin MACs</h3>
         ${
           Object.keys(adminMacs).length
             ? Object.entries(adminMacs)
@@ -776,27 +523,12 @@ function renderAdminPage() {
                     <div class="ban-row">
                       <strong>${escapeHtml(mac)}</strong>
                       <span>${escapeHtml(info.note || "Admin")}</span>
-                      <button class="secondary-button" data-revoke-admin-mac="${escapeHtml(mac)}">Revoke</button>
+                      <button class="secondary-button" data-revoke-admin-mac="${escapeHtml(mac)}" ${info.protected ? "disabled" : ""}>Revoke</button>
                     </div>
                   `,
                 )
                 .join("")
             : `<div class="admin-empty">No admin MACs.</div>`
-        }
-        ${
-          adminAccounts.length
-            ? adminAccounts
-                .map(
-                  (account) => `
-                    <div class="ban-row">
-                      <strong>${escapeHtml(account.displayName || account.username)}</strong>
-                      <span>@${escapeHtml(account.username)} Admin account</span>
-                      <button class="secondary-button" data-account-admin="${escapeHtml(account.username)}" data-admin-value="false">Remove admin</button>
-                    </div>
-                  `,
-                )
-                .join("")
-            : `<div class="admin-empty">No admin accounts.</div>`
         }
         <h3>Admin IPs</h3>
         ${
@@ -813,27 +545,6 @@ function renderAdminPage() {
                 )
                 .join("")
             : `<div class="admin-empty">No admin IPs.</div>`
-        }
-      </section>
-      <section class="admin-panel">
-        <h2>Accounts</h2>
-        ${
-          accounts.length
-            ? accounts
-                .map(
-                  (account) => `
-                    <div class="ban-row">
-                      <strong>${escapeHtml(account.displayName || account.username)}</strong>
-                      <span>@${escapeHtml(account.username)} ${account.isAdmin ? "Admin" : "User"}</span>
-                      <button class="secondary-button" data-account-admin="${escapeHtml(account.username)}" data-admin-value="${account.isAdmin ? "false" : "true"}">
-                        ${account.isAdmin ? "Remove admin" : "Make admin"}
-                      </button>
-                      <button class="danger-button" data-delete-account="${escapeHtml(account.username)}">Delete</button>
-                    </div>
-                  `,
-                )
-                .join("")
-            : `<div class="admin-empty">No accounts yet.</div>`
         }
       </section>
     </main>
@@ -894,10 +605,6 @@ function bindEvents(root) {
     Aether.state.adminView = false;
     render();
   });
-  root.querySelector("[data-action='login-account']")?.addEventListener("submit", loginAccount);
-  root.querySelector("[data-action='register-account']")?.addEventListener("submit", registerAccount);
-  root.querySelector("[data-action='update-account']")?.addEventListener("submit", updateOwnAccount);
-  root.querySelector("[data-action='delete-own-account']")?.addEventListener("click", deleteOwnAccount);
 
   root.querySelector("[data-action='admin-view']")?.addEventListener("click", () => {
     Aether.state.adminView = true;
@@ -949,6 +656,9 @@ function bindEvents(root) {
   root.querySelectorAll("[data-report-message]").forEach((button) => {
     button.addEventListener("click", () => openReportPopup(button.dataset.reportMessage));
   });
+  root.querySelectorAll("[data-copy-message]").forEach((button) => {
+    button.addEventListener("click", () => copyAssistantMessage(button.dataset.copyMessage, button));
+  });
   root.querySelector("[data-action='close-report']")?.addEventListener("click", () => {
     Aether.state.reportPopup = null;
     render();
@@ -971,7 +681,6 @@ function bindEvents(root) {
   });
   root.querySelector("[data-action='manual-ban-ip']")?.addEventListener("submit", manualBanIp);
   root.querySelector("[data-action='manual-ban-mac']")?.addEventListener("submit", manualBanMac);
-  root.querySelector("[data-action='grant-admin-user']")?.addEventListener("submit", grantAdminUser);
   root.querySelector("[data-action='grant-admin-mac']")?.addEventListener("submit", (event) => grantAdmin(event, "mac"));
   root.querySelector("[data-action='grant-admin-ip']")?.addEventListener("submit", (event) => grantAdmin(event, "ip"));
   root.querySelectorAll("[data-ignore-report]").forEach((button) => {
@@ -997,12 +706,6 @@ function bindEvents(root) {
   });
   root.querySelectorAll("[data-revoke-admin-ip]").forEach((button) => {
     button.addEventListener("click", () => revokeAdmin("ip", button.dataset.revokeAdminIp));
-  });
-  root.querySelectorAll("[data-account-admin]").forEach((button) => {
-    button.addEventListener("click", () => setAccountAdmin(button.dataset.accountAdmin, button.dataset.adminValue === "true"));
-  });
-  root.querySelectorAll("[data-delete-account]").forEach((button) => {
-    button.addEventListener("click", () => deleteAccount(button.dataset.deleteAccount));
   });
 }
 
@@ -1259,7 +962,7 @@ function resetExpiredRateLimitWindow() {
   rate.used = 0;
   rate.remaining = limit;
   rate.percentUsed = 0;
-  rate.resetInSeconds = 120;
+  rate.resetInSeconds = 300;
   animateRateMeterTo(100);
 }
 
@@ -1287,7 +990,7 @@ function updateRateMeterDom() {
   const card = document.querySelector(".rate-card");
   if (!card) return;
   const rate = Aether.state.rateLimit || {};
-  const limit = Math.max(1, Number(rate.limit || 5));
+  const limit = Math.max(1, Number(rate.limit || 40));
   const remaining = Math.max(0, Math.min(limit, Number(rate.remaining ?? limit)));
   const displayPercent = clampPercent(Aether.state.rateMeter?.displayPercent ?? ratePercent(rate));
   const resetInSeconds = Math.max(0, Number(rate.resetInSeconds || 0));
@@ -1301,7 +1004,7 @@ function updateRateMeterDom() {
 }
 
 function ratePercent(rate) {
-  const limit = Math.max(1, Number(rate?.limit || 5));
+  const limit = Math.max(1, Number(rate?.limit || 40));
   const remaining = Math.max(0, Math.min(limit, Number(rate?.remaining ?? limit)));
   return Math.round((remaining / limit) * 100);
 }
@@ -1320,18 +1023,12 @@ function rateColor(percent) {
 
 async function checkAdminStatus() {
   try {
-    const response = await fetch(apiUrl("/api/admin/status"), { headers: await authHeaders(), cache: "no-store" });
+    const response = await fetch(apiUrl("/api/admin/status"), { cache: "no-store" });
     if (!response.ok) throw new Error(`Status failed with HTTP ${response.status}`);
     const data = await response.json();
     setServerOnline(true);
     applyServerStatus(data);
     Aether.state.isAdmin = Boolean(data.isAdmin);
-    if (data.account) {
-      Aether.state.account = data.account;
-    } else if (Aether.state.accountSession) {
-      Aether.state.account = null;
-      Aether.state.accountSession = "";
-    }
     storage.save();
     if (Aether.state.isAdmin) {
       loadAdminData();
@@ -1342,40 +1039,6 @@ async function checkAdminStatus() {
     Aether.state.isAdmin = false;
     setServerOnline(false);
   }
-}
-
-async function loginAccount(event) {
-  event.preventDefault();
-  mountClerkAuth("sign-in");
-}
-
-async function registerAccount(event) {
-  event.preventDefault();
-  mountClerkAuth("sign-up");
-}
-
-async function logoutAccount() {
-  if (window.Clerk?.signOut) {
-    await window.Clerk.signOut();
-  }
-  Aether.state.account = null;
-  Aether.state.accountSession = "";
-  Aether.state.accountModal = null;
-  Aether.state.isAdmin = false;
-  Aether.state.adminView = false;
-  Aether.state.adminData = null;
-  storage.save();
-  await checkAdminStatus();
-  render();
-}
-
-async function updateOwnAccount(event) {
-  event.preventDefault();
-  mountClerkAuth("profile");
-}
-
-async function deleteOwnAccount() {
-  mountClerkAuth("profile");
 }
 
 function openReportPopup(messageId) {
@@ -1389,6 +1052,21 @@ function openReportPopup(messageId) {
     chatTitle: chat.title,
   };
   render();
+}
+
+async function copyAssistantMessage(messageId, button) {
+  const chat = activeChat();
+  const message = chat?.messages.find((item) => item.id === messageId);
+  if (!message?.content) return;
+  try {
+    await navigator.clipboard.writeText(sanitizeAssistantText(message.content));
+    button.textContent = "Copied";
+  } catch {
+    button.textContent = "Copy failed";
+  }
+  setTimeout(() => {
+    button.textContent = "Copy";
+  }, 1200);
 }
 
 async function submitReport(event) {
@@ -1429,7 +1107,7 @@ async function loadAdminData() {
   Aether.state.adminLoading = true;
   render();
   try {
-    const response = await fetch(apiUrl("/api/admin/reports"), { headers: await authHeaders() });
+    const response = await fetch(apiUrl("/api/admin/reports"));
     if (!response.ok) throw new Error("Admin access required.");
     Aether.state.adminData = await response.json();
   } catch {
@@ -1525,26 +1203,6 @@ async function revokeAdmin(type, value) {
   await loadAdminData();
 }
 
-async function grantAdminUser(event) {
-  event.preventDefault();
-  const form = event.currentTarget;
-  const username = form.elements.username.value.trim();
-  if (!username) return;
-  await setAccountAdmin(username, true);
-  form.reset();
-}
-
-async function setAccountAdmin(username, isAdmin) {
-  await postJson("/api/admin/account-admin", { username, isAdmin });
-  await loadAdminData();
-}
-
-async function deleteAccount(username) {
-  if (!username) return;
-  await postJson("/api/admin/delete-account", { username });
-  await loadAdminData();
-}
-
 async function postJson(path, payload) {
   const response = await fetch(apiUrl(path), {
     method: "POST",
@@ -1561,22 +1219,8 @@ async function postJson(path, payload) {
   return response.json();
 }
 
-function backendUnavailableMessage() {
-  return `Could not reach ${apiUrl("/api/account/login")}. ${backendLaunchMessage()}`;
-}
-
 async function authHeaders(base = {}) {
-  const token = await refreshClerkToken();
-  const headers = { ...base };
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-  if (Aether.state.account) {
-    headers["X-Aether-Clerk-Name"] = Aether.state.account.displayName || "";
-    headers["X-Aether-Clerk-Email"] = Aether.state.account.email || "";
-    headers["X-Aether-Clerk-Username"] = Aether.state.account.username || "";
-  }
-  return headers;
+  return { ...base };
 }
 
 async function jsonHeaders() {
@@ -1656,14 +1300,13 @@ async function typeAssistantMessage(chat, message, fullText) {
   const bubble = row?.querySelector(".bubble");
   const cleanText = sanitizeAssistantText(fullText);
 
-  message.content = cleanText;
-
   if (bubble) {
-    const wordCount = renderWordReveal(bubble, cleanText);
+    const reveal = renderWordReveal(bubble, cleanText);
     scrollChatToBottom();
-    await wait(Math.min(3200, wordCount * 58 + 420));
+    await waitForWordReveal(bubble, reveal.durationMs);
   }
 
+  message.content = cleanText;
   message.typing = false;
   message.showThoughtTime = Number.isFinite(message.thoughtTimeMs);
   row?.classList.remove("typing");
@@ -1704,16 +1347,44 @@ function randomBetween(min, max) {
 
 function renderWordReveal(container, text) {
   const parts = text.match(/\s+|\S+/g) || [text];
+  const totalWords = parts.filter((part) => !/^\s+$/.test(part)).length;
+  const delayStep = wordRevealDelay(totalWords);
   let wordIndex = 0;
   container.innerHTML = parts
     .map((part) => {
       if (/^\s+$/.test(part)) return escapeHtml(part);
-      const delay = wordIndex * 58;
+      const delay = wordIndex * delayStep;
       wordIndex += 1;
       return `<span class="fade-word" style="animation-delay: ${delay}ms">${escapeHtml(part)}</span>`;
     })
     .join("");
-  return wordIndex;
+  return {
+    wordCount: wordIndex,
+    durationMs: wordIndex ? (wordIndex - 1) * delayStep + 480 : 0,
+  };
+}
+
+function wordRevealDelay(wordCount) {
+  if (wordCount > 220) return 12;
+  if (wordCount > 120) return 18;
+  if (wordCount > 70) return 28;
+  return 48;
+}
+
+function waitForWordReveal(container, durationMs) {
+  const words = [...container.querySelectorAll(".fade-word")];
+  const lastWord = words.at(-1);
+  if (!lastWord) return Promise.resolve();
+  return new Promise((resolve) => {
+    let complete = false;
+    const finish = () => {
+      if (complete) return;
+      complete = true;
+      resolve();
+    };
+    lastWord.addEventListener("animationend", finish, { once: true });
+    setTimeout(finish, durationMs + 240);
+  });
 }
 
 function sanitizeAssistantText(text) {
@@ -1885,7 +1556,7 @@ function injectStyles() {
       backdrop-filter: blur(18px);
       min-width: 0;
     }
-    .brand, .new-chat, .account-tab, .admin-tab, .chat-item, .delete-chat, .report-message, .composer button, .primary-button, .secondary-button, .danger-button, .modal-close, .link-button { border: 0; }
+    .brand, .new-chat, .admin-tab, .chat-item, .delete-chat, .report-message, .copy-message, .composer button, .primary-button, .secondary-button, .danger-button { border: 0; }
     .brand {
       display: flex;
       align-items: center;
@@ -1966,25 +1637,6 @@ function injectStyles() {
     .new-chat:hover, .new-chat:focus-visible {
       transform: translateY(-1px);
       filter: brightness(1.04);
-      outline: none;
-    }
-    .account-tab {
-      display: block;
-      width: 100%;
-      min-height: 38px;
-      border-radius: 10px;
-      color: #dbeafe;
-      background: rgba(191, 219, 254, 0.08);
-      border: 1px solid rgba(191, 219, 254, 0.14);
-      font-weight: 760;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      padding: 0 12px;
-    }
-    .account-tab:hover, .account-tab:focus-visible {
-      color: #07111f;
-      background: #dbeafe;
       outline: none;
     }
     .admin-tab {
@@ -2174,8 +1826,7 @@ function injectStyles() {
       gap: 8px;
       min-height: 22px;
     }
-    .report-message {
-      width: 26px;
+    .report-message, .copy-message {
       height: 22px;
       border-radius: 7px;
       color: rgba(219, 234, 254, 0.68);
@@ -2185,7 +1836,16 @@ function injectStyles() {
       opacity: 0.72;
       transition: opacity 150ms ease, color 150ms ease, background 150ms ease, transform 150ms ease;
     }
-    .report-message:hover, .report-message:focus-visible {
+    .report-message {
+      width: 26px;
+    }
+    .copy-message {
+      min-width: 48px;
+      padding: 0 8px;
+      font-size: 12px;
+      font-weight: 760;
+    }
+    .report-message:hover, .report-message:focus-visible, .copy-message:hover, .copy-message:focus-visible {
       color: #07111f;
       background: #dbeafe;
       opacity: 1;
@@ -2392,152 +2052,6 @@ function injectStyles() {
       font-weight: 800;
       animation: understandFlash 1.6s ease-in-out infinite;
     }
-    .account-overlay {
-      position: fixed;
-      inset: 0;
-      z-index: 24;
-      display: grid;
-      place-items: center;
-      padding: 24px;
-      background: rgba(0, 0, 0, 0.58);
-      backdrop-filter: blur(10px);
-      animation: warningFade 180ms ease-out both;
-    }
-    .account-modal {
-      position: relative;
-      width: min(460px, 100%);
-      border-radius: 20px;
-      border: 1px solid rgba(191, 219, 254, 0.28);
-      background: linear-gradient(145deg, rgba(7, 20, 38, 0.98), rgba(2, 6, 23, 0.98));
-      box-shadow: 0 30px 90px rgba(0, 0, 0, 0.5);
-      padding: 26px;
-      color: #f8fbff;
-      animation: warningPop 220ms ease-out both;
-    }
-    .account-modal h2 {
-      margin: 0;
-      font-size: 26px;
-      letter-spacing: 0;
-    }
-    .account-subtitle {
-      margin: 8px 0 18px;
-      color: #bfdbfe;
-      line-height: 1.45;
-    }
-    .modal-close {
-      position: absolute;
-      top: 14px;
-      right: 14px;
-      width: 30px;
-      height: 30px;
-      border-radius: 9px;
-      color: #dbeafe;
-      background: rgba(191, 219, 254, 0.1);
-    }
-    .modal-close:hover, .modal-close:focus-visible {
-      color: #07111f;
-      background: #dbeafe;
-      outline: none;
-    }
-    .account-form {
-      display: grid;
-      gap: 10px;
-    }
-    .profile-form {
-      margin-top: 14px;
-    }
-    .account-form input {
-      height: 42px;
-      border: 1px solid rgba(191, 219, 254, 0.22);
-      border-radius: 12px;
-      outline: none;
-      color: #fff;
-      background: rgba(2, 6, 23, 0.72);
-      padding: 0 12px;
-    }
-    .account-form input:focus {
-      border-color: rgba(191, 219, 254, 0.72);
-      box-shadow: 0 0 0 3px rgba(191, 219, 254, 0.12);
-    }
-    .password-heading {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      color: #dbeafe;
-      font-weight: 760;
-      margin-top: 4px;
-    }
-    .link-button.inline {
-      margin: 0;
-      font-size: 13px;
-    }
-    .account-note {
-      margin: 0;
-      color: #93c5fd;
-      font-size: 12px;
-      line-height: 1.35;
-    }
-    .account-error {
-      margin: 0 0 12px;
-      color: #fecaca;
-      background: rgba(185, 28, 28, 0.22);
-      border: 1px solid rgba(248, 113, 113, 0.28);
-      border-radius: 12px;
-      padding: 10px 12px;
-    }
-    .account-card-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      min-height: 44px;
-      border-radius: 12px;
-      background: rgba(191, 219, 254, 0.08);
-      padding: 0 12px;
-      color: #bfdbfe;
-    }
-    .account-card-row strong {
-      color: #fff;
-    }
-    .clerk-auth-slot {
-      display: grid;
-      margin-top: 14px;
-      overflow: hidden;
-      border-radius: 14px;
-    }
-    .clerk-auth-slot:empty::before {
-      content: "Loading sign in...";
-      display: grid;
-      place-items: center;
-      min-height: 120px;
-      color: #bfdbfe;
-      border: 1px solid rgba(191, 219, 254, 0.16);
-      border-radius: 14px;
-      background: rgba(191, 219, 254, 0.06);
-    }
-    .clerk-error {
-      display: grid;
-      place-items: center;
-      min-height: 120px;
-      color: #fecaca;
-      text-align: center;
-      line-height: 1.45;
-      border: 1px solid rgba(248, 113, 113, 0.26);
-      border-radius: 14px;
-      background: rgba(127, 29, 29, 0.22);
-      padding: 16px;
-    }
-    .link-button {
-      margin-top: 14px;
-      color: #bfdbfe;
-      background: transparent;
-      font-weight: 760;
-    }
-    .link-button:hover, .link-button:focus-visible {
-      color: #fff;
-      outline: none;
-    }
     .report-overlay {
       position: fixed;
       inset: 0;
@@ -2726,7 +2240,7 @@ function injectStyles() {
     }
     .manual-grid {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       gap: 12px;
     }
     .manual-form {

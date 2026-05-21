@@ -1,5 +1,4 @@
 .env
 reports.json
-accounts.js
 __pycache__/
 *.pyc
