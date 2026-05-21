@@ -33,6 +33,7 @@ let rateMeterTimer = null;
 let rateLimitCountdownTimer = null;
 let serverStatusTimer = null;
 const thoughtTimerTimeouts = new Map();
+const LOCATION_TIME_PERMISSION_MESSAGE = "Accept Aether's permission to view your location to see what timezone you are in.";
 const PROFANITY_LIMIT = 6;
 const PROFANITY_PATTERNS = [
   /\bass\b/i,
@@ -569,8 +570,37 @@ async function sendTextMessage(text, options = {}) {
 }
 
 async function getAssistantReply(text) {
+  if (looksLikeLocationTimeRequest(text)) {
+    return getLocationTimeReply(text);
+  }
+
   if (Aether.config.apiEndpoint) {
     const location = await locationForWeatherRequest(text);
+    return fetchAssistantReply(text, location);
+  }
+
+  await wait(650);
+  const lowered = text.toLowerCase();
+  if (lowered.includes("time")) {
+    return `It is ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`;
+  }
+  return "Call-limit reached.";
+}
+
+async function getLocationTimeReply(text) {
+  addAssistantMessage(LOCATION_TIME_PERMISSION_MESSAGE);
+  const location = await browserLocation(12000);
+  if (!location) return "";
+
+  if (!Aether.config.apiEndpoint) {
+    return browserTimeReply();
+  }
+
+  return fetchAssistantReply(text, location);
+}
+
+async function fetchAssistantReply(text, location = null) {
+  if (Aether.config.apiEndpoint) {
     let retryDelayMs = 3000;
     while (true) {
       try {
@@ -615,13 +645,7 @@ async function getAssistantReply(text) {
       }
     }
   }
-
-  await wait(650);
-  const lowered = text.toLowerCase();
-  if (lowered.includes("time")) {
-    return `It is ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`;
-  }
-  return "Call-limit reached.";
+  return "";
 }
 
 function isRetryableStatus(status) {
@@ -858,8 +882,12 @@ function backendLaunchMessage() {
 }
 
 async function locationForWeatherRequest(text) {
-  if (!looksLikeWeatherRequest(text) || !navigator.geolocation) return null;
+  if (!looksLikeWeatherRequest(text)) return null;
+  return browserLocation(8000);
+}
 
+async function browserLocation(timeout = 8000) {
+  if (!navigator.geolocation) return null;
   return new Promise((resolve) => {
     navigator.geolocation.getCurrentPosition(
       (position) => {
@@ -871,7 +899,7 @@ async function locationForWeatherRequest(text) {
       () => resolve(null),
       {
         enableHighAccuracy: false,
-        timeout: 8000,
+        timeout,
         maximumAge: 600000,
       },
     );
@@ -880,6 +908,16 @@ async function locationForWeatherRequest(text) {
 
 function looksLikeWeatherRequest(text) {
   return /\b(weather|forecast|temperature|rain|snow|humidity|wind|storm|hot|cold)\b/i.test(text);
+}
+
+function looksLikeLocationTimeRequest(text) {
+  return /\bwhat\b/i.test(text) && /\btime\b/i.test(text);
+}
+
+function browserTimeReply() {
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "your local timezone";
+  const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", timeZoneName: "short" });
+  return `It is ${time} in ${timezone}.`;
 }
 
 function addAssistantMessage(text) {

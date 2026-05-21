@@ -6,7 +6,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -317,6 +317,10 @@ def looks_like_weather_request(message: str) -> bool:
     return bool(re.search(r"\b(weather|forecast|temperature|rain|snow|humidity|wind|storm|hot|cold)\b", message, re.I))
 
 
+def looks_like_location_time_request(message: str) -> bool:
+    return bool(re.search(r"\bwhat\b", message, re.I) and re.search(r"\btime\b", message, re.I))
+
+
 def weather_reply(latitude: float, longitude: float) -> str:
     params = urllib.parse.urlencode(
         {
@@ -353,6 +357,35 @@ def weather_reply(latitude: float, longitude: float) -> str:
         f"Today should be about {high}F high and {low}F low"
         + (f", with a {rain_chance}% max precipitation chance." if rain_chance is not None else ".")
     )
+
+
+def location_time_reply(latitude: float, longitude: float) -> str:
+    params = urllib.parse.urlencode(
+        {
+            "latitude": latitude,
+            "longitude": longitude,
+            "current": "temperature_2m",
+            "timezone": "auto",
+        }
+    )
+    url = f"https://api.open-meteo.com/v1/forecast?{params}"
+    request = urllib.request.Request(url, headers={"User-Agent": "AetherAI/1.0"})
+    with urllib.request.urlopen(request, timeout=12) as response:
+        data = json.loads(response.read().decode("utf-8"))
+
+    current = data.get("current") if isinstance(data.get("current"), dict) else {}
+    current_time = current.get("time")
+    timezone_name = data.get("timezone") or "UTC"
+    offset_seconds = int(data.get("utc_offset_seconds") or 0)
+    try:
+        now = datetime.fromisoformat(current_time) if current_time else datetime.now(timezone.utc) + timedelta(seconds=offset_seconds)
+    except Exception:
+        now = datetime.now(timezone.utc) + timedelta(seconds=offset_seconds)
+
+    abbreviation = data.get("timezone_abbreviation") or timezone_name
+    time_text = now.strftime("%I:%M %p").lstrip("0")
+    date_text = now.strftime("%A, %B %d, %Y")
+    return f"It is {time_text} {abbreviation} in your timezone ({timezone_name}) on {date_text}."
 
 
 def coordinates_from_location(location: object) -> tuple[float, float]:
@@ -399,6 +432,8 @@ def chat_response(payload: dict, ip_address: str) -> dict:
             else "Profanity warning."
         )
         return {"reply": reply, "warning": warning}
+    if looks_like_location_time_request(message) and not location:
+        return {"reply": "Accept Aether's permission to view your location to see what timezone you are in."}
     rate = consume_rate_limit(ip_address)
     if not rate["allowed"]:
         return {
@@ -406,6 +441,10 @@ def chat_response(payload: dict, ip_address: str) -> dict:
             "rateLimited": True,
             "rateLimit": rate["rateLimit"],
         }
+    if location and looks_like_location_time_request(message):
+        latitude, longitude = coordinates_from_location(location)
+        reply = location_time_reply(latitude, longitude)
+        return {"reply": reply, "rateLimit": rate["rateLimit"]}
     if location and looks_like_weather_request(message):
         latitude, longitude = coordinates_from_location(location)
         reply = weather_reply(latitude, longitude)
