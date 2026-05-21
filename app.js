@@ -15,11 +15,11 @@
     rateLimitPopup: false,
     ban: null,
     rateLimit: {
-      limit: 60,
+      limit: 5,
       used: 0,
-      remaining: 60,
+      remaining: 5,
       percentUsed: 0,
-      resetInSeconds: 300,
+      resetInSeconds: 60,
     },
     rateMeter: {
       displayPercent: 100,
@@ -226,7 +226,6 @@ function renderChatPage(chat) {
       <header class="topbar">
         <div>
           <h1>${escapeHtml(chat.title)}</h1>
-          <p>${escapeHtml(chatMeta(chat))}</p>
         </div>
         <div class="topbar-actions">
           <button class="secondary-button" data-action="rename-chat">Rename</button>
@@ -284,12 +283,6 @@ function filteredChats() {
     .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
 }
 
-function chatMeta(chat) {
-  const userMessages = chat.messages.filter((message) => message.role === "user").length;
-  const assistantMessages = chat.messages.filter((message) => message.role === "assistant").length;
-  return `${userMessages} sent - ${assistantMessages} replies - ${formatRelativeTime(chat.updatedAt)}`;
-}
-
 function chatPreview(chat) {
   const last = [...chat.messages].reverse().find((message) => message.content && message.role === "user") || chat.messages.at(-1);
   return last?.content ? last.content.slice(0, 72) : "Fresh conversation";
@@ -302,7 +295,7 @@ function renderToast() {
 
 function renderRateLimitMeter() {
   const rate = Aether.state.rateLimit || {};
-  const limit = Math.max(1, Number(rate.limit || 60));
+  const limit = Math.max(1, Number(rate.limit || 5));
   const remaining = Math.max(0, Math.min(limit, Number(rate.remaining ?? limit)));
   const targetPercent = Math.round((remaining / limit) * 100);
   const displayPercent = clampPercent(Aether.state.rateMeter?.displayPercent ?? targetPercent);
@@ -769,7 +762,7 @@ function resetExpiredRateLimitWindow() {
   rate.used = 0;
   rate.remaining = limit;
   rate.percentUsed = 0;
-  rate.resetInSeconds = 300;
+  rate.resetInSeconds = 60;
   animateRateMeterTo(100);
 }
 
@@ -797,7 +790,7 @@ function updateRateMeterDom() {
   const card = document.querySelector(".rate-card");
   if (!card) return;
   const rate = Aether.state.rateLimit || {};
-  const limit = Math.max(1, Number(rate.limit || 60));
+  const limit = Math.max(1, Number(rate.limit || 5));
   const remaining = Math.max(0, Math.min(limit, Number(rate.remaining ?? limit)));
   const displayPercent = clampPercent(Aether.state.rateMeter?.displayPercent ?? ratePercent(rate));
   const resetInSeconds = Math.max(0, Number(rate.resetInSeconds || 0));
@@ -811,7 +804,7 @@ function updateRateMeterDom() {
 }
 
 function ratePercent(rate) {
-  const limit = Math.max(1, Number(rate?.limit || 60));
+  const limit = Math.max(1, Number(rate?.limit || 5));
   const remaining = Math.max(0, Math.min(limit, Number(rate?.remaining ?? limit)));
   return Math.round((remaining / limit) * 100);
 }
@@ -962,16 +955,6 @@ function findLastMessageIndex(chat, role) {
     if (chat.messages[index].role === role) return index;
   }
   return -1;
-}
-
-function formatRelativeTime(value) {
-  const timestamp = new Date(value).getTime();
-  if (!Number.isFinite(timestamp)) return "just now";
-  const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
-  if (seconds < 45) return "just now";
-  if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`;
-  if (seconds < 86400) return `${Math.round(seconds / 3600)}h ago`;
-  return `${Math.round(seconds / 86400)}d ago`;
 }
 
 function showToast(message) {
@@ -1507,12 +1490,6 @@ function injectStyles() {
       margin: 0;
       font-size: 24px;
       letter-spacing: 0;
-    }
-    .topbar p {
-      margin: 6px 0 0;
-      color: rgba(219, 234, 254, 0.72);
-      font-size: 13px;
-      line-height: 1.35;
     }
     .topbar-actions {
       display: flex;

@@ -15,8 +15,8 @@ from groq import APIConnectionError, APIStatusError, APITimeoutError, Groq
 ROOT = Path(__file__).resolve().parent
 PROFANITY_STORE_PATH = ROOT / "profanity.js"
 PROFANITY_LIMIT = 6
-GUEST_RATE_LIMIT = 60
-RATE_LIMIT_WINDOW_SECONDS = 300
+GUEST_RATE_LIMIT = 5
+RATE_LIMIT_WINDOW_SECONDS = 60
 RATE_LIMITS: dict[str, dict] = {}
 PROFANITY_PATTERNS = [
     re.compile(pattern, re.I)
@@ -448,11 +448,11 @@ def http_error_message(exc: urllib.error.HTTPError) -> str:
         detail = ""
 
     if exc.code in {401, 403}:
-        return "The weather service rejected the request."
+        return "Internal server error"
     if exc.code == 404:
-        return "The weather endpoint was not found."
+        return "Internal server error"
     if exc.code == 429:
-        return "The backend is rate limited or out of quota. Try again later."
+        return "Something went wrong, please try again later. :("
     return detail or f"The request failed with HTTP {exc.code}."
 
 
@@ -466,11 +466,11 @@ def groq_error_message(exc: APIStatusError) -> str:
         detail = str(exc)
 
     if status_code in {401, 403}:
-        return "A setup key was rejected. Check the backend settings."
+        return "Internal server error"
     if status_code == 404:
-        return "A backend setting was not found. Check the backend settings."
+        return "Internal server error"
     if status_code == 429:
-        return "The backend is rate limited right now. Try again later."
+        return "Something went wrong, please try again later. :("
     return detail or f"The request failed with HTTP {status_code}."
 
 
