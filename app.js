@@ -1575,19 +1575,28 @@ function injectStyles() {
     }
     .copy-message {
       height: 22px;
+      min-width: 48px;
+      padding: 0 8px;
       border-radius: 7px;
       color: rgba(219, 234, 254, 0.68);
       background: rgba(7, 17, 31, 0.48);
-      font-size: 14px;
-      line-height: 1;
-      opacity: 0.72;
-      transition: opacity 150ms ease, color 150ms ease, background 150ms ease, transform 150ms ease;
-    }
-    .copy-message {
-      min-width: 48px;
-      padding: 0 8px;
       font-size: 12px;
       font-weight: 760;
+      line-height: 1;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(3px);
+      transition:
+        opacity 180ms ease,
+        color 150ms ease,
+        background 150ms ease,
+        transform 180ms ease;
+    }
+    .message-row:hover .copy-message,
+    .message-row:focus-within .copy-message {
+      opacity: 0.76;
+      pointer-events: auto;
+      transform: translateY(0);
     }
     .copy-message:hover, .copy-message:focus-visible {
       color: #07111f;
