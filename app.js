@@ -735,7 +735,10 @@ function updateVoiceButtonDom() {
 }
 
 async function getLocationTimeReply(text) {
-  addAssistantMessage(LOCATION_TIME_PERMISSION_MESSAGE);
+  const permissionState = await geolocationPermissionState();
+  if (permissionState !== "granted") {
+    addAssistantMessage(LOCATION_TIME_PERMISSION_MESSAGE);
+  }
   const location = await browserLocation(12000);
   if (!location) return "";
 
@@ -1051,6 +1054,16 @@ async function browserLocation(timeout = 8000) {
       },
     );
   });
+}
+
+async function geolocationPermissionState() {
+  if (!navigator.permissions?.query) return "unknown";
+  try {
+    const status = await navigator.permissions.query({ name: "geolocation" });
+    return status.state || "unknown";
+  } catch {
+    return "unknown";
+  }
 }
 
 function looksLikeWeatherRequest(text) {
