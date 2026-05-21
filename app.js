@@ -7,15 +7,17 @@
     chats: [],
     activeChatId: null,
     composerDraft: "",
+    sidebarSearch: "",
+    toast: "",
     thinking: false,
     warningPopup: null,
     shortMessagePopup: false,
     rateLimitPopup: false,
     ban: null,
     rateLimit: {
-      limit: 40,
+      limit: 60,
       used: 0,
-      remaining: 40,
+      remaining: 60,
       percentUsed: 0,
       resetInSeconds: 300,
     },
@@ -53,6 +55,29 @@ const PROFANITY_PATTERNS = [
   /\bpussy\b/i,
 ];
 
+const QUICK_PROMPTS = [
+  {
+    label: "Plan",
+    text: "Help me make a clear step-by-step plan for ",
+  },
+  {
+    label: "Explain",
+    text: "Explain this in simple terms: ",
+  },
+  {
+    label: "Improve",
+    text: "Improve this and make it clearer: ",
+  },
+  {
+    label: "Code",
+    text: "Help me debug or build this code: ",
+  },
+  {
+    label: "Ideas",
+    text: "Give me creative but practical ideas for ",
+  },
+];
+
 const storage = {
   load() {
     const savedConfig = readJson("aether.config", {});
@@ -61,7 +86,7 @@ const storage = {
       Aether.config[key] = savedConfig[key];
     }
     Aether.config.apiEndpoint = defaultApiEndpoint();
-    Aether.state.chats = readJson("aether.chats", []);
+    Aether.state.chats = readJson("aether.chats", []).map(normalizeChat);
     Aether.state.activeChatId = localStorage.getItem("aether.activeChatId");
 
     if (!Aether.state.chats.length) {
@@ -129,17 +154,45 @@ function readJson(key, fallback) {
 }
 
 function createChat(title) {
+  const now = new Date().toISOString();
   return {
     id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
     title,
+    createdAt: now,
+    updatedAt: now,
+    pinned: false,
     messages: [
       {
         id: createId(),
         role: "assistant",
         content: "Hi there! I'm Aether. What's on your mind?",
+        createdAt: now,
       },
     ],
   };
+}
+
+function normalizeChat(chat) {
+  const now = new Date().toISOString();
+  const normalized = {
+    id: chat?.id || createId(),
+    title: String(chat?.title || "New conversation"),
+    createdAt: chat?.createdAt || now,
+    updatedAt: chat?.updatedAt || chat?.createdAt || now,
+    pinned: Boolean(chat?.pinned),
+    messages: Array.isArray(chat?.messages) ? chat.messages : [],
+  };
+  normalized.messages = normalized.messages.map((message) => ({
+    ...message,
+    id: message?.id || createId(),
+    role: message?.role === "user" ? "user" : "assistant",
+    content: String(message?.content || ""),
+    createdAt: message?.createdAt || normalized.createdAt,
+  }));
+  if (!normalized.messages.length) {
+    normalized.messages = createChat(normalized.title).messages;
+  }
+  return normalized;
 }
 
 function activeChat() {
@@ -170,8 +223,17 @@ function render() {
           </span>
         </button>
         <button class="new-chat" data-action="new-chat">+ New conversation</button>
+        <div class="sidebar-tools" aria-label="Conversation tools">
+          <button class="tool-button" data-action="toggle-pin-chat">${activeChat()?.pinned ? "Unpin" : "Pin"}</button>
+          <button class="tool-button" data-action="copy-chat">Copy</button>
+          <button class="tool-button" data-action="export-chat">Export</button>
+          <button class="tool-button danger" data-action="clear-chat">Clear</button>
+        </div>
+        <input class="sidebar-search" data-action="sidebar-search" autocomplete="off" placeholder="Search conversations" value="${escapeHtml(Aether.state.sidebarSearch)}">
+        ${renderPromptStarters()}
+        ${renderSidebarStats()}
         <div class="chat-list">
-          ${Aether.state.chats.map(chatListItem).join("")}
+          ${filteredChats().map(chatListItem).join("") || `<div class="sidebar-empty">No conversations found.</div>`}
         </div>
         ${renderRateLimitMeter()}
       </aside>
@@ -181,6 +243,7 @@ function render() {
       ${renderShortMessagePopup()}
       ${renderRateLimitPopup()}
       ${renderBanOverlay()}
+      ${renderToast()}
     </div>
   `;
 
@@ -194,15 +257,27 @@ function renderChatPage(chat) {
     <main class="chat-page">
       <div class="animated-bg" aria-hidden="true"></div>
       <header class="topbar">
-        <h1>${escapeHtml(chat.title)}</h1>
+        <div>
+          <h1>${escapeHtml(chat.title)}</h1>
+          <p>${escapeHtml(chatMeta(chat))}</p>
+        </div>
+        <div class="topbar-actions">
+          <button class="secondary-button" data-action="rename-chat">Rename</button>
+          <button class="secondary-button" data-action="regenerate-last">Resend last</button>
+        </div>
       </header>
       <div class="messages" id="messages">
         ${chat.messages.map(renderMessage).join("")}
         ${Aether.state.thinking ? renderThinking() : ""}
       </div>
       <div class="composer-area">
+        <div class="composer-prompts">
+          ${QUICK_PROMPTS.slice(0, 4)
+            .map((prompt) => `<button type="button" data-prompt-fill="${escapeHtml(prompt.text)}">${escapeHtml(prompt.label)}</button>`)
+            .join("")}
+        </div>
         <form class="composer" data-action="send-message">
-          <input name="message" autocomplete="off" placeholder="Send a message here." value="${escapeHtml(Aether.state.composerDraft)}">
+          <textarea name="message" autocomplete="off" rows="1" placeholder="Send a message here.">${escapeHtml(Aether.state.composerDraft)}</textarea>
           <button type="submit">Send</button>
         </form>
         <p class="composer-note">Aether can make mistakes. Check important info.</p>
@@ -221,19 +296,82 @@ function renderServerStatus() {
   `;
 }
 
+function renderPromptStarters() {
+  return `
+    <section class="sidebar-section">
+      <div class="section-label">Prompt starters</div>
+      <div class="prompt-grid">
+        ${QUICK_PROMPTS.map((prompt) => `<button data-prompt-fill="${escapeHtml(prompt.text)}">${escapeHtml(prompt.label)}</button>`).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderSidebarStats() {
+  const stats = conversationStats();
+  return `
+    <section class="sidebar-stats">
+      <div><strong>${stats.chats}</strong><span>Chats</span></div>
+      <div><strong>${stats.messages}</strong><span>Messages</span></div>
+      <div><strong>${stats.pinned}</strong><span>Pinned</span></div>
+    </section>
+  `;
+}
+
 function chatListItem(chat) {
   const active = chat.id === Aether.state.activeChatId ? "active" : "";
   return `
     <div class="chat-item-row ${active}">
-      <button class="chat-item" data-chat-id="${chat.id}">${escapeHtml(chat.title)}</button>
+      <button class="chat-item" data-chat-id="${chat.id}">
+        <span>${chat.pinned ? "Pinned - " : ""}${escapeHtml(chat.title)}</span>
+        <small>${escapeHtml(chatPreview(chat))}</small>
+      </button>
+      <button class="pin-chat" data-pin-chat="${chat.id}" aria-label="${chat.pinned ? "Unpin" : "Pin"} ${escapeHtml(chat.title)}">${chat.pinned ? "U" : "P"}</button>
       <button class="delete-chat" data-delete-chat="${chat.id}" aria-label="Delete ${escapeHtml(chat.title)}">X</button>
     </div>
   `;
 }
 
+function filteredChats() {
+  const query = Aether.state.sidebarSearch.trim().toLowerCase();
+  return [...Aether.state.chats]
+    .filter((chat) => {
+      if (!query) return true;
+      return [chat.title, ...chat.messages.map((message) => message.content)]
+        .join(" ")
+        .toLowerCase()
+        .includes(query);
+    })
+    .sort((a, b) => Number(b.pinned) - Number(a.pinned) || new Date(b.updatedAt) - new Date(a.updatedAt));
+}
+
+function conversationStats() {
+  return {
+    chats: Aether.state.chats.length,
+    messages: Aether.state.chats.reduce((total, chat) => total + chat.messages.length, 0),
+    pinned: Aether.state.chats.filter((chat) => chat.pinned).length,
+  };
+}
+
+function chatMeta(chat) {
+  const userMessages = chat.messages.filter((message) => message.role === "user").length;
+  const assistantMessages = chat.messages.filter((message) => message.role === "assistant").length;
+  return `${userMessages} sent - ${assistantMessages} replies - ${formatRelativeTime(chat.updatedAt)}`;
+}
+
+function chatPreview(chat) {
+  const last = [...chat.messages].reverse().find((message) => message.content && message.role === "user") || chat.messages.at(-1);
+  return last?.content ? last.content.slice(0, 72) : "Fresh conversation";
+}
+
+function renderToast() {
+  const visible = Aether.state.toast ? " show" : "";
+  return `<div class="toast${visible}" role="status" aria-live="polite">${escapeHtml(Aether.state.toast)}</div>`;
+}
+
 function renderRateLimitMeter() {
   const rate = Aether.state.rateLimit || {};
-  const limit = Math.max(1, Number(rate.limit || 40));
+  const limit = Math.max(1, Number(rate.limit || 60));
   const remaining = Math.max(0, Math.min(limit, Number(rate.remaining ?? limit)));
   const targetPercent = Math.round((remaining / limit) * 100);
   const displayPercent = clampPercent(Aether.state.rateMeter?.displayPercent ?? targetPercent);
@@ -345,32 +483,39 @@ function bindEvents(root) {
   });
 
   root.querySelector("[data-action='new-chat']")?.addEventListener("click", () => {
-    const chat = createChat("New conversation");
-    Aether.state.chats.unshift(chat);
-    Aether.state.activeChatId = chat.id;
-    storage.save();
-    render();
+    createNewChat();
   });
 
-  root.querySelectorAll("[data-chat-id]").forEach((button) => {
-    button.addEventListener("click", () => {
-      Aether.state.activeChatId = button.dataset.chatId;
-      storage.save();
-      render();
-    });
+  root.querySelector("[data-action='toggle-pin-chat']")?.addEventListener("click", () => togglePinChat(Aether.state.activeChatId));
+  root.querySelector("[data-action='copy-chat']")?.addEventListener("click", copyCurrentChat);
+  root.querySelector("[data-action='export-chat']")?.addEventListener("click", exportCurrentChat);
+  root.querySelector("[data-action='clear-chat']")?.addEventListener("click", clearCurrentChat);
+  root.querySelector("[data-action='rename-chat']")?.addEventListener("click", renameCurrentChat);
+  root.querySelector("[data-action='regenerate-last']")?.addEventListener("click", regenerateLastAssistantMessage);
+  root.querySelector("[data-action='sidebar-search']")?.addEventListener("input", (event) => {
+    Aether.state.sidebarSearch = event.currentTarget.value;
+    updateChatListDom();
   });
 
-  root.querySelectorAll("[data-delete-chat]").forEach((button) => {
-    button.addEventListener("click", (event) => {
-      event.stopPropagation();
-      deleteChat(button.dataset.deleteChat);
-    });
+  bindChatListEvents(root);
+
+  root.querySelectorAll("[data-prompt-fill]").forEach((button) => {
+    button.addEventListener("click", () => fillPrompt(button.dataset.promptFill));
   });
 
   root.querySelector("[data-action='send-message']")?.addEventListener("submit", sendMessage);
-  root.querySelector(".composer input[name='message']")?.addEventListener("input", (event) => {
+  const composerInput = root.querySelector(".composer textarea[name='message']");
+  composerInput?.addEventListener("input", (event) => {
     Aether.state.composerDraft = event.currentTarget.value;
+    syncComposerHeight(event.currentTarget);
   });
+  composerInput?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      event.currentTarget.form?.requestSubmit();
+    }
+  });
+  if (composerInput) syncComposerHeight(composerInput);
   root.querySelector("[data-action='close-warning']")?.addEventListener("click", () => {
     Aether.state.warningPopup = null;
     render();
@@ -386,6 +531,36 @@ function bindEvents(root) {
   root.querySelectorAll("[data-copy-message]").forEach((button) => {
     button.addEventListener("click", () => copyAssistantMessage(button.dataset.copyMessage, button));
   });
+}
+
+function bindChatListEvents(root) {
+  root.querySelectorAll("[data-chat-id]").forEach((button) => {
+    button.addEventListener("click", () => {
+      Aether.state.activeChatId = button.dataset.chatId;
+      storage.save();
+      render();
+    });
+  });
+
+  root.querySelectorAll("[data-delete-chat]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      deleteChat(button.dataset.deleteChat);
+    });
+  });
+  root.querySelectorAll("[data-pin-chat]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      togglePinChat(button.dataset.pinChat);
+    });
+  });
+}
+
+function updateChatListDom() {
+  const list = document.querySelector(".chat-list");
+  if (!list) return;
+  list.innerHTML = filteredChats().map(chatListItem).join("") || `<div class="sidebar-empty">No conversations found.</div>`;
+  bindChatListEvents(list);
 }
 
 function deleteChat(chatId) {
@@ -405,6 +580,84 @@ function deleteChat(chatId) {
   Aether.state.thinking = false;
   storage.save();
   render();
+}
+
+function createNewChat(seedText = "") {
+  const chat = createChat(seedText ? seedText.slice(0, 36) : "New conversation");
+  Aether.state.chats.unshift(chat);
+  Aether.state.activeChatId = chat.id;
+  Aether.state.composerDraft = seedText;
+  storage.save();
+  render();
+  focusComposer();
+}
+
+function touchChat(chat) {
+  if (!chat) return;
+  chat.updatedAt = new Date().toISOString();
+}
+
+function togglePinChat(chatId) {
+  const chat = Aether.state.chats.find((item) => item.id === chatId);
+  if (!chat) return;
+  chat.pinned = !chat.pinned;
+  touchChat(chat);
+  storage.save();
+  showToast(chat.pinned ? "Pinned conversation." : "Unpinned conversation.");
+  render();
+}
+
+function renameCurrentChat() {
+  const chat = activeChat();
+  if (!chat) return;
+  const title = window.prompt("Rename conversation", chat.title);
+  if (!title) return;
+  chat.title = title.trim().slice(0, 80) || chat.title;
+  touchChat(chat);
+  storage.save();
+  render();
+}
+
+function clearCurrentChat() {
+  const chat = activeChat();
+  if (!chat) return;
+  const fresh = createChat(chat.title);
+  chat.messages = fresh.messages;
+  touchChat(chat);
+  Aether.state.thinking = false;
+  storage.save();
+  showToast("Conversation cleared.");
+  render();
+}
+
+async function copyCurrentChat() {
+  const chat = activeChat();
+  if (!chat) return;
+  await writeClipboard(chatTranscript(chat));
+}
+
+function exportCurrentChat() {
+  const chat = activeChat();
+  if (!chat) return;
+  const blob = new Blob([chatTranscript(chat)], { type: "text/plain;charset=utf-8" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `${safeFileName(chat.title)}.txt`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+  showToast("Conversation exported.");
+}
+
+function fillPrompt(text) {
+  if (!activeChat()) createNewChat();
+  Aether.state.composerDraft = text;
+  render();
+  focusComposer();
+}
+
+function syncComposerHeight(textarea) {
+  textarea.style.height = "auto";
+  textarea.style.height = `${Math.min(180, Math.max(42, textarea.scrollHeight))}px`;
 }
 
 async function sendMessage(event) {
@@ -428,6 +681,7 @@ async function sendMessage(event) {
   }
   if (handleLocalProfanity(text)) {
     input.value = "";
+    Aether.state.composerDraft = "";
     return;
   }
 
@@ -436,7 +690,7 @@ async function sendMessage(event) {
   await sendTextMessage(text);
 }
 
-async function sendTextMessage(text) {
+async function sendTextMessage(text, options = {}) {
   if (Aether.state.thinking) return;
   if (Aether.state.ban?.banned) return;
   if (!hasMinimumLetters(text)) {
@@ -452,8 +706,11 @@ async function sendTextMessage(text) {
   if (handleLocalProfanity(text)) return;
 
   const chat = activeChat();
-  chat.messages.push(createMessage("user", text));
-  if (chat.title === "...") chat.title = text.slice(0, 36);
+  if (options.addUser !== false) {
+    chat.messages.push(createMessage("user", text));
+  }
+  if (["New conversation", "..."].includes(chat.title)) chat.title = text.slice(0, 48);
+  touchChat(chat);
 
   Aether.state.thinking = true;
   storage.save();
@@ -465,6 +722,7 @@ async function sendTextMessage(text) {
   if (answer) {
     const assistantMessage = createMessage("assistant", "", { typing: true, thoughtTimeMs });
     chat.messages.push(assistantMessage);
+    touchChat(chat);
     Aether.state.thinking = false;
     storage.save();
     render();
@@ -480,7 +738,7 @@ async function getAssistantReply(text) {
   if (Aether.config.apiEndpoint) {
     try {
       const location = await locationForWeatherRequest(text);
-      const headers = await authHeaders({ "Content-Type": "text/plain;charset=UTF-8" });
+      const headers = await authHeaders({ "Content-Type": "application/json;charset=UTF-8" });
       const response = await fetch(Aether.config.apiEndpoint, {
         method: "POST",
         headers,
@@ -669,7 +927,7 @@ function updateRateMeterDom() {
   const card = document.querySelector(".rate-card");
   if (!card) return;
   const rate = Aether.state.rateLimit || {};
-  const limit = Math.max(1, Number(rate.limit || 40));
+  const limit = Math.max(1, Number(rate.limit || 60));
   const remaining = Math.max(0, Math.min(limit, Number(rate.remaining ?? limit)));
   const displayPercent = clampPercent(Aether.state.rateMeter?.displayPercent ?? ratePercent(rate));
   const resetInSeconds = Math.max(0, Number(rate.resetInSeconds || 0));
@@ -683,7 +941,7 @@ function updateRateMeterDom() {
 }
 
 function ratePercent(rate) {
-  const limit = Math.max(1, Number(rate?.limit || 40));
+  const limit = Math.max(1, Number(rate?.limit || 60));
   const remaining = Math.max(0, Math.min(limit, Number(rate?.remaining ?? limit)));
   return Math.round((remaining / limit) * 100);
 }
@@ -701,6 +959,7 @@ function rateColor(percent) {
 }
 
 async function checkServerStatus() {
+  const wasBanned = Boolean(Aether.state.ban?.banned);
   try {
     const response = await fetch(apiUrl("/api/status"), { cache: "no-store" });
     if (!response.ok) throw new Error(`Status failed with HTTP ${response.status}`);
@@ -708,7 +967,11 @@ async function checkServerStatus() {
     setServerOnline(true);
     applyServerStatus(data);
     storage.save();
-    render();
+    if (Boolean(Aether.state.ban?.banned) !== wasBanned) {
+      render();
+    } else {
+      updateRateMeterDom();
+    }
   } catch {
     setServerOnline(false);
   }
@@ -765,7 +1028,9 @@ function looksLikeWeatherRequest(text) {
 }
 
 function addAssistantMessage(text) {
-  activeChat().messages.push(createMessage("assistant", text));
+  const chat = activeChat();
+  chat.messages.push(createMessage("assistant", text));
+  touchChat(chat);
   storage.save();
   render();
 }
@@ -775,6 +1040,7 @@ function createMessage(role, content, extras = {}) {
     id: createId(),
     role,
     content,
+    createdAt: new Date().toISOString(),
     ...extras,
   };
 }
@@ -784,15 +1050,124 @@ function createId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+async function copyAssistantMessage(messageId, button) {
+  const chat = activeChat();
+  const message = chat?.messages.find((item) => item.id === messageId);
+  if (!message?.content) return;
+  await writeClipboard(sanitizeAssistantText(message.content), button);
+}
+
+async function writeClipboard(text, button = null) {
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast("Copied to clipboard.");
+    if (button) button.textContent = "Copied";
+  } catch {
+    showToast("Copy failed.");
+    if (button) button.textContent = "Copy failed";
+  }
+  if (button) {
+    setTimeout(() => {
+      button.textContent = "Copy";
+    }, 1200);
+  }
+}
+
+function regenerateLastAssistantMessage() {
+  const chat = activeChat();
+  if (!chat || Aether.state.thinking) return;
+  const lastAssistantIndex = findLastMessageIndex(chat, "assistant");
+  if (lastAssistantIndex <= 0) return;
+  const previousUser = [...chat.messages.slice(0, lastAssistantIndex)].reverse().find((message) => message.role === "user");
+  if (!previousUser) return;
+  chat.messages.splice(lastAssistantIndex, 1);
+  touchChat(chat);
+  storage.save();
+  render();
+  sendTextMessage(previousUser.content, { addUser: false });
+}
+
+function findLastMessageIndex(chat, role) {
+  for (let index = chat.messages.length - 1; index >= 0; index -= 1) {
+    if (chat.messages[index].role === role) return index;
+  }
+  return -1;
+}
+
+function chatTranscript(chat) {
+  return [
+    chat.title,
+    `Created: ${new Date(chat.createdAt).toLocaleString()}`,
+    `Updated: ${new Date(chat.updatedAt).toLocaleString()}`,
+    "",
+    ...chat.messages.map((message) => `${message.role === "user" ? "You" : "Aether"}: ${sanitizeAssistantText(message.content)}`),
+    "",
+  ].join("\n");
+}
+
+function safeFileName(value) {
+  return String(value || "aether-chat")
+    .replace(/[^a-z0-9-_ ]+/gi, "")
+    .trim()
+    .replace(/\s+/g, "-")
+    .slice(0, 80) || "aether-chat";
+}
+
+function formatRelativeTime(value) {
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return "just now";
+  const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
+  if (seconds < 45) return "just now";
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)}h ago`;
+  return `${Math.round(seconds / 86400)}d ago`;
+}
+
+function showToast(message) {
+  Aether.state.toast = message;
+  updateToastDom();
+  setTimeout(() => {
+    if (Aether.state.toast === message) {
+      Aether.state.toast = "";
+      updateToastDom();
+    }
+  }, 1800);
+}
+
+function updateToastDom() {
+  let toast = document.querySelector(".toast");
+  if (!toast) {
+    const shell = document.querySelector(".app-shell");
+    if (!shell) return;
+    toast = document.createElement("div");
+    toast.className = "toast";
+    toast.setAttribute("role", "status");
+    shell.appendChild(toast);
+  }
+  toast.textContent = Aether.state.toast;
+  toast.classList.toggle("show", Boolean(Aether.state.toast));
+}
+
+function focusComposer() {
+  requestAnimationFrame(() => {
+    const input = document.querySelector(".composer textarea[name='message']");
+    input?.focus();
+    if (input) {
+      input.selectionStart = input.value.length;
+      input.selectionEnd = input.value.length;
+      syncComposerHeight(input);
+    }
+  });
+}
+
 async function typeAssistantMessage(chat, message, fullText) {
   const row = document.querySelector(`[data-message-id="${CSS.escape(message.id)}"]`);
   const bubble = row?.querySelector(".bubble");
   const cleanText = sanitizeAssistantText(fullText);
 
   if (bubble) {
-    const reveal = renderWordReveal(bubble, cleanText);
+    await revealAssistantText(bubble, cleanText);
     scrollChatToBottom();
-    await waitForWordReveal(bubble, reveal.durationMs);
   }
 
   message.content = cleanText;
@@ -818,7 +1193,8 @@ function scheduleThoughtTimeFade(messageId) {
     if (!message || !message.showThoughtTime) return;
     message.showThoughtTime = false;
     storage.save();
-    render();
+    const row = document.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
+    row?.querySelector(".thought-time")?.remove();
   }, 3000);
 
   thoughtTimerTimeouts.set(messageId, timeoutId);
@@ -830,50 +1206,38 @@ function formatThoughtTime(milliseconds) {
   return `${Math.round(milliseconds / 1000)}s`;
 }
 
-function randomBetween(min, max) {
-  return min + Math.random() * (max - min);
-}
-
-function renderWordReveal(container, text) {
+async function revealAssistantText(container, text) {
   const parts = text.match(/\s+|\S+/g) || [text];
   const totalWords = parts.filter((part) => !/^\s+$/.test(part)).length;
   const delayStep = wordRevealDelay(totalWords);
-  let wordIndex = 0;
-  container.innerHTML = parts
-    .map((part) => {
-      if (/^\s+$/.test(part)) return escapeHtml(part);
-      const delay = wordIndex * delayStep;
-      wordIndex += 1;
-      return `<span class="fade-word" style="animation-delay: ${delay}ms">${escapeHtml(part)}</span>`;
-    })
-    .join("");
-  return {
-    wordCount: wordIndex,
-    durationMs: wordIndex ? (wordIndex - 1) * delayStep + 480 : 0,
-  };
+  let revealedWords = 0;
+
+  container.textContent = "";
+  for (const part of parts) {
+    if (/^\s+$/.test(part)) {
+      container.appendChild(document.createTextNode(part));
+      continue;
+    }
+
+    const word = document.createElement("span");
+    word.className = "fade-word";
+    word.textContent = part;
+    container.appendChild(word);
+    revealedWords += 1;
+
+    if (revealedWords % 8 === 0) {
+      scrollChatToBottom();
+    }
+    await wait(delayStep);
+  }
 }
 
 function wordRevealDelay(wordCount) {
+  if (wordCount > 700) return 8;
   if (wordCount > 220) return 12;
   if (wordCount > 120) return 18;
   if (wordCount > 70) return 28;
   return 48;
-}
-
-function waitForWordReveal(container, durationMs) {
-  const words = [...container.querySelectorAll(".fade-word")];
-  const lastWord = words.at(-1);
-  if (!lastWord) return Promise.resolve();
-  return new Promise((resolve) => {
-    let complete = false;
-    const finish = () => {
-      if (complete) return;
-      complete = true;
-      resolve();
-    };
-    lastWord.addEventListener("animationend", finish, { once: true });
-    setTimeout(finish, durationMs + 240);
-  });
 }
 
 function sanitizeAssistantText(text) {
@@ -946,7 +1310,7 @@ function injectStyles() {
       color: #f8fbff;
       font-family: Inter, "Segoe UI", Arial, sans-serif;
     }
-    button, input { font: inherit; }
+    button, input, textarea { font: inherit; }
     button { cursor: pointer; }
     .app-shell {
       position: relative;
@@ -1045,7 +1409,7 @@ function injectStyles() {
       backdrop-filter: blur(18px);
       min-width: 0;
     }
-    .brand, .new-chat, .chat-item, .delete-chat, .copy-message, .composer button, .primary-button, .secondary-button, .danger-button { border: 0; }
+    .brand, .new-chat, .tool-button, .prompt-grid button, .composer-prompts button, .chat-item, .pin-chat, .delete-chat, .copy-message, .composer button, .primary-button, .secondary-button, .danger-button { border: 0; }
     .brand {
       display: flex;
       align-items: center;
@@ -1128,12 +1492,122 @@ function injectStyles() {
       filter: brightness(1.04);
       outline: none;
     }
+    .sidebar-tools {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+    }
+    .tool-button {
+      min-width: 0;
+      min-height: 34px;
+      border-radius: 9px;
+      color: #dbeafe;
+      background: rgba(219, 234, 254, 0.1);
+      font-size: 12px;
+      font-weight: 800;
+      transition: background 160ms ease, color 160ms ease, transform 160ms ease;
+    }
+    .tool-button:hover, .tool-button:focus-visible {
+      color: #07111f;
+      background: #dbeafe;
+      outline: none;
+      transform: translateY(-1px);
+    }
+    .tool-button.danger {
+      color: #fecaca;
+      background: rgba(239, 68, 68, 0.14);
+    }
+    .tool-button.danger:hover, .tool-button.danger:focus-visible {
+      color: #450a0a;
+      background: #fecaca;
+    }
+    .sidebar-search {
+      width: 100%;
+      height: 38px;
+      border: 1px solid rgba(191, 219, 254, 0.16);
+      border-radius: 10px;
+      color: #f8fbff;
+      background: rgba(5, 10, 20, 0.5);
+      outline: none;
+      padding: 0 12px;
+    }
+    .sidebar-search::placeholder {
+      color: rgba(219, 234, 254, 0.48);
+    }
+    .sidebar-search:focus {
+      border-color: rgba(45, 212, 191, 0.55);
+      box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.12);
+    }
+    .sidebar-section {
+      display: grid;
+      gap: 8px;
+    }
+    .section-label {
+      color: rgba(219, 234, 254, 0.72);
+      font-size: 11px;
+      font-weight: 840;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+    .prompt-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
+    }
+    .prompt-grid button, .composer-prompts button {
+      min-height: 32px;
+      border-radius: 9px;
+      color: #e0f2fe;
+      background: rgba(14, 165, 233, 0.12);
+      font-size: 12px;
+      font-weight: 800;
+      transition: background 160ms ease, color 160ms ease, transform 160ms ease;
+    }
+    .prompt-grid button:hover, .prompt-grid button:focus-visible,
+    .composer-prompts button:hover, .composer-prompts button:focus-visible {
+      color: #052e2b;
+      background: #99f6e4;
+      outline: none;
+      transform: translateY(-1px);
+    }
+    .sidebar-stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
+    }
+    .sidebar-stats div {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+      padding: 9px 8px;
+      border: 1px solid rgba(191, 219, 254, 0.13);
+      border-radius: 10px;
+      background: rgba(5, 10, 20, 0.42);
+      text-align: center;
+    }
+    .sidebar-stats strong {
+      color: #fff7ed;
+      font-size: 17px;
+      line-height: 1;
+    }
+    .sidebar-stats span {
+      color: rgba(219, 234, 254, 0.66);
+      font-size: 10px;
+      font-weight: 760;
+    }
     .chat-list {
       display: grid;
       gap: 4px;
       margin-top: 8px;
       overflow: auto;
+      flex: 1 1 auto;
       min-height: 0;
+    }
+    .sidebar-empty {
+      padding: 12px;
+      color: rgba(219, 234, 254, 0.62);
+      font-size: 13px;
+      line-height: 1.4;
     }
     .rate-card {
       --rate-color: #f8fbff;
@@ -1179,10 +1653,10 @@ function injectStyles() {
     }
     .chat-item-row {
       display: grid;
-      grid-template-columns: 1fr 28px;
+      grid-template-columns: 1fr 28px 28px;
       align-items: center;
       width: 100%;
-      min-height: 40px;
+      min-height: 54px;
       border-radius: 10px;
       overflow: hidden;
       background: transparent;
@@ -1192,7 +1666,10 @@ function injectStyles() {
     }
     .chat-item {
       min-width: 0;
-      min-height: 40px;
+      min-height: 54px;
+      display: grid;
+      align-content: center;
+      gap: 3px;
       color: #dbeafe;
       background: transparent;
       text-align: left;
@@ -1201,13 +1678,26 @@ function injectStyles() {
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    .chat-item span, .chat-item small {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .chat-item span {
+      font-weight: 760;
+    }
+    .chat-item small {
+      color: rgba(219, 234, 254, 0.58);
+      font-size: 11px;
+      line-height: 1.2;
+    }
     .chat-item-row.active .chat-item, .chat-item-row:hover .chat-item, .chat-item-row:focus-within .chat-item {
       color: #fff;
     }
-    .delete-chat {
+    .pin-chat, .delete-chat {
       width: 26px;
       height: 26px;
-      margin-right: 4px;
       border-radius: 7px;
       color: #dbeafe;
       background: transparent;
@@ -1215,10 +1705,16 @@ function injectStyles() {
       transform: scale(0.92);
       transition: opacity 150ms ease, transform 150ms ease, background 150ms ease, color 150ms ease;
     }
+    .delete-chat {
+      margin-right: 4px;
+    }
+    .chat-item-row.active .pin-chat,
+    .chat-item-row:hover .pin-chat, .chat-item-row:focus-within .pin-chat,
     .chat-item-row:hover .delete-chat, .chat-item-row:focus-within .delete-chat {
       opacity: 1;
       transform: scale(1);
     }
+    .pin-chat:hover, .pin-chat:focus-visible,
     .delete-chat:hover, .delete-chat:focus-visible {
       color: #07111f;
       background: #dbeafe;
@@ -1237,6 +1733,10 @@ function injectStyles() {
     .topbar {
       position: relative;
       z-index: 1;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
       max-width: 980px;
       width: 100%;
       margin: 0 auto;
@@ -1245,6 +1745,18 @@ function injectStyles() {
       margin: 0;
       font-size: 24px;
       letter-spacing: 0;
+    }
+    .topbar p {
+      margin: 6px 0 0;
+      color: rgba(219, 234, 254, 0.72);
+      font-size: 13px;
+      line-height: 1.35;
+    }
+    .topbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: 0 0 auto;
     }
     .messages {
       position: relative;
@@ -1366,6 +1878,7 @@ function injectStyles() {
       border: 1px solid rgba(191, 219, 254, 0.94);
     }
     .fade-word {
+      display: inline-block;
       opacity: 0;
       animation: wordReveal 420ms ease-out forwards;
     }
@@ -1406,9 +1919,20 @@ function injectStyles() {
       width: min(820px, 100%);
       margin: 0 auto;
     }
+    .composer-prompts {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 8px;
+    }
+    .composer-prompts button {
+      min-width: 86px;
+      padding: 0 12px;
+    }
     .composer {
       display: grid;
-      grid-template-columns: 1fr auto auto;
+      grid-template-columns: 1fr auto;
+      align-items: end;
       gap: 10px;
       width: 100%;
       padding: 8px;
@@ -1417,20 +1941,36 @@ function injectStyles() {
       background: rgba(5, 10, 20, 0.92);
       box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
     }
-    .composer input {
-      height: 42px;
+    .composer textarea {
+      min-height: 42px;
+      max-height: 180px;
       border: 0;
       outline: 0;
       color: #fff;
       background: transparent;
-      padding: 0 14px;
+      padding: 10px 14px;
+      resize: none;
+      line-height: 1.4;
+      overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(219, 234, 254, 0.3) transparent;
+    }
+    .composer textarea::placeholder {
+      color: rgba(219, 234, 254, 0.52);
     }
     .composer button {
       min-width: 76px;
+      min-height: 42px;
       border-radius: 22px;
       color: #07111f;
       background: #bfdbfe;
       font-weight: 800;
+      transition: background 160ms ease, transform 160ms ease;
+    }
+    .composer button:hover, .composer button:focus-visible {
+      background: #a7f3d0;
+      outline: none;
+      transform: translateY(-1px);
     }
     .composer-note {
       margin: 0;
@@ -1545,6 +2085,32 @@ function injectStyles() {
       cursor: not-allowed;
       opacity: 0.45;
     }
+    .toast {
+      position: fixed;
+      right: 26px;
+      bottom: 26px;
+      z-index: 80;
+      max-width: min(360px, calc(100vw - 32px));
+      min-height: 38px;
+      display: grid;
+      place-items: center;
+      padding: 9px 14px;
+      border: 1px solid rgba(191, 219, 254, 0.18);
+      border-radius: 10px;
+      color: #f8fbff;
+      background: rgba(5, 10, 20, 0.92);
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.42);
+      font-size: 13px;
+      font-weight: 760;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(8px);
+      transition: opacity 160ms ease, transform 160ms ease;
+    }
+    .toast.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
     @keyframes warningFade {
       from { opacity: 0; }
       to { opacity: 1; }
@@ -1575,8 +2141,32 @@ function injectStyles() {
         border-radius: 18px;
       }
       .brand, .chat-list { display: none; }
+      .sidebar-tools, .sidebar-search, .sidebar-section, .sidebar-stats { display: none; }
       .rate-card { display: none; }
       .chat-page { padding: 18px 16px 100px; }
+      .topbar {
+        align-items: stretch;
+        flex-direction: column;
+      }
+      .topbar-actions {
+        width: 100%;
+      }
+      .topbar-actions .secondary-button {
+        flex: 1 1 0;
+      }
+      .composer-prompts {
+        justify-content: flex-start;
+        overflow-x: auto;
+        flex-wrap: nowrap;
+        padding-bottom: 2px;
+      }
+      .composer-prompts button {
+        flex: 0 0 auto;
+      }
+      .toast {
+        right: 16px;
+        bottom: 88px;
+      }
     }
   `;
   document.head.appendChild(style);

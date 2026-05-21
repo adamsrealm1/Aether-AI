@@ -15,7 +15,7 @@ from groq import APIConnectionError, APIStatusError, APITimeoutError, Groq
 ROOT = Path(__file__).resolve().parent
 PROFANITY_STORE_PATH = ROOT / "profanity.js"
 PROFANITY_LIMIT = 6
-GUEST_RATE_LIMIT = 40
+GUEST_RATE_LIMIT = 60
 RATE_LIMIT_WINDOW_SECONDS = 300
 RATE_LIMITS: dict[str, dict] = {}
 PROFANITY_PATTERNS = [
