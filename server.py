@@ -211,48 +211,75 @@ def groq_api_keys() -> list[str]:
     return keys
 
 
-def groq_completion_with_fallback(model: str, messages: list[dict]) -> str:
+def groq_models() -> list[str]:
+    candidates = []
+    configured_models = os.getenv("AETHER_GROQ_MODELS", "").strip()
+    if configured_models:
+        candidates.extend(re.split(r"[\s,;]+", configured_models))
+
+    configured_model = os.getenv("AETHER_GROQ_MODEL", "").strip()
+    if configured_model:
+        candidates.append(configured_model)
+
+    candidates.append("qwen/qwen3-32b")
+
+    models = []
+    seen = set()
+    for model in candidates:
+        model = model.strip()
+        if model and model not in seen:
+            models.append(model)
+            seen.add(model)
+    return models
+
+
+def groq_completion_with_fallback(messages: list[dict]) -> str:
     keys = groq_api_keys()
     if not keys:
         return "I need a quick setup fix before I can answer."
 
     last_rate_limit_error = None
-    for api_key in keys:
-        try:
-            client = Groq(api_key=api_key)
-            completion = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=0.6,
-                max_completion_tokens=4096,
-                top_p=0.95,
-                reasoning_effort="low",
-                stream=True,
-                stop=None,
-            )
+    last_not_found_error = None
+    for model in groq_models():
+        for api_key in keys:
+            try:
+                client = Groq(api_key=api_key)
+                completion = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0.6,
+                    max_completion_tokens=4096,
+                    top_p=0.95,
+                    reasoning_effort="low",
+                    stream=True,
+                    stop=None,
+                )
 
-            chunks = []
-            for chunk in completion:
-                content = chunk.choices[0].delta.content or ""
-                if content:
-                    chunks.append(content)
+                chunks = []
+                for chunk in completion:
+                    content = chunk.choices[0].delta.content or ""
+                    if content:
+                        chunks.append(content)
 
-            reply = "".join(chunks).strip()
-            return reply or "I could not read a response."
-        except APIStatusError as exc:
-            if exc.status_code == 429:
-                last_rate_limit_error = exc
-                continue
-            raise
+                reply = "".join(chunks).strip()
+                return reply or "I could not read a response."
+            except APIStatusError as exc:
+                if exc.status_code == 429:
+                    last_rate_limit_error = exc
+                    continue
+                if exc.status_code == 404:
+                    last_not_found_error = exc
+                    break
+                raise
 
     if last_rate_limit_error:
         raise last_rate_limit_error
+    if last_not_found_error:
+        raise last_not_found_error
     return "I could not read a response."
 
 
 def groq_reply(message: str, chat: list[dict]) -> str:
-    model = os.getenv("AETHER_GROQ_MODEL", "qwen/qwen3-32b").strip()
-
     now = datetime.now().astimezone().strftime("%A, %B %d, %Y at %I:%M %p %Z")
     messages = [
         {
@@ -276,7 +303,7 @@ def groq_reply(message: str, chat: list[dict]) -> str:
     if not any(item["role"] == "user" and item["content"] == message for item in messages):
         messages.append({"role": "user", "content": message})
 
-    return groq_completion_with_fallback(model, messages)
+    return groq_completion_with_fallback(messages)
 
 
 def looks_like_weather_request(message: str) -> bool:
