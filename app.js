@@ -11,13 +11,12 @@
     toast: "",
     thinking: false,
     warningPopup: null,
-    shortMessagePopup: false,
     rateLimitPopup: false,
     ban: null,
     rateLimit: {
-      limit: 5,
+      limit: 300,
       used: 0,
-      remaining: 5,
+      remaining: 300,
       percentUsed: 0,
       resetInSeconds: 60,
     },
@@ -207,7 +206,6 @@ function render() {
 
       ${renderChatPage(chat)}
       ${renderWarningPopup()}
-      ${renderShortMessagePopup()}
       ${renderRateLimitPopup()}
       ${renderBanOverlay()}
       ${renderToast()}
@@ -295,7 +293,7 @@ function renderToast() {
 
 function renderRateLimitMeter() {
   const rate = Aether.state.rateLimit || {};
-  const limit = Math.max(1, Number(rate.limit || 5));
+  const limit = Math.max(1, Number(rate.limit || 300));
   const remaining = Math.max(0, Math.min(limit, Number(rate.remaining ?? limit)));
   const targetPercent = Math.round((remaining / limit) * 100);
   const displayPercent = clampPercent(Aether.state.rateMeter?.displayPercent ?? targetPercent);
@@ -362,19 +360,6 @@ function renderWarningPopup() {
   `;
 }
 
-function renderShortMessagePopup() {
-  if (!Aether.state.shortMessagePopup) return "";
-  return `
-    <div class="warning-overlay compact" role="dialog" aria-modal="true">
-      <div class="warning-modal compact-modal">
-        <h2>Message too short</h2>
-        <p>Your message must have at least 2 letters.</p>
-        <button class="warning-understand" data-action="close-short-message">Okay.</button>
-      </div>
-    </div>
-  `;
-}
-
 function renderRateLimitPopup() {
   if (!Aether.state.rateLimitPopup) return "";
   const rate = Aether.state.rateLimit || {};
@@ -434,10 +419,6 @@ function bindEvents(root) {
   if (composerInput) syncComposerHeight(composerInput);
   root.querySelector("[data-action='close-warning']")?.addEventListener("click", () => {
     Aether.state.warningPopup = null;
-    render();
-  });
-  root.querySelector("[data-action='close-short-message']")?.addEventListener("click", () => {
-    Aether.state.shortMessagePopup = false;
     render();
   });
   root.querySelector("[data-action='close-rate-limit']")?.addEventListener("click", () => {
@@ -532,11 +513,6 @@ async function sendMessage(event) {
   const text = input.value.trim();
   Aether.state.composerDraft = input.value;
   if (!text) return;
-  if (!hasMinimumLetters(text)) {
-    Aether.state.shortMessagePopup = true;
-    render();
-    return;
-  }
   if (isRateLimited()) {
     Aether.state.rateLimitPopup = true;
     render();
@@ -556,11 +532,6 @@ async function sendMessage(event) {
 async function sendTextMessage(text, options = {}) {
   if (Aether.state.thinking) return;
   if (Aether.state.ban?.banned) return;
-  if (!hasMinimumLetters(text)) {
-    Aether.state.shortMessagePopup = true;
-    render();
-    return;
-  }
   if (isRateLimited()) {
     Aether.state.rateLimitPopup = true;
     render();
@@ -690,10 +661,6 @@ function showProfanityWarning(warnings, banned) {
   render();
 }
 
-function hasMinimumLetters(text) {
-  return (text.match(/[a-zA-Z]/g) || []).length >= 2;
-}
-
 function isRateLimited() {
   resetExpiredRateLimitWindow();
   const rate = Aether.state.rateLimit;
@@ -815,7 +782,7 @@ function updateRateMeterDom() {
   const card = document.querySelector(".rate-card");
   if (!card) return;
   const rate = Aether.state.rateLimit || {};
-  const limit = Math.max(1, Number(rate.limit || 5));
+  const limit = Math.max(1, Number(rate.limit || 300));
   const remaining = Math.max(0, Math.min(limit, Number(rate.remaining ?? limit)));
   const displayPercent = clampPercent(Aether.state.rateMeter?.displayPercent ?? ratePercent(rate));
   const resetInSeconds = Math.max(0, Number(rate.resetInSeconds || 0));
@@ -829,7 +796,7 @@ function updateRateMeterDom() {
 }
 
 function ratePercent(rate) {
-  const limit = Math.max(1, Number(rate?.limit || 5));
+  const limit = Math.max(1, Number(rate?.limit || 300));
   const remaining = Math.max(0, Math.min(limit, Number(rate?.remaining ?? limit)));
   return Math.round((remaining / limit) * 100);
 }

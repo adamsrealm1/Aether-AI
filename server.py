@@ -15,7 +15,7 @@ from groq import APIConnectionError, APIStatusError, APITimeoutError, Groq
 ROOT = Path(__file__).resolve().parent
 PROFANITY_STORE_PATH = ROOT / "profanity.js"
 PROFANITY_LIMIT = 6
-GUEST_RATE_LIMIT = 5
+GUEST_RATE_LIMIT = 300
 RATE_LIMIT_WINDOW_SECONDS = 60
 RATE_LIMITS: dict[str, dict] = {}
 app = Flask(__name__, static_folder=str(ROOT), static_url_path="")
@@ -130,18 +130,18 @@ def ban_status_for_ip(ip_address: str) -> dict:
         }
     return {"banned": False}
 
-def rate_limit_key(ip_address: str) -> str:
-    return f"ip:{ip_address}"
+def rate_limit_key() -> str:
+    return "global"
 
 
-def rate_limit_for_request(ip_address: str) -> int:
+def rate_limit_for_request() -> int:
     return GUEST_RATE_LIMIT
 
 
-def rate_limit_status(ip_address: str) -> dict:
-    limit = rate_limit_for_request(ip_address)
+def rate_limit_status(ip_address: str | None = None) -> dict:
+    limit = rate_limit_for_request()
     now = datetime.now().astimezone()
-    key = rate_limit_key(ip_address)
+    key = rate_limit_key()
     bucket = RATE_LIMITS.get(key)
     if not bucket or bucket["resetAt"] <= now:
         bucket = {"count": 0, "resetAt": now + timedelta(seconds=RATE_LIMIT_WINDOW_SECONDS)}
@@ -164,13 +164,13 @@ def consume_rate_limit(ip_address: str) -> dict:
     if status["remaining"] <= 0:
         return {"allowed": False, "rateLimit": status}
 
-    key = rate_limit_key(ip_address)
+    key = rate_limit_key()
     RATE_LIMITS[key]["count"] = int(RATE_LIMITS[key]["count"]) + 1
     return {"allowed": True, "rateLimit": rate_limit_status(ip_address)}
 
 
 def refund_rate_limit(ip_address: str) -> None:
-    key = rate_limit_key(ip_address)
+    key = rate_limit_key()
     bucket = RATE_LIMITS.get(key)
     if not bucket:
         return
