@@ -599,32 +599,49 @@ async function sendTextMessage(text, options = {}) {
 
 async function getAssistantReply(text) {
   if (Aether.config.apiEndpoint) {
-    try {
-      const location = await locationForWeatherRequest(text);
-      const headers = await authHeaders({ "Content-Type": "application/json;charset=UTF-8" });
-      const response = await fetch(Aether.config.apiEndpoint, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ message: text, chat: activeChat().messages, location }),
-      });
-      const data = await response.json();
-      applyServerStatus(data);
-      if (data.ban) {
-        Aether.state.ban = data.ban;
-        return "";
+    const location = await locationForWeatherRequest(text);
+    let retryDelayMs = 3000;
+    while (true) {
+      try {
+        const headers = await authHeaders({ "Content-Type": "application/json;charset=UTF-8" });
+        const response = await fetch(Aether.config.apiEndpoint, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ message: text, chat: activeChat().messages, location }),
+        });
+        if (!response.ok) {
+          if (isRetryableStatus(response.status)) {
+            await wait(retryDelayMs);
+            retryDelayMs = nextRetryDelay(retryDelayMs);
+            continue;
+          }
+          return `I could not reach ${Aether.config.apiEndpoint}. ${backendLaunchMessage()}`;
+        }
+        const data = await response.json();
+        applyServerStatus(data);
+        if (data.retryable) {
+          await wait(Number(data.retryAfterSeconds || 4) * 1000);
+          retryDelayMs = nextRetryDelay(retryDelayMs);
+          continue;
+        }
+        if (data.ban) {
+          Aether.state.ban = data.ban;
+          return "";
+        }
+        if (data.rateLimited) {
+          Aether.state.rateLimitPopup = true;
+          render();
+          return "";
+        }
+        if (data.warning) {
+          showProfanityWarning(data.warning.warnings, data.warning.banned);
+          return "";
+        }
+        if (data.reply) return data.reply;
+      } catch (error) {
+        await wait(retryDelayMs);
+        retryDelayMs = nextRetryDelay(retryDelayMs);
       }
-      if (data.rateLimited) {
-        Aether.state.rateLimitPopup = true;
-        render();
-        return "";
-      }
-      if (data.warning) {
-        showProfanityWarning(data.warning.warnings, data.warning.banned);
-        return "";
-      }
-      if (data.reply) return data.reply;
-    } catch (error) {
-      return `I could not reach ${Aether.config.apiEndpoint} from ${location.href}. ${backendLaunchMessage()}`;
     }
   }
 
@@ -634,6 +651,14 @@ async function getAssistantReply(text) {
     return `It is ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`;
   }
   return "Call-limit reached.";
+}
+
+function isRetryableStatus(status) {
+  return [408, 425, 429, 500, 502, 503, 504].includes(Number(status));
+}
+
+function nextRetryDelay(currentDelayMs) {
+  return Math.min(15000, Math.max(3000, Math.round(currentDelayMs * 1.4)));
 }
 
 function handleLocalProfanity(text) {

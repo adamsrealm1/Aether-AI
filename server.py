@@ -169,6 +169,14 @@ def consume_rate_limit(ip_address: str) -> dict:
     return {"allowed": True, "rateLimit": rate_limit_status(ip_address)}
 
 
+def refund_rate_limit(ip_address: str) -> None:
+    key = rate_limit_key(ip_address)
+    bucket = RATE_LIMITS.get(key)
+    if not bucket:
+        return
+    bucket["count"] = max(0, int(bucket.get("count", 0)) - 1)
+
+
 def load_dotenv() -> None:
     env_path = ROOT / ".env"
     if not env_path.exists():
@@ -439,21 +447,25 @@ def removed_endpoints():
 
 @app.post("/api/chat")
 def api_chat():
+    ip_address = client_ip()
     try:
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
             payload = {}
-        return jsonify(chat_response(payload, client_ip()))
+        return jsonify(chat_response(payload, ip_address))
     except APIStatusError as exc:
         return jsonify({"reply": groq_error_message(exc)})
     except (APIConnectionError, APITimeoutError):
-        return jsonify({"reply": "I could not connect right now. Check your internet connection."})
+        refund_rate_limit(ip_address)
+        return jsonify({"retryable": True, "retryAfterSeconds": 4})
     except urllib.error.HTTPError as exc:
         return jsonify({"reply": http_error_message(exc)})
     except urllib.error.URLError:
-        return jsonify({"reply": "I could not connect to the weather service. Check your internet connection."})
+        refund_rate_limit(ip_address)
+        return jsonify({"retryable": True, "retryAfterSeconds": 4})
     except TimeoutError:
-        return jsonify({"reply": "That took too long. Try again."})
+        refund_rate_limit(ip_address)
+        return jsonify({"retryable": True, "retryAfterSeconds": 4})
     except Exception as exc:
         return jsonify({"reply": f"Server error: {exc}"})
 
