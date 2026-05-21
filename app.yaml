@@ -1,4 +1,3 @@
-kind: wasmer.io/App.v0
 name: aether-ai
 app_id: da_nkPI5tJUkwd1
 owner: adamsrealm1
@@ -18,6 +17,7 @@ cli_args:
 - --port
 - '5000'
 - --no-reload
+kind: wasmer.io/App.v0
 annotations:
   shipitcli.com/config:
     commands:
