@@ -1,18 +1,41 @@
 kind: wasmer.io/App.v0
 name: aether-ai
-package: aether-ai/aether-ai@0.1.0
-cli_args:
-  - -m
-  - flask
-  - --app
-  - /app/server:app
-  - run
-  - --host
-  - 0.0.0.0
-  - --port
-  - "5000"
-  - --no-reload
+app_id: da_nkPI5tJUkwd1
+owner: adamsrealm1
+package: .
 env:
   PYTHONEXECUTABLE: /bin/python
   PYTHONPATH: /app
   AETHER_GROQ_MODELS: llama-3.1-8b-instant,qwen/qwen3-32b,openai/gpt-oss-120b
+cli_args:
+- -m
+- flask
+- --app
+- /app/server:app
+- run
+- --host
+- 0.0.0.0
+- --port
+- '5000'
+- --no-reload
+annotations:
+  shipitcli.com/config:
+    commands:
+      build: pip install -r requirements.txt
+    cross_platform: wasix_wasm32
+    extra_dependencies:
+    - uvicorn
+    framework: flask
+    install_requires_all_files: false
+    main_file: main.py
+    port: 8080
+    precompile_python: true
+    python_extra_index_url: https://pythonindex.wasix.org/simple
+    python_version: '3.13'
+    server: uvicorn
+    uses_ffmpeg: false
+    uses_pandoc: false
+    uv_version: 0.8.15
+    wsgi_application: main:app
+  shipitcli.com/provider: python
+  shipitcli.com/version: 0.19.8

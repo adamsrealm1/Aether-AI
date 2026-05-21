@@ -258,7 +258,6 @@ def groq_completion_with_fallback(messages: list[dict]) -> str:
                     temperature=0.6,
                     max_completion_tokens=4096,
                     top_p=0.95,
-                    reasoning_effort="low",
                     stream=True,
                     stop=None,
                 )
