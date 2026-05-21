@@ -7,9 +7,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from flask import Flask, jsonify, request, send_from_directory
 from groq import APIConnectionError, APIStatusError, APITimeoutError, Groq
 
 ROOT = Path(__file__).resolve().parent
@@ -18,6 +18,7 @@ PROFANITY_LIMIT = 6
 GUEST_RATE_LIMIT = 5
 RATE_LIMIT_WINDOW_SECONDS = 60
 RATE_LIMITS: dict[str, dict] = {}
+app = Flask(__name__, static_folder=str(ROOT), static_url_path="")
 PROFANITY_PATTERNS = [
     re.compile(pattern, re.I)
     for pattern in [
@@ -337,107 +338,97 @@ def coordinates_from_location(location: object) -> tuple[float, float]:
     return float(latitude), float(longitude)
 
 
-class AetherHandler(SimpleHTTPRequestHandler):
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, directory=str(ROOT), **kwargs)
+def client_ip() -> str:
+    forwarded_for = request.headers.get("X-Forwarded-For", "")
+    if forwarded_for:
+        return forwarded_for.split(",", 1)[0].strip()
+    return request.remote_addr or "127.0.0.1"
 
-    def end_headers(self) -> None:
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        super().end_headers()
 
-    def do_OPTIONS(self) -> None:
-        self.send_response(204)
-        self.end_headers()
+def chat_response(payload: dict, ip_address: str) -> dict:
+    message = str(payload.get("message", "")).strip()
+    chat = payload.get("chat") if isinstance(payload.get("chat"), list) else []
+    location = payload.get("location")
+    if not message:
+        return {"reply": "Send a message first."}
+    ban = ban_status_for_ip(ip_address)
+    if ban["banned"]:
+        return {
+            "reply": "You are permanently banned from Aether for breaking the TOS.",
+            "ban": ban,
+        }
+    warning = profanity_status_for_ip(ip_address, message)
+    if warning:
+        reply = (
+            "You are permanently banned from Aether for breaking the TOS."
+            if warning["banned"]
+            else "Profanity warning."
+        )
+        return {"reply": reply, "warning": warning}
+    rate = consume_rate_limit(ip_address)
+    if not rate["allowed"]:
+        return {
+            "reply": "Rate limit reached. Wait up to 1 minute.",
+            "rateLimited": True,
+            "rateLimit": rate["rateLimit"],
+        }
+    if location and looks_like_weather_request(message):
+        latitude, longitude = coordinates_from_location(location)
+        reply = weather_reply(latitude, longitude)
+        return {"reply": reply, "rateLimit": rate["rateLimit"]}
+    reply = groq_reply(message, chat)
+    return {"reply": reply, "rateLimit": rate["rateLimit"]}
 
-    def do_GET(self) -> None:
-        if self.path == "/api/status":
-            self.send_json(
-                {
-                    "ban": ban_status_for_ip(self.client_address[0]),
-                    "rateLimit": rate_limit_status(self.client_address[0]),
-                }
-            )
-            return
 
-        super().do_GET()
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    return response
 
-    def do_POST(self) -> None:
-        if self.path != "/api/chat":
-            self.send_json({"error": "Not found"}, status=404)
-            return
 
-        try:
-            payload = self.read_json_body()
-            message = str(payload.get("message", "")).strip()
-            chat = payload.get("chat") if isinstance(payload.get("chat"), list) else []
-            location = payload.get("location")
-            if not message:
-                self.send_json({"reply": "Send a message first."})
-                return
-            ban = ban_status_for_ip(self.client_address[0])
-            if ban["banned"]:
-                self.send_json(
-                    {
-                        "reply": "You are permanently banned from Aether for breaking the TOS.",
-                        "ban": ban,
-                    }
-                )
-                return
-            warning = profanity_status_for_ip(self.client_address[0], message)
-            if warning:
-                reply = (
-                    "You are permanently banned from Aether for breaking the TOS."
-                    if warning["banned"]
-                    else "Profanity warning."
-                )
-                self.send_json({"reply": reply, "warning": warning})
-                return
-            rate = consume_rate_limit(self.client_address[0])
-            if not rate["allowed"]:
-                self.send_json(
-                    {
-                        "reply": "Rate limit reached. Wait up to 5 minutes.",
-                        "rateLimited": True,
-                        "rateLimit": rate["rateLimit"],
-                    }
-                )
-                return
-            if location and looks_like_weather_request(message):
-                latitude, longitude = coordinates_from_location(location)
-                reply = weather_reply(latitude, longitude)
-                self.send_json({"reply": reply, "rateLimit": rate["rateLimit"]})
-                return
-            reply = groq_reply(message, chat)
-            self.send_json({"reply": reply, "rateLimit": rate["rateLimit"]})
-        except APIStatusError as exc:
-            self.send_json({"reply": groq_error_message(exc)}, status=200)
-        except (APIConnectionError, APITimeoutError):
-            self.send_json({"reply": "I could not connect right now. Check your internet connection."}, status=200)
-        except urllib.error.HTTPError as exc:
-            self.send_json({"reply": http_error_message(exc)}, status=200)
-        except urllib.error.URLError:
-            self.send_json({"reply": "I could not connect to the weather service. Check your internet connection."}, status=200)
-        except TimeoutError:
-            self.send_json({"reply": "That took too long. Try again."}, status=200)
-        except Exception as exc:
-            self.send_json({"reply": f"Server error: {exc}"}, status=200)
-    def read_json_body(self) -> dict:
-        length = int(self.headers.get("Content-Length", "0"))
-        body = self.rfile.read(length)
-        if not body:
-            return {}
-        payload = json.loads(body.decode("utf-8"))
-        return payload if isinstance(payload, dict) else {}
+@app.get("/")
+def index():
+    return send_from_directory(ROOT, "index.html")
 
-    def send_json(self, payload: dict, status: int = 200) -> None:
-        body = json.dumps(payload).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+
+@app.get("/api/status")
+def api_status():
+    ip_address = client_ip()
+    return jsonify(
+        {
+            "ban": ban_status_for_ip(ip_address),
+            "rateLimit": rate_limit_status(ip_address),
+        }
+    )
+
+
+@app.route("/api/admin/status", methods=["GET", "POST", "OPTIONS"])
+@app.route("/api/report", methods=["GET", "POST", "OPTIONS"])
+def removed_endpoints():
+    return jsonify({"error": "Not found"}), 404
+
+
+@app.post("/api/chat")
+def api_chat():
+    try:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            payload = {}
+        return jsonify(chat_response(payload, client_ip()))
+    except APIStatusError as exc:
+        return jsonify({"reply": groq_error_message(exc)})
+    except (APIConnectionError, APITimeoutError):
+        return jsonify({"reply": "I could not connect right now. Check your internet connection."})
+    except urllib.error.HTTPError as exc:
+        return jsonify({"reply": http_error_message(exc)})
+    except urllib.error.URLError:
+        return jsonify({"reply": "I could not connect to the weather service. Check your internet connection."})
+    except TimeoutError:
+        return jsonify({"reply": "That took too long. Try again."})
+    except Exception as exc:
+        return jsonify({"reply": f"Server error: {exc}"})
 
 
 def http_error_message(exc: urllib.error.HTTPError) -> str:
@@ -478,9 +469,7 @@ def main() -> None:
     load_dotenv()
     port = int(os.getenv("PORT") or os.getenv("AETHER_PORT", "8765"))
     host = os.getenv("AETHER_HOST", "0.0.0.0").strip() or "0.0.0.0"
-    server = ThreadingHTTPServer((host, port), AetherHandler)
-    print(f"Server active.")
-    server.serve_forever()
+    app.run(host=host, port=port)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,38 @@
+[package]
+name = "aether-ai/aether-ai"
+version = "0.1.0"
+description = "Aether AI"
+
+[dependencies]
+"wasmer/python" = "^3.12.6"
+
+[fs]
+"/app/server.py" = "./server.py"
+"/app/index.html" = "./index.html"
+"/app/app.js" = "./app.js"
+"/app/config.js" = "./config.js"
+"/app/profanity.js" = "./profanity.js"
+"/app/assets" = "./assets"
+
+[[command]]
+name = "script"
+module = "wasmer/python:python"
+runner = "wasi"
+
+[command.annotations.wasi]
+main-args = [
+  "-m",
+  "flask",
+  "--app",
+  "/app/server:app",
+  "run",
+  "--host",
+  "0.0.0.0",
+  "--port",
+  "5000",
+  "--no-reload",
+]
+env = [
+  "PYTHONEXECUTABLE=/bin/python",
+  "PYTHONPATH=/app",
+]
