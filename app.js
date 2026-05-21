@@ -323,7 +323,7 @@ function renderMessage(message) {
   const content = message.role === "assistant" ? sanitizeAssistantText(message.content) : message.content;
   const copyButton =
     message.role === "assistant" && !message.typing
-      ? `<button class="copy-message" data-copy-message="${escapeHtml(messageId)}" aria-label="Copy this message" title="Copy this message">📋</button>`
+      ? `<button class="copy-message" data-copy-message="${escapeHtml(messageId)}" aria-label="Copy this message" title="Copy this message">Copy</button>`
       : "";
   const thoughtTime =
     message.role === "assistant" && !message.typing && message.showThoughtTime && Number.isFinite(message.thoughtTimeMs)
