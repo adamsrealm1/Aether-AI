@@ -1,29 +1,22 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
 import re
-import socket
-import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from uuid import uuid4
 
 from groq import APIConnectionError, APIStatusError, APITimeoutError, Groq
 
 ROOT = Path(__file__).resolve().parent
 PROFANITY_STORE_PATH = ROOT / "profanity.js"
-REPORTS_STORE_PATH = ROOT / "reports.json"
 PROFANITY_LIMIT = 6
 GUEST_RATE_LIMIT = 40
-ADMIN_RATE_LIMIT = 40
 RATE_LIMIT_WINDOW_SECONDS = 300
-LEGACY_ADMIN_MACS = {"E8:47:3A:E6:26:C7"}
-BUILTIN_ADMIN_MACS = {"E8:47:3A:E6:26:C7"}
 RATE_LIMITS: dict[str, dict] = {}
 PROFANITY_PATTERNS = [
     re.compile(pattern, re.I)
@@ -65,15 +58,8 @@ WEATHER_CODES = {
 }
 
 
-def storage_status() -> dict:
-    return {
-        "type": "local-files",
-        "adminAccess": "mac-or-ip",
-    }
-
-
 def default_profanity_store() -> dict:
-    return {"warnedUsers": {}, "bannedUsers": {}, "bannedMacs": {}, "adminMacs": {}, "adminIps": {}}
+    return {"warnedUsers": {}, "bannedUsers": {}}
 
 
 def load_profanity_store() -> dict:
@@ -95,12 +81,6 @@ def load_profanity_store() -> dict:
 
     store.setdefault("warnedUsers", {})
     store.setdefault("bannedUsers", {})
-    store.setdefault("bannedMacs", {})
-    store.setdefault("adminMacs", {})
-    store.setdefault("adminIps", {})
-    for legacy_mac in LEGACY_ADMIN_MACS:
-        if store["adminMacs"].pop(normalize_mac(legacy_mac), None) is not None:
-            changed = True
     if changed:
         save_profanity_store(store)
     return store
@@ -109,27 +89,6 @@ def load_profanity_store() -> dict:
 def save_profanity_store(store: dict) -> None:
     body = json.dumps(store, indent=2, sort_keys=True)
     PROFANITY_STORE_PATH.write_text(f"window.AETHER_PROFANITY_STORE = {body};\n", encoding="utf-8")
-
-
-def default_reports_store() -> dict:
-    return {"reports": []}
-
-
-def load_reports_store() -> dict:
-    if not REPORTS_STORE_PATH.exists():
-        store = default_reports_store()
-        REPORTS_STORE_PATH.write_text(json.dumps(store, indent=2, sort_keys=True), encoding="utf-8")
-    else:
-        try:
-            store = json.loads(REPORTS_STORE_PATH.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            store = default_reports_store()
-    store.setdefault("reports", [])
-    return store
-
-
-def save_reports_store(store: dict) -> None:
-    REPORTS_STORE_PATH.write_text(json.dumps(store, indent=2, sort_keys=True), encoding="utf-8")
 
 
 def contains_profanity(message: str) -> bool:
@@ -159,8 +118,6 @@ def profanity_status_for_ip(ip_address: str, message: str) -> dict | None:
 
 
 def ban_status_for_ip(ip_address: str) -> dict:
-    if is_admin_request(ip_address):
-        return {"banned": False}
     store = load_profanity_store()
     if ip_address in store["bannedUsers"]:
         banned = store["bannedUsers"][ip_address]
@@ -170,190 +127,13 @@ def ban_status_for_ip(ip_address: str) -> dict:
             "warnings": int(banned.get("warnings", PROFANITY_LIMIT)),
             "reason": banned.get("reason", ""),
         }
-    mac_address = mac_for_ip(ip_address)
-    if mac_address and mac_address in store["bannedMacs"]:
-        banned = store["bannedMacs"][mac_address]
-        return {
-            "banned": True,
-            "type": "mac",
-            "warnings": PROFANITY_LIMIT,
-            "reason": banned.get("reason", ""),
-        }
     return {"banned": False}
 
-
-def ban_ip_address(ip_address: str, reason: str = "Admin ban") -> None:
-    store = load_profanity_store()
-    now = datetime.now().astimezone().isoformat()
-    store["bannedUsers"][ip_address] = {
-        "warnings": PROFANITY_LIMIT,
-        "bannedAt": now,
-        "reason": reason,
-    }
-    save_profanity_store(store)
-
-
-def ban_mac_address(mac_address: str, reason: str = "Admin MAC ban") -> str:
-    normalized_mac = normalize_mac(mac_address)
-    if not normalized_mac:
-        raise ValueError("Missing MAC address.")
-    store = load_profanity_store()
-    store["bannedMacs"][normalized_mac] = {
-        "bannedAt": datetime.now().astimezone().isoformat(),
-        "reason": reason,
-    }
-    save_profanity_store(store)
-    return normalized_mac
-
-
-def unban_ip_address(ip_address: str) -> None:
-    store = load_profanity_store()
-    store["bannedUsers"].pop(ip_address, None)
-    save_profanity_store(store)
-
-
-def unban_mac_address(mac_address: str) -> str:
-    normalized_mac = normalize_mac(mac_address)
-    store = load_profanity_store()
-    store["bannedMacs"].pop(normalized_mac, None)
-    save_profanity_store(store)
-    return normalized_mac
-
-
-def reset_ip_warnings(ip_address: str) -> None:
-    store = load_profanity_store()
-    store["warnedUsers"].pop(ip_address, None)
-    save_profanity_store(store)
-
-
-def grant_admin_mac(mac_address: str, note: str = "Granted by admin") -> str:
-    normalized_mac = normalize_mac(mac_address)
-    if not normalized_mac:
-        raise ValueError("Missing MAC address.")
-    store = load_profanity_store()
-    store["adminMacs"][normalized_mac] = {
-        "grantedAt": datetime.now().astimezone().isoformat(),
-        "note": note,
-    }
-    store["bannedMacs"].pop(normalized_mac, None)
-    save_profanity_store(store)
-    return normalized_mac
-
-
-def grant_admin_ip(ip_address: str, note: str = "Granted by admin") -> str:
-    ip_address = ip_address.strip()
-    if not ip_address:
-        raise ValueError("Missing IP address.")
-    store = load_profanity_store()
-    store["adminIps"][ip_address] = {
-        "grantedAt": datetime.now().astimezone().isoformat(),
-        "note": note,
-    }
-    store["bannedUsers"].pop(ip_address, None)
-    save_profanity_store(store)
-    return ip_address
-
-
-def revoke_admin_mac(mac_address: str) -> str:
-    normalized_mac = normalize_mac(mac_address)
-    store = load_profanity_store()
-    store["adminMacs"].pop(normalized_mac, None)
-    save_profanity_store(store)
-    return normalized_mac
-
-
-def revoke_admin_ip(ip_address: str) -> str:
-    ip_address = ip_address.strip()
-    store = load_profanity_store()
-    store["adminIps"].pop(ip_address, None)
-    save_profanity_store(store)
-    return ip_address
-
-
-def normalize_mac(value: str) -> str:
-    parts = re.findall(r"[0-9a-fA-F]{2}", value)
-    return ":".join(part.upper() for part in parts)
-
-
-def local_mac_addresses() -> set[str]:
-    try:
-        result = subprocess.run(
-            ["getmac", "/fo", "csv", "/nh"],
-            capture_output=True,
-            text=True,
-            timeout=4,
-            check=False,
-        )
-    except Exception:
-        return set()
-    return {normalize_mac(match.group(0)) for match in re.finditer(r"(?:[0-9A-Fa-f]{2}[-:]){5}[0-9A-Fa-f]{2}", result.stdout)}
-
-
-def local_network_ips() -> list[str]:
-    ips: set[str] = set()
-    try:
-        hostname = socket.gethostname()
-        for ip in socket.gethostbyname_ex(hostname)[2]:
-            if ip and not ip.startswith("127."):
-                ips.add(ip)
-    except OSError:
-        pass
-    return sorted(ips)
-
-
-def mac_for_ip(ip_address: str) -> str:
-    try:
-        result = subprocess.run(
-            ["arp", "-a", ip_address],
-            capture_output=True,
-            text=True,
-            timeout=4,
-            check=False,
-        )
-    except Exception:
-        return ""
-    match = re.search(r"(?:[0-9A-Fa-f]{2}[-:]){5}[0-9A-Fa-f]{2}", result.stdout)
-    return normalize_mac(match.group(0)) if match else ""
-
-
-def builtin_admin_macs() -> set[str]:
-    return {normalized for mac in BUILTIN_ADMIN_MACS if (normalized := normalize_mac(mac))}
-
-
-def admin_macs_from_store(store: dict) -> set[str]:
-    return {normalized for mac in store.get("adminMacs", {}) if (normalized := normalize_mac(mac))}
-
-
-def is_loopback_ip(ip_address: str) -> bool:
-    return ip_address == "::1" or ip_address.startswith("127.")
-
-
-def request_mac_addresses(ip_address: str) -> set[str]:
-    macs = set()
-    client_mac = mac_for_ip(ip_address)
-    if client_mac:
-        macs.add(client_mac)
-    if is_loopback_ip(ip_address):
-        macs.update(local_mac_addresses())
-    return {mac for mac in macs if mac}
-
-
-def is_admin_request(ip_address: str) -> bool:
-    store = load_profanity_store()
-    allowed_macs = admin_macs_from_store(store) | builtin_admin_macs()
-    return bool(request_mac_addresses(ip_address) & allowed_macs) or ip_address in store.get("adminIps", {})
-
-
 def rate_limit_key(ip_address: str) -> str:
-    macs = sorted(request_mac_addresses(ip_address))
-    if macs:
-        return f"mac:{macs[0]}"
     return f"ip:{ip_address}"
 
 
 def rate_limit_for_request(ip_address: str) -> int:
-    if is_admin_request(ip_address):
-        return ADMIN_RATE_LIMIT
     return GUEST_RATE_LIMIT
 
 
@@ -386,111 +166,6 @@ def consume_rate_limit(ip_address: str) -> dict:
     key = rate_limit_key(ip_address)
     RATE_LIMITS[key]["count"] = int(RATE_LIMITS[key]["count"]) + 1
     return {"allowed": True, "rateLimit": rate_limit_status(ip_address)}
-
-
-def reset_all_rate_limits() -> None:
-    RATE_LIMITS.clear()
-
-
-def submit_report(payload: dict, ip_address: str) -> dict:
-    now = datetime.now().astimezone().isoformat()
-    report = {
-        "id": str(uuid4()),
-        "status": "open",
-        "createdAt": now,
-        "reporterIp": ip_address,
-        "reporterMac": mac_for_ip(ip_address),
-        "reason": str(payload.get("reason", "Other")).strip()[:120],
-        "details": str(payload.get("details", "")).strip()[:1000],
-        "messageId": str(payload.get("messageId", "")).strip()[:120],
-        "messageContent": str(payload.get("messageContent", "")).strip()[:4000],
-        "chatId": str(payload.get("chatId", "")).strip()[:120],
-        "chatTitle": str(payload.get("chatTitle", "")).strip()[:200],
-    }
-    store = load_reports_store()
-    store["reports"].insert(0, report)
-    save_reports_store(store)
-    return report
-
-
-def admin_payload(ip_address: str) -> dict:
-    reports = load_reports_store()["reports"]
-    profanity = load_profanity_store()
-    open_reports = [report for report in reports if report.get("status") == "open"]
-    unique_reporters = sorted({report.get("reporterIp", "") for report in reports if report.get("reporterIp")})
-    recent_macs = sorted({report.get("reporterMac", "") for report in reports if report.get("reporterMac")})
-    legacy_macs = {normalize_mac(mac) for mac in LEGACY_ADMIN_MACS}
-    admin_macs = {
-        normalize_mac(mac): info
-        for mac, info in profanity.get("adminMacs", {}).items()
-        if normalize_mac(mac) not in legacy_macs
-    }
-    for mac in builtin_admin_macs():
-        admin_macs.setdefault(
-            mac,
-            {
-                "grantedAt": "built-in",
-                "note": "Built-in hardware admin",
-                "protected": True,
-            },
-        )
-    return {
-        "reports": reports,
-        "bannedUsers": profanity.get("bannedUsers", {}),
-        "bannedMacs": profanity.get("bannedMacs", {}),
-        "warnedUsers": profanity.get("warnedUsers", {}),
-        "adminMacs": admin_macs,
-        "adminIps": profanity.get("adminIps", {}),
-        "stats": {
-            "totalReports": len(reports),
-            "openReports": len(open_reports),
-            "ignoredReports": len(reports) - len(open_reports),
-            "bannedUsers": len(profanity.get("bannedUsers", {})),
-            "bannedMacs": len(profanity.get("bannedMacs", {})),
-            "warnedUsers": len(profanity.get("warnedUsers", {})),
-            "uniqueReporters": len(unique_reporters),
-            "adminMacs": len(admin_macs),
-            "adminIps": len(profanity.get("adminIps", {})),
-        },
-        "client": {
-            "ip": ip_address,
-            "mac": ", ".join(sorted(request_mac_addresses(ip_address))),
-        },
-        "recent": {
-            "ips": unique_reporters[-25:],
-            "macs": recent_macs[-25:],
-        },
-    }
-
-
-def update_report_status(report_id: str, status: str) -> dict | None:
-    store = load_reports_store()
-    for report in store["reports"]:
-        if report.get("id") == report_id:
-            report["status"] = status
-            report["reviewedAt"] = datetime.now().astimezone().isoformat()
-            save_reports_store(store)
-            return report
-    return None
-
-
-def delete_report(report_id: str) -> bool:
-    store = load_reports_store()
-    before = len(store["reports"])
-    store["reports"] = [report for report in store["reports"] if report.get("id") != report_id]
-    save_reports_store(store)
-    return len(store["reports"]) != before
-
-
-def clear_reports(status: str | None = None) -> int:
-    store = load_reports_store()
-    before = len(store["reports"])
-    if status:
-        store["reports"] = [report for report in store["reports"] if report.get("status") != status]
-    else:
-        store["reports"] = []
-    save_reports_store(store)
-    return before - len(store["reports"])
 
 
 def load_dotenv() -> None:
@@ -677,173 +352,18 @@ class AetherHandler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:
-        if self.path == "/api/admin/status":
-            is_admin = is_admin_request(self.client_address[0])
-            ban = ban_status_for_ip(self.client_address[0])
+        if self.path == "/api/status":
             self.send_json(
                 {
-                    "isAdmin": is_admin,
-                    "clientIp": self.client_address[0],
-                    "clientMac": ", ".join(sorted(request_mac_addresses(self.client_address[0]))) if is_admin else "",
-                    "ban": ban,
+                    "ban": ban_status_for_ip(self.client_address[0]),
                     "rateLimit": rate_limit_status(self.client_address[0]),
-                    "storage": storage_status(),
                 }
             )
-            return
-
-        if self.path == "/api/admin/reports":
-            if not is_admin_request(self.client_address[0]):
-                self.send_json({"error": "Admin access required."}, status=403)
-                return
-            self.send_json(admin_payload(self.client_address[0]))
             return
 
         super().do_GET()
 
     def do_POST(self) -> None:
-        if self.path == "/api/report":
-            try:
-                report = submit_report(self.read_json_body(), self.client_address[0])
-                self.send_json({"ok": True, "report": report})
-            except Exception as exc:
-                self.send_json({"ok": False, "error": f"Report error: {exc}"}, status=200)
-            return
-
-        if self.path == "/api/admin/report":
-            if not is_admin_request(self.client_address[0]):
-                self.send_json({"error": "Admin access required."}, status=403)
-                return
-            payload = self.read_json_body()
-            report = update_report_status(str(payload.get("reportId", "")), str(payload.get("status", "ignored")))
-            if not report:
-                self.send_json({"error": "Report not found."}, status=404)
-                return
-            self.send_json({"ok": True, "report": report})
-            return
-
-        if self.path == "/api/admin/ban":
-            if not is_admin_request(self.client_address[0]):
-                self.send_json({"error": "Admin access required."}, status=403)
-                return
-            payload = self.read_json_body()
-            ip_address = str(payload.get("ip", "")).strip()
-            if not ip_address:
-                self.send_json({"error": "Missing IP address."}, status=400)
-                return
-            ban_ip_address(ip_address, str(payload.get("reason", "Admin ban")).strip() or "Admin ban")
-            self.send_json({"ok": True, "ip": ip_address})
-            return
-
-        if self.path == "/api/admin/ban-mac":
-            if not is_admin_request(self.client_address[0]):
-                self.send_json({"error": "Admin access required."}, status=403)
-                return
-            payload = self.read_json_body()
-            try:
-                mac_address = ban_mac_address(
-                    str(payload.get("mac", "")).strip(),
-                    str(payload.get("reason", "Admin MAC ban")).strip() or "Admin MAC ban",
-                )
-                self.send_json({"ok": True, "mac": mac_address})
-            except ValueError as exc:
-                self.send_json({"ok": False, "error": str(exc)}, status=400)
-            return
-
-        if self.path == "/api/admin/unban":
-            if not is_admin_request(self.client_address[0]):
-                self.send_json({"error": "Admin access required."}, status=403)
-                return
-            payload = self.read_json_body()
-            ip_address = str(payload.get("ip", "")).strip()
-            if not ip_address:
-                self.send_json({"error": "Missing IP address."}, status=400)
-                return
-            unban_ip_address(ip_address)
-            self.send_json({"ok": True, "ip": ip_address})
-            return
-
-        if self.path == "/api/admin/unban-mac":
-            if not is_admin_request(self.client_address[0]):
-                self.send_json({"error": "Admin access required."}, status=403)
-                return
-            payload = self.read_json_body()
-            mac_address = unban_mac_address(str(payload.get("mac", "")).strip())
-            self.send_json({"ok": True, "mac": mac_address})
-            return
-
-        if self.path == "/api/admin/reset-warnings":
-            if not is_admin_request(self.client_address[0]):
-                self.send_json({"error": "Admin access required."}, status=403)
-                return
-            payload = self.read_json_body()
-            ip_address = str(payload.get("ip", "")).strip()
-            if not ip_address:
-                self.send_json({"error": "Missing IP address."}, status=400)
-                return
-            reset_ip_warnings(ip_address)
-            self.send_json({"ok": True, "ip": ip_address})
-            return
-
-        if self.path == "/api/admin/grant":
-            if not is_admin_request(self.client_address[0]):
-                self.send_json({"error": "Admin access required."}, status=403)
-                return
-            payload = self.read_json_body()
-            note = str(payload.get("note", "Granted by admin")).strip() or "Granted by admin"
-            try:
-                if str(payload.get("type", "")).lower() == "ip":
-                    value = grant_admin_ip(str(payload.get("value", "")).strip(), note)
-                    self.send_json({"ok": True, "type": "ip", "value": value})
-                else:
-                    value = grant_admin_mac(str(payload.get("value", "")).strip(), note)
-                    self.send_json({"ok": True, "type": "mac", "value": value})
-            except ValueError as exc:
-                self.send_json({"ok": False, "error": str(exc)}, status=400)
-            return
-
-        if self.path == "/api/admin/revoke":
-            if not is_admin_request(self.client_address[0]):
-                self.send_json({"error": "Admin access required."}, status=403)
-                return
-            payload = self.read_json_body()
-            try:
-                if str(payload.get("type", "")).lower() == "ip":
-                    value = revoke_admin_ip(str(payload.get("value", "")).strip())
-                    self.send_json({"ok": True, "type": "ip", "value": value})
-                else:
-                    value = revoke_admin_mac(str(payload.get("value", "")).strip())
-                    self.send_json({"ok": True, "type": "mac", "value": value})
-            except ValueError as exc:
-                self.send_json({"ok": False, "error": str(exc)}, status=400)
-            return
-
-        if self.path == "/api/admin/delete-report":
-            if not is_admin_request(self.client_address[0]):
-                self.send_json({"error": "Admin access required."}, status=403)
-                return
-            payload = self.read_json_body()
-            deleted = delete_report(str(payload.get("reportId", "")))
-            self.send_json({"ok": deleted})
-            return
-
-        if self.path == "/api/admin/clear-reports":
-            if not is_admin_request(self.client_address[0]):
-                self.send_json({"error": "Admin access required."}, status=403)
-                return
-            payload = self.read_json_body()
-            status = str(payload.get("status", "")).strip() or None
-            self.send_json({"ok": True, "deleted": clear_reports(status)})
-            return
-
-        if self.path == "/api/admin/reset-rate-limits":
-            if not is_admin_request(self.client_address[0]):
-                self.send_json({"error": "Admin access required."}, status=403)
-                return
-            reset_all_rate_limits()
-            self.send_json({"ok": True})
-            return
-
         if self.path != "/api/chat":
             self.send_json({"error": "Not found"}, status=404)
             return
@@ -903,7 +423,6 @@ class AetherHandler(SimpleHTTPRequestHandler):
             self.send_json({"reply": "That took too long. Try again."}, status=200)
         except Exception as exc:
             self.send_json({"reply": f"Server error: {exc}"}, status=200)
-
     def read_json_body(self) -> dict:
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
@@ -966,3 +485,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+

@@ -1,4 +1,4 @@
-const Aether = {
+﻿const Aether = {
   config: {
     appName: "Aether",
     apiEndpoint: defaultApiEndpoint(),
@@ -19,18 +19,10 @@ const Aether = {
       percentUsed: 0,
       resetInSeconds: 300,
     },
-    reportPopup: null,
-    reportNotice: "",
     rateMeter: {
       displayPercent: 100,
       targetPercent: 100,
     },
-    isAdmin: false,
-    adminView: false,
-    adminData: null,
-    adminLoading: false,
-    adminSearch: "",
-    adminStatusFilter: "open",
     serverOnline: false,
   },
 };
@@ -159,7 +151,7 @@ function bootstrap() {
   storage.load();
   startRateLimitCountdown();
   render();
-  checkAdminStatus();
+  checkServerStatus();
   startServerStatusPolling();
 }
 
@@ -178,18 +170,16 @@ function render() {
           </span>
         </button>
         <button class="new-chat" data-action="new-chat">+ New conversation</button>
-        ${Aether.state.isAdmin ? `<button class="admin-tab ${Aether.state.adminView ? "active" : ""}" data-action="admin-view" aria-label="Admin dashboard">Admin</button>` : ""}
         <div class="chat-list">
           ${Aether.state.chats.map(chatListItem).join("")}
         </div>
         ${renderRateLimitMeter()}
       </aside>
 
-      ${Aether.state.adminView ? renderAdminPage() : renderChatPage(chat)}
+      ${renderChatPage(chat)}
       ${renderWarningPopup()}
       ${renderShortMessagePopup()}
       ${renderRateLimitPopup()}
-      ${renderReportPopup()}
       ${renderBanOverlay()}
     </div>
   `;
@@ -262,10 +252,6 @@ function renderMessage(message) {
   const typingClass = message.typing ? " typing" : "";
   const messageId = message.id || "";
   const content = message.role === "assistant" ? sanitizeAssistantText(message.content) : message.content;
-  const reportButton =
-    message.role === "assistant" && !message.typing
-      ? `<button class="report-message" data-report-message="${escapeHtml(messageId)}" aria-label="Report this message" title="Report this message">⚑</button>`
-      : "";
   const copyButton =
     message.role === "assistant" && !message.typing
       ? `<button class="copy-message" data-copy-message="${escapeHtml(messageId)}" aria-label="Copy this message" title="Copy this message">Copy</button>`
@@ -274,7 +260,7 @@ function renderMessage(message) {
     message.role === "assistant" && !message.typing && message.showThoughtTime && Number.isFinite(message.thoughtTimeMs)
       ? `<span class="thought-time">Thought for ${escapeHtml(formatThoughtTime(message.thoughtTimeMs))}</span>`
       : "";
-  const messageControls = reportButton || copyButton || thoughtTime ? `<div class="message-controls">${copyButton}${reportButton}${thoughtTime}</div>` : "";
+  const messageControls = copyButton || thoughtTime ? `<div class="message-controls">${copyButton}${thoughtTime}</div>` : "";
   return `
     <div class="message-row ${roleClass}${typingClass}" data-message-id="${escapeHtml(messageId)}">
       <div class="message-stack">
@@ -352,271 +338,16 @@ function renderBanOverlay() {
   `;
 }
 
-function renderReportPopup() {
-  const report = Aether.state.reportPopup;
-  if (!report) return "";
-  const reasons = [
-    "Wrong or misleading answer",
-    "Unsafe or harmful advice",
-    "Hate or harassment",
-    "Sexual content",
-    "Private information",
-    "Spam or low quality",
-    "Other",
-  ];
-  return `
-    <div class="report-overlay" role="dialog" aria-modal="true" aria-labelledby="report-title">
-      <form class="report-modal" data-action="submit-report">
-        <h2 id="report-title">What's wrong?</h2>
-        <div class="report-options">
-          ${reasons
-            .map(
-              (reason, index) => `
-                <label class="report-option">
-                  <input type="radio" name="reason" value="${escapeHtml(reason)}" ${index === 0 ? "checked" : ""}>
-                  <span>${escapeHtml(reason)}</span>
-                </label>
-              `,
-            )
-            .join("")}
-        </div>
-        <textarea name="details" data-report-details placeholder="Tell us what happened."></textarea>
-        <div class="modal-actions">
-          <button type="button" class="secondary-button" data-action="close-report">Cancel</button>
-          <button type="submit" class="primary-button">Submit report</button>
-        </div>
-      </form>
-    </div>
-  `;
-}
-
-function renderAdminPage() {
-  const data = Aether.state.adminData;
-  const reports = filteredAdminReports(data?.reports || []);
-  const stats = data?.stats || {};
-  const bannedUsers = data?.bannedUsers || {};
-  const bannedMacs = data?.bannedMacs || {};
-  const adminMacs = data?.adminMacs || {};
-  const adminIps = data?.adminIps || {};
-  const bannedTotal = Number(stats.bannedUsers || 0) + Number(stats.bannedMacs || 0);
-  const adminIdentityTotal = Number(stats.adminMacs || 0) + Number(stats.adminIps || 0);
-  return `
-    <main class="admin-page">
-      <div class="animated-bg">
-        <span></span><span></span><span></span>
-      </div>
-      <header class="admin-header">
-        <div>
-          <h1>Admin</h1>
-          <p>${escapeHtml(data?.client?.ip || "Checking access")} ${data?.client?.mac ? `· ${escapeHtml(data.client.mac)}` : ""}</p>
-        </div>
-        <div class="admin-header-actions">
-          <button class="secondary-button" data-action="refresh-admin">Refresh</button>
-          <button class="danger-button" data-action="clear-ignored">Clear ignored</button>
-          <button class="secondary-button" data-action="reset-rate-limits">Reset limits</button>
-        </div>
-      </header>
-      ${Aether.state.adminLoading ? `<div class="admin-empty">Loading reports...</div>` : ""}
-      <section class="admin-stats">
-        <div><strong>${Number(stats.openReports || 0)}</strong><span>Open reports</span></div>
-        <div><strong>${Number(stats.totalReports || 0)}</strong><span>Total reports</span></div>
-        <div><strong>${bannedTotal}</strong><span>Banned IPs/MACs</span></div>
-        <div><strong>${adminIdentityTotal}</strong><span>Admin access rules</span></div>
-        <div><strong>${Number(stats.adminIps || 0)}</strong><span>Admin IPs</span></div>
-        <div><strong>${Number(stats.uniqueReporters || 0)}</strong><span>Reporter IPs</span></div>
-      </section>
-      <section class="admin-panel">
-        <h2>Access rules</h2>
-        <div class="manual-grid">
-          <form class="manual-form" data-action="grant-admin-mac">
-            <label>Allow MAC</label>
-            <input name="value" placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off">
-            <input name="note" placeholder="Note" autocomplete="off">
-            <button class="primary-button" type="submit">Allow</button>
-          </form>
-          <form class="manual-form" data-action="grant-admin-ip">
-            <label>Allow IP</label>
-            <input name="value" placeholder="127.0.0.1" autocomplete="off">
-            <input name="note" placeholder="Note" autocomplete="off">
-            <button class="primary-button" type="submit">Allow</button>
-          </form>
-        </div>
-      </section>
-      <section class="admin-panel">
-        <h2>Manual moderation</h2>
-        <div class="manual-grid">
-          <form class="manual-form" data-action="manual-ban-ip">
-            <label>Ban IP</label>
-            <input name="ip" placeholder="127.0.0.1" autocomplete="off">
-            <input name="reason" placeholder="Reason" autocomplete="off">
-            <button class="danger-button" type="submit">Ban IP</button>
-          </form>
-          <form class="manual-form" data-action="manual-ban-mac">
-            <label>Ban MAC</label>
-            <input name="mac" placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off">
-            <input name="reason" placeholder="Reason" autocomplete="off">
-            <button class="danger-button" type="submit">Ban MAC</button>
-          </form>
-        </div>
-        <div class="admin-recent">
-          <span>Recent IPs: ${escapeHtml((data?.recent?.ips || []).join(", ") || "none")}</span>
-          <span>Recent MACs: ${escapeHtml((data?.recent?.macs || []).join(", ") || "none")}</span>
-        </div>
-      </section>
-      <section class="admin-panel">
-        <div class="admin-panel-head">
-          <h2>Reports</h2>
-          <div class="admin-filters">
-            <input data-action="admin-search" value="${escapeHtml(Aether.state.adminSearch)}" placeholder="Search reports, IPs, MACs">
-            <select data-action="admin-status-filter">
-              <option value="open" ${Aether.state.adminStatusFilter === "open" ? "selected" : ""}>Open</option>
-              <option value="ignored" ${Aether.state.adminStatusFilter === "ignored" ? "selected" : ""}>Ignored</option>
-              <option value="all" ${Aether.state.adminStatusFilter === "all" ? "selected" : ""}>All</option>
-            </select>
-          </div>
-        </div>
-        ${reports.length ? reports.map(renderAdminReport).join("") : `<div class="admin-empty">No reports yet.</div>`}
-      </section>
-      <section class="admin-panel">
-        <h2>Banned IPs & MACs</h2>
-        <h3>Banned IPs</h3>
-        ${
-          Object.keys(bannedUsers).length
-            ? Object.entries(bannedUsers)
-                .map(
-                  ([ip, info]) => `
-                    <div class="ban-row">
-                      <strong>${escapeHtml(ip)}</strong>
-                      <span>${escapeHtml(info.reason || "Profanity ban")}</span>
-                      <button class="secondary-button" data-unban-ip="${escapeHtml(ip)}">Unban</button>
-                    </div>
-                  `,
-                )
-                .join("")
-            : `<div class="admin-empty">No banned IPs.</div>`
-        }
-        <h3>Banned MACs</h3>
-        ${
-          Object.keys(bannedMacs).length
-            ? Object.entries(bannedMacs)
-                .map(
-                  ([mac, info]) => `
-                    <div class="ban-row">
-                      <strong>${escapeHtml(mac)}</strong>
-                      <span>${escapeHtml(info.reason || "Admin MAC ban")}</span>
-                      <button class="secondary-button" data-unban-mac="${escapeHtml(mac)}">Unban</button>
-                    </div>
-                  `,
-                )
-                .join("")
-            : `<div class="admin-empty">No banned MACs.</div>`
-        }
-      </section>
-      <section class="admin-panel">
-        <h2>Admins</h2>
-        <h3>Admin MACs</h3>
-        ${
-          Object.keys(adminMacs).length
-            ? Object.entries(adminMacs)
-                .map(
-                  ([mac, info]) => `
-                    <div class="ban-row">
-                      <strong>${escapeHtml(mac)}</strong>
-                      <span>${escapeHtml(info.note || "Admin")}</span>
-                      <button class="secondary-button" data-revoke-admin-mac="${escapeHtml(mac)}" ${info.protected ? "disabled" : ""}>Revoke</button>
-                    </div>
-                  `,
-                )
-                .join("")
-            : `<div class="admin-empty">No admin MACs.</div>`
-        }
-        <h3>Admin IPs</h3>
-        ${
-          Object.keys(adminIps).length
-            ? Object.entries(adminIps)
-                .map(
-                  ([ip, info]) => `
-                    <div class="ban-row">
-                      <strong>${escapeHtml(ip)}</strong>
-                      <span>${escapeHtml(info.note || "Admin")}</span>
-                      <button class="secondary-button" data-revoke-admin-ip="${escapeHtml(ip)}">Revoke</button>
-                    </div>
-                  `,
-                )
-                .join("")
-            : `<div class="admin-empty">No admin IPs.</div>`
-        }
-      </section>
-    </main>
-  `;
-}
-
-function renderAdminReport(report) {
-  const isOpen = report.status === "open";
-  return `
-    <article class="admin-report ${isOpen ? "" : "ignored"}">
-      <div class="report-topline">
-        <strong>${escapeHtml(report.reason || "Report")}</strong>
-        <span>${escapeHtml(report.createdAt || "")}</span>
-      </div>
-      <p>${escapeHtml(report.messageContent || "No message content saved.")}</p>
-      ${report.details ? `<p class="report-detail">${escapeHtml(report.details)}</p>` : ""}
-      <div class="report-meta">
-        <span>User: ${escapeHtml(report.reporterUsername || "guest")}</span>
-        <span>IP: ${escapeHtml(report.reporterIp || "unknown")}</span>
-        <span>MAC: ${escapeHtml(report.reporterMac || "unknown")}</span>
-        <span>Chat: ${escapeHtml(report.chatTitle || "Untitled")}</span>
-        <span>Status: ${escapeHtml(report.status || "open")}</span>
-      </div>
-      <div class="admin-actions">
-        <button class="secondary-button" data-ignore-report="${escapeHtml(report.id)}" ${isOpen ? "" : "disabled"}>Ignore</button>
-        <button class="secondary-button" data-delete-report="${escapeHtml(report.id)}">Delete</button>
-        <button class="danger-button" data-ban-ip="${escapeHtml(report.reporterIp || "")}" ${report.reporterIp ? "" : "disabled"}>Ban IP</button>
-        <button class="danger-button" data-ban-mac="${escapeHtml(report.reporterMac || "")}" ${report.reporterMac ? "" : "disabled"}>Ban MAC</button>
-      </div>
-    </article>
-  `;
-}
-
-function filteredAdminReports(reports) {
-  const query = Aether.state.adminSearch.trim().toLowerCase();
-  return reports.filter((report) => {
-    const statusMatch = Aether.state.adminStatusFilter === "all" || report.status === Aether.state.adminStatusFilter;
-    if (!statusMatch) return false;
-    if (!query) return true;
-    return [
-      report.reason,
-      report.details,
-      report.messageContent,
-      report.reporterIp,
-      report.reporterMac,
-      report.reporterUsername,
-      report.chatTitle,
-      report.status,
-    ]
-      .join(" ")
-      .toLowerCase()
-      .includes(query);
-  });
-}
 
 function bindEvents(root) {
   root.querySelector("[data-action='home']")?.addEventListener("click", () => {
-    Aether.state.adminView = false;
     render();
-  });
-
-  root.querySelector("[data-action='admin-view']")?.addEventListener("click", () => {
-    Aether.state.adminView = true;
-    render();
-    loadAdminData();
   });
 
   root.querySelector("[data-action='new-chat']")?.addEventListener("click", () => {
     const chat = createChat("New conversation");
     Aether.state.chats.unshift(chat);
     Aether.state.activeChatId = chat.id;
-    Aether.state.adminView = false;
     storage.save();
     render();
   });
@@ -624,7 +355,6 @@ function bindEvents(root) {
   root.querySelectorAll("[data-chat-id]").forEach((button) => {
     button.addEventListener("click", () => {
       Aether.state.activeChatId = button.dataset.chatId;
-      Aether.state.adminView = false;
       storage.save();
       render();
     });
@@ -653,59 +383,8 @@ function bindEvents(root) {
     Aether.state.rateLimitPopup = false;
     render();
   });
-  root.querySelectorAll("[data-report-message]").forEach((button) => {
-    button.addEventListener("click", () => openReportPopup(button.dataset.reportMessage));
-  });
   root.querySelectorAll("[data-copy-message]").forEach((button) => {
     button.addEventListener("click", () => copyAssistantMessage(button.dataset.copyMessage, button));
-  });
-  root.querySelector("[data-action='close-report']")?.addEventListener("click", () => {
-    Aether.state.reportPopup = null;
-    render();
-  });
-  root.querySelector("[data-action='submit-report']")?.addEventListener("submit", submitReport);
-  root.querySelectorAll("input[name='reason']").forEach((input) => {
-    input.addEventListener("change", () => syncReportDetails(input.form));
-  });
-  syncReportDetails(root.querySelector("[data-action='submit-report']"));
-  root.querySelector("[data-action='refresh-admin']")?.addEventListener("click", loadAdminData);
-  root.querySelector("[data-action='clear-ignored']")?.addEventListener("click", () => clearReports("ignored"));
-  root.querySelector("[data-action='reset-rate-limits']")?.addEventListener("click", resetRateLimits);
-  root.querySelector("[data-action='admin-search']")?.addEventListener("input", (event) => {
-    Aether.state.adminSearch = event.currentTarget.value;
-    render();
-  });
-  root.querySelector("[data-action='admin-status-filter']")?.addEventListener("change", (event) => {
-    Aether.state.adminStatusFilter = event.currentTarget.value;
-    render();
-  });
-  root.querySelector("[data-action='manual-ban-ip']")?.addEventListener("submit", manualBanIp);
-  root.querySelector("[data-action='manual-ban-mac']")?.addEventListener("submit", manualBanMac);
-  root.querySelector("[data-action='grant-admin-mac']")?.addEventListener("submit", (event) => grantAdmin(event, "mac"));
-  root.querySelector("[data-action='grant-admin-ip']")?.addEventListener("submit", (event) => grantAdmin(event, "ip"));
-  root.querySelectorAll("[data-ignore-report]").forEach((button) => {
-    button.addEventListener("click", () => updateReport(button.dataset.ignoreReport, "ignored"));
-  });
-  root.querySelectorAll("[data-delete-report]").forEach((button) => {
-    button.addEventListener("click", () => deleteReport(button.dataset.deleteReport));
-  });
-  root.querySelectorAll("[data-ban-ip]").forEach((button) => {
-    button.addEventListener("click", () => banIp(button.dataset.banIp));
-  });
-  root.querySelectorAll("[data-ban-mac]").forEach((button) => {
-    button.addEventListener("click", () => banMac(button.dataset.banMac));
-  });
-  root.querySelectorAll("[data-unban-ip]").forEach((button) => {
-    button.addEventListener("click", () => unbanIp(button.dataset.unbanIp));
-  });
-  root.querySelectorAll("[data-unban-mac]").forEach((button) => {
-    button.addEventListener("click", () => unbanMac(button.dataset.unbanMac));
-  });
-  root.querySelectorAll("[data-revoke-admin-mac]").forEach((button) => {
-    button.addEventListener("click", () => revokeAdmin("mac", button.dataset.revokeAdminMac));
-  });
-  root.querySelectorAll("[data-revoke-admin-ip]").forEach((button) => {
-    button.addEventListener("click", () => revokeAdmin("ip", button.dataset.revokeAdminIp));
   });
 }
 
@@ -909,7 +588,7 @@ function startServerStatusPolling() {
 async function pingServerStatus() {
   const wasBanned = Boolean(Aether.state.ban?.banned);
   try {
-    const response = await fetch(apiUrl("/api/admin/status"), {
+    const response = await fetch(apiUrl("/api/status"), {
       headers: await authHeaders(),
       cache: "no-store",
     });
@@ -1021,214 +700,24 @@ function rateColor(percent) {
   return `rgb(${mixed[0]}, ${mixed[1]}, ${mixed[2]})`;
 }
 
-async function checkAdminStatus() {
+async function checkServerStatus() {
   try {
-    const response = await fetch(apiUrl("/api/admin/status"), { cache: "no-store" });
+    const response = await fetch(apiUrl("/api/status"), { cache: "no-store" });
     if (!response.ok) throw new Error(`Status failed with HTTP ${response.status}`);
     const data = await response.json();
     setServerOnline(true);
     applyServerStatus(data);
-    Aether.state.isAdmin = Boolean(data.isAdmin);
     storage.save();
-    if (Aether.state.isAdmin) {
-      loadAdminData();
-    } else {
-      render();
-    }
+    render();
   } catch {
-    Aether.state.isAdmin = false;
     setServerOnline(false);
   }
-}
-
-function openReportPopup(messageId) {
-  const chat = activeChat();
-  const message = chat?.messages.find((item) => item.id === messageId);
-  if (!message) return;
-  Aether.state.reportPopup = {
-    messageId,
-    messageContent: sanitizeAssistantText(message.content),
-    chatId: chat.id,
-    chatTitle: chat.title,
-  };
-  render();
-}
-
-async function copyAssistantMessage(messageId, button) {
-  const chat = activeChat();
-  const message = chat?.messages.find((item) => item.id === messageId);
-  if (!message?.content) return;
-  try {
-    await navigator.clipboard.writeText(sanitizeAssistantText(message.content));
-    button.textContent = "Copied";
-  } catch {
-    button.textContent = "Copy failed";
-  }
-  setTimeout(() => {
-    button.textContent = "Copy";
-  }, 1200);
-}
-
-async function submitReport(event) {
-  event.preventDefault();
-  const form = event.currentTarget;
-  const reason = new FormData(form).get("reason") || "Other";
-  const details = String(form.elements.details.value || "").trim();
-  if (reason === "Other" && !details) {
-    form.elements.details.focus();
-    return;
-  }
-
-  const report = Aether.state.reportPopup;
-  if (!report) return;
-
-  await fetch(apiUrl("/api/report"), {
-    method: "POST",
-    headers: await jsonHeaders(),
-    body: JSON.stringify({
-      ...report,
-      reason,
-      details,
-    }),
-  });
-
-  Aether.state.reportPopup = null;
-  addAssistantMessage("Thanks. The report was submitted for review.");
-}
-
-function syncReportDetails(form) {
-  if (!form) return;
-  const selectedReason = new FormData(form).get("reason");
-  form.classList.toggle("other-selected", selectedReason === "Other");
-}
-
-async function loadAdminData() {
-  if (!Aether.state.isAdmin) return;
-  Aether.state.adminLoading = true;
-  render();
-  try {
-    const response = await fetch(apiUrl("/api/admin/reports"));
-    if (!response.ok) throw new Error("Admin access required.");
-    Aether.state.adminData = await response.json();
-  } catch {
-    Aether.state.adminData = null;
-  }
-  Aether.state.adminLoading = false;
-  render();
-}
-
-async function updateReport(reportId, status) {
-  await postJson("/api/admin/report", { reportId, status });
-  await loadAdminData();
-}
-
-async function banIp(ip) {
-  if (!ip) return;
-  await postJson("/api/admin/ban", { ip, reason: "Banned from admin reports" });
-  await loadAdminData();
-}
-
-async function banMac(mac) {
-  if (!mac) return;
-  await postJson("/api/admin/ban-mac", { mac, reason: "Banned from admin reports" });
-  await loadAdminData();
-}
-
-async function unbanIp(ip) {
-  if (!ip) return;
-  await postJson("/api/admin/unban", { ip });
-  await loadAdminData();
-}
-
-async function unbanMac(mac) {
-  if (!mac) return;
-  await postJson("/api/admin/unban-mac", { mac });
-  await loadAdminData();
-}
-
-async function deleteReport(reportId) {
-  if (!reportId) return;
-  await postJson("/api/admin/delete-report", { reportId });
-  await loadAdminData();
-}
-
-async function clearReports(status) {
-  await postJson("/api/admin/clear-reports", { status });
-  await loadAdminData();
-}
-
-async function resetRateLimits() {
-  await postJson("/api/admin/reset-rate-limits", {});
-  await checkAdminStatus();
-  await loadAdminData();
-}
-
-async function manualBanIp(event) {
-  event.preventDefault();
-  const form = event.currentTarget;
-  const ip = form.elements.ip.value.trim();
-  if (!ip) return;
-  await postJson("/api/admin/ban", { ip, reason: form.elements.reason.value.trim() || "Manual admin ban" });
-  form.reset();
-  await loadAdminData();
-}
-
-async function manualBanMac(event) {
-  event.preventDefault();
-  const form = event.currentTarget;
-  const mac = form.elements.mac.value.trim();
-  if (!mac) return;
-  await postJson("/api/admin/ban-mac", { mac, reason: form.elements.reason.value.trim() || "Manual admin MAC ban" });
-  form.reset();
-  await loadAdminData();
-}
-
-async function grantAdmin(event, type) {
-  event.preventDefault();
-  const form = event.currentTarget;
-  const value = form.elements.value.value.trim();
-  if (!value) return;
-  await postJson("/api/admin/grant", {
-    type,
-    value,
-    note: form.elements.note.value.trim() || "Granted by admin",
-  });
-  form.reset();
-  await loadAdminData();
-}
-
-async function revokeAdmin(type, value) {
-  if (!value) return;
-  await postJson("/api/admin/revoke", { type, value });
-  await loadAdminData();
-}
-
-async function postJson(path, payload) {
-  const response = await fetch(apiUrl(path), {
-    method: "POST",
-    headers: await jsonHeaders(),
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) {
-    try {
-      return await response.json();
-    } catch {
-      throw new Error(`Request failed with HTTP ${response.status}`);
-    }
-  }
-  return response.json();
 }
 
 async function authHeaders(base = {}) {
   return { ...base };
 }
 
-async function jsonHeaders() {
-  return {
-    "Content-Type": "application/json",
-    ...(await authHeaders()),
-  };
-}
 
 function apiUrl(path) {
   if (Aether.config.apiEndpoint?.startsWith("http://") || Aether.config.apiEndpoint?.startsWith("https://")) {
@@ -1556,7 +1045,7 @@ function injectStyles() {
       backdrop-filter: blur(18px);
       min-width: 0;
     }
-    .brand, .new-chat, .admin-tab, .chat-item, .delete-chat, .report-message, .copy-message, .composer button, .primary-button, .secondary-button, .danger-button { border: 0; }
+    .brand, .new-chat, .chat-item, .delete-chat, .copy-message, .composer button, .primary-button, .secondary-button, .danger-button { border: 0; }
     .brand {
       display: flex;
       align-items: center;
@@ -1637,22 +1126,6 @@ function injectStyles() {
     .new-chat:hover, .new-chat:focus-visible {
       transform: translateY(-1px);
       filter: brightness(1.04);
-      outline: none;
-    }
-    .admin-tab {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      height: 38px;
-      border-radius: 10px;
-      color: #dbeafe;
-      background: rgba(219, 234, 254, 0.1);
-      font-weight: 760;
-    }
-    .admin-tab.active, .admin-tab:hover, .admin-tab:focus-visible {
-      color: #07111f;
-      background: #bfdbfe;
       outline: none;
     }
     .chat-list {
@@ -1826,7 +1299,7 @@ function injectStyles() {
       gap: 8px;
       min-height: 22px;
     }
-    .report-message, .copy-message {
+    .copy-message {
       height: 22px;
       border-radius: 7px;
       color: rgba(219, 234, 254, 0.68);
@@ -1836,16 +1309,13 @@ function injectStyles() {
       opacity: 0.72;
       transition: opacity 150ms ease, color 150ms ease, background 150ms ease, transform 150ms ease;
     }
-    .report-message {
-      width: 26px;
-    }
     .copy-message {
       min-width: 48px;
       padding: 0 8px;
       font-size: 12px;
       font-weight: 760;
     }
-    .report-message:hover, .report-message:focus-visible, .copy-message:hover, .copy-message:focus-visible {
+    .copy-message:hover, .copy-message:focus-visible {
       color: #07111f;
       background: #dbeafe;
       opacity: 1;
@@ -2052,73 +1522,6 @@ function injectStyles() {
       font-weight: 800;
       animation: understandFlash 1.6s ease-in-out infinite;
     }
-    .report-overlay {
-      position: fixed;
-      inset: 0;
-      z-index: 22;
-      display: grid;
-      place-items: center;
-      padding: 24px;
-      background: rgba(0, 0, 0, 0.58);
-      backdrop-filter: blur(10px);
-      animation: warningFade 180ms ease-out both;
-    }
-    .report-modal {
-      width: min(520px, 100%);
-      border-radius: 18px;
-      border: 1px solid rgba(191, 219, 254, 0.26);
-      background: rgba(7, 20, 38, 0.98);
-      box-shadow: 0 30px 90px rgba(0, 0, 0, 0.5);
-      padding: 24px;
-      color: #f8fbff;
-    }
-    .report-modal h2 {
-      margin: 0 0 16px;
-      font-size: 24px;
-      letter-spacing: 0;
-    }
-    .report-options {
-      display: grid;
-      gap: 8px;
-    }
-    .report-option {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      min-height: 38px;
-      padding: 9px 11px;
-      border: 1px solid rgba(191, 219, 254, 0.18);
-      border-radius: 10px;
-      background: rgba(191, 219, 254, 0.08);
-      color: #dbeafe;
-    }
-    .report-option input {
-      width: 16px;
-      height: 16px;
-      accent-color: #bfdbfe;
-    }
-    .report-modal textarea {
-      display: none;
-      width: 100%;
-      min-height: 92px;
-      margin-top: 12px;
-      resize: vertical;
-      border: 1px solid rgba(191, 219, 254, 0.22);
-      border-radius: 12px;
-      outline: none;
-      padding: 11px 12px;
-      color: #fff;
-      background: rgba(2, 6, 23, 0.72);
-    }
-    .report-modal.other-selected textarea {
-      display: block;
-    }
-    .modal-actions, .admin-actions {
-      display: flex;
-      justify-content: flex-end;
-      gap: 10px;
-      margin-top: 16px;
-    }
     .primary-button, .secondary-button, .danger-button {
       min-height: 38px;
       border-radius: 10px;
@@ -2141,165 +1544,6 @@ function injectStyles() {
     .secondary-button:disabled, .danger-button:disabled {
       cursor: not-allowed;
       opacity: 0.45;
-    }
-    .admin-page {
-      position: relative;
-      z-index: 1;
-      height: 100vh;
-      overflow-y: auto;
-      padding: 28px 36px;
-    }
-    .admin-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 16px;
-      max-width: 1100px;
-      margin: 0 auto 20px;
-    }
-    .admin-header-actions {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-      justify-content: flex-end;
-    }
-    .admin-header h1 {
-      margin: 0;
-      font-size: 28px;
-    }
-    .admin-header p {
-      margin: 4px 0 0;
-      color: #bfdbfe;
-    }
-    .admin-stats {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 12px;
-      max-width: 1100px;
-      margin: 0 auto 16px;
-    }
-    .admin-stats div, .admin-panel {
-      border: 1px solid rgba(191, 219, 254, 0.14);
-      border-radius: 14px;
-      background: rgba(5, 10, 20, 0.76);
-      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.2);
-    }
-    .admin-stats div {
-      display: grid;
-      gap: 4px;
-      padding: 16px;
-    }
-    .admin-stats strong {
-      font-size: 26px;
-    }
-    .admin-stats span, .report-meta, .admin-empty, .ban-row span {
-      color: #bfdbfe;
-    }
-    .admin-panel {
-      max-width: 1100px;
-      margin: 0 auto 16px;
-      padding: 18px;
-    }
-    .admin-panel h2 {
-      margin: 0 0 12px;
-      font-size: 20px;
-    }
-    .admin-panel h3 {
-      margin: 14px 0 8px;
-      color: #dbeafe;
-      font-size: 15px;
-      letter-spacing: 0;
-    }
-    .admin-panel-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      margin-bottom: 12px;
-    }
-    .admin-panel-head h2 {
-      margin: 0;
-    }
-    .admin-filters {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      justify-content: flex-end;
-    }
-    .admin-filters input, .admin-filters select, .manual-form input {
-      min-height: 38px;
-      border: 1px solid rgba(191, 219, 254, 0.2);
-      border-radius: 10px;
-      outline: none;
-      color: #fff;
-      background: rgba(2, 6, 23, 0.7);
-      padding: 0 11px;
-    }
-    .admin-filters input {
-      width: min(280px, 100%);
-    }
-    .manual-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 12px;
-    }
-    .manual-form {
-      display: grid;
-      gap: 8px;
-      padding: 12px;
-      border: 1px solid rgba(191, 219, 254, 0.12);
-      border-radius: 12px;
-      background: rgba(191, 219, 254, 0.06);
-    }
-    .manual-form label {
-      color: #dbeafe;
-      font-weight: 800;
-    }
-    .admin-recent {
-      display: grid;
-      gap: 6px;
-      margin-top: 12px;
-      color: #bfdbfe;
-      font-size: 13px;
-      overflow-wrap: anywhere;
-    }
-    .admin-report {
-      display: grid;
-      gap: 10px;
-      padding: 14px 0;
-      border-top: 1px solid rgba(191, 219, 254, 0.12);
-    }
-    .admin-report.ignored {
-      opacity: 0.62;
-    }
-    .report-topline, .report-meta, .ban-row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      align-items: center;
-      justify-content: space-between;
-    }
-    .admin-report p {
-      margin: 0;
-      color: #f8fbff;
-      line-height: 1.45;
-    }
-    .admin-report .report-detail {
-      color: #dbeafe;
-      background: rgba(191, 219, 254, 0.08);
-      border-radius: 10px;
-      padding: 10px;
-    }
-    .report-meta {
-      justify-content: flex-start;
-      font-size: 13px;
-    }
-    .ban-row {
-      min-height: 40px;
-      border-top: 1px solid rgba(191, 219, 254, 0.12);
-    }
-    .admin-empty {
-      padding: 14px 0;
     }
     @keyframes warningFade {
       from { opacity: 0; }
@@ -2333,20 +1577,12 @@ function injectStyles() {
       .brand, .chat-list { display: none; }
       .rate-card { display: none; }
       .chat-page { padding: 18px 16px 100px; }
-      .admin-page { padding: 18px 16px 110px; }
-      .admin-header, .admin-panel-head {
-        align-items: stretch;
-        flex-direction: column;
-      }
-      .admin-header-actions, .admin-filters {
-        justify-content: stretch;
-      }
-      .admin-stats, .manual-grid {
-        grid-template-columns: 1fr;
-      }
     }
   `;
   document.head.appendChild(style);
 }
 
 bootstrap();
+
+
+
