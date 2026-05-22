@@ -1,4 +1,3 @@
-kind: wasmer.io/App.v0
 name: aether-ai
 app_id: da_nkPI5tJUkwd1
 owner: adamsrealm1
@@ -21,11 +20,13 @@ cli_args:
 capabilities:
   database:
     engine: mysql
+kind: wasmer.io/App.v0
 annotations:
   shipitcli.com/config:
     commands:
       build: pip install -r requirements.txt
     cross_platform: wasix_wasm32
+    database: mysql
     extra_dependencies:
     - uvicorn
     framework: flask
@@ -40,6 +41,5 @@ annotations:
     uses_pandoc: false
     uv_version: 0.8.15
     wsgi_application: main:app
-    database: mysql
   shipitcli.com/provider: python
   shipitcli.com/version: 0.19.8
