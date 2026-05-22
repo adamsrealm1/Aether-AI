@@ -2,7 +2,6 @@
 __pycache__/
 *.pyc
 aether_admin.sqlite3*
-.env
 app.js
 app.py
 main.py
