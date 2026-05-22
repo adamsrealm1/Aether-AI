@@ -661,6 +661,19 @@ function bindAdminEvents(root) {
   root.querySelector("[data-action='admin-reset-rate']")?.addEventListener("click", async () => {
     await adminRequest("/api/admin/reset-rate-limit", { method: "POST" });
   });
+  root.querySelector("[data-action='admin-rate-limit']")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const saved = await adminRequest("/api/admin/rate-limit", {
+      method: "POST",
+      body: JSON.stringify({
+        limit: Number(data.get("limit") || 300),
+        windowSeconds: Number(data.get("windowSeconds") || 60),
+      }),
+    });
+    if (saved) showToast("Rate limit updated.");
+  });
   root.querySelector("[data-action='admin-ban-ip']")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
