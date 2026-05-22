@@ -63,8 +63,9 @@ WEATHER_CODES = {
 def contains_profanity(message: str) -> bool:
     return any(pattern.search(message) for pattern in PROFANITY_PATTERNS)
 
-def rate_limit_key() -> str:
-    return "global"
+def rate_limit_key(ip_address: str | None = None) -> str:
+    cleaned = str(ip_address or "unknown").strip() or "unknown"
+    return f"user:{cleaned[:120]}"
 
 
 def rate_limit_for_request() -> int:
@@ -79,7 +80,7 @@ def rate_limit_status(ip_address: str | None = None) -> dict:
     limit = rate_limit_for_request()
     window_seconds = rate_limit_window_seconds()
     now = datetime.now().astimezone()
-    key = rate_limit_key()
+    key = rate_limit_key(ip_address)
     bucket = RATE_LIMITS.get(key)
     if not bucket or bucket["resetAt"] <= now or int(bucket.get("windowSeconds", 0)) != window_seconds:
         bucket = {
@@ -107,13 +108,13 @@ def consume_rate_limit(ip_address: str) -> dict:
     if status["remaining"] <= 0:
         return {"allowed": False, "rateLimit": status}
 
-    key = rate_limit_key()
+    key = rate_limit_key(ip_address)
     RATE_LIMITS[key]["count"] = int(RATE_LIMITS[key]["count"]) + 1
     return {"allowed": True, "rateLimit": rate_limit_status(ip_address)}
 
 
 def refund_rate_limit(ip_address: str) -> None:
-    key = rate_limit_key()
+    key = rate_limit_key(ip_address)
     bucket = RATE_LIMITS.get(key)
     if not bucket:
         return
@@ -351,10 +352,10 @@ def set_rate_limit_settings(limit: object, window_seconds: object) -> None:
     ensure_admin_db()
     set_admin_setting("rate_limit", str(limit_value))
     set_admin_setting("rate_limit_window_seconds", str(window_value))
-    reset_global_rate_limit()
+    reset_all_rate_limits()
 
 
-def reset_global_rate_limit() -> None:
+def reset_all_rate_limits() -> None:
     RATE_LIMITS.clear()
 
 
@@ -522,7 +523,7 @@ def admin_status(include_all_blocked: bool = False) -> dict:
     return {
         "admin": True,
         "aetherAvailable": is_aether_available(),
-        "rateLimit": rate_limit_status(),
+        "rateLimit": rate_limit_status(client_ip()),
         "requestCounts": request_counts(),
         "bannedIps": banned_ips(),
         "blockedAttempts": blocked_attempts(include_all_blocked),
@@ -762,7 +763,7 @@ def chat_response(payload: dict, ip_address: str) -> dict:
     rate = consume_rate_limit(ip_address)
     if not rate["allowed"]:
         return {
-            "reply": "The server rate limit has been reached, try again later.",
+            "reply": "Your rate limit has been reached, try again later.",
             "rateLimited": True,
             "rateLimit": rate["rateLimit"],
         }
@@ -795,7 +796,7 @@ def index():
 def api_status():
     return jsonify(
         {
-            "rateLimit": rate_limit_status(),
+            "rateLimit": rate_limit_status(client_ip()),
         }
     )
 
@@ -827,7 +828,7 @@ def api_admin_reset_rate_limit():
     denied = require_admin()
     if denied:
         return denied
-    reset_global_rate_limit()
+    reset_all_rate_limits()
     return jsonify(admin_status())
 
 

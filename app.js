@@ -304,7 +304,7 @@ function renderAdminPage() {
             <div>
               <span class="admin-kicker">${escapeHtml(database.provider || "database")} </span>
               <h2>${available ? "Aether is available" : "Aether is unavailable"}</h2>
-              <p>You can disable or enable Aether globally if rate limits are wasting too fast or for other reasons.</p>
+              <p>You can disable or enable Aether globally, and rate-limit settings apply to each user separately.</p>
             </div>
             <label class="admin-switch">
               <input type="checkbox" data-action="admin-availability" ${available ? "checked" : ""}${Aether.state.adminLoading ? " disabled" : ""}>
@@ -337,7 +337,7 @@ function renderAdminPage() {
               </label>
               <button class="primary-button" type="submit"${Aether.state.adminLoading ? " disabled" : ""}>Save rate limit</button>
             </form>
-            <button class="danger-button" data-action="admin-reset-rate"${Aether.state.adminLoading ? " disabled" : ""}>Reset rate limit (Global)</button>
+            <button class="danger-button" data-action="admin-reset-rate"${Aether.state.adminLoading ? " disabled" : ""}>Reset all user limits</button>
           </section>
           <section class="admin-two-column">
             ${renderBanIpPanel(status.bannedIps || [])}
