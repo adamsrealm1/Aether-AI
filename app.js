@@ -471,7 +471,7 @@ function renderRateLimitMeter() {
     <div class="rate-card" style="--rate-color: ${rateColor(displayPercent)}">
       <div class="rate-percent">${displayPercent}%</div>
       <div class="rate-track"><span class="rate-fill" style="width: ${displayPercent}%"></span></div>
-      <div class="rate-label">${remaining}/${limit} left - resets in ${resetInSeconds}s</div>
+      <div class="rate-label">${remaining}/${limit} left - resets in ${escapeHtml(formatRateLimitDuration(resetInSeconds))}</div>
     </div>
   `;
 }
@@ -531,7 +531,7 @@ function renderRateLimitPopup() {
     <div class="warning-overlay compact" role="dialog" aria-modal="true">
       <div class="warning-modal compact-modal">
         <h2>Oops!</h2>
-        <p>Wait ${Number(rate.resetInSeconds || 0)} seconds to use <strong>Aether</strong> AI again.</p>
+        <p>Wait ${escapeHtml(formatRateLimitDuration(rate.resetInSeconds || 0))} to use <strong>Aether</strong> AI again.</p>
         <button class="warning-understand" data-action="close-rate-limit">Okay.</button>
       </div>
     </div>
@@ -1187,7 +1187,7 @@ function resetExpiredRateLimitWindow() {
   rate.used = 0;
   rate.remaining = limit;
   rate.percentUsed = 0;
-  rate.resetInSeconds = 60;
+  rate.resetInSeconds = Math.max(1, Number(rate.windowSeconds || 60));
   animateRateMeterTo(100);
 }
 
@@ -1225,7 +1225,7 @@ function updateRateMeterDom() {
   const fillElement = card.querySelector(".rate-fill");
   if (fillElement) fillElement.style.width = `${displayPercent}%`;
   const labelElement = card.querySelector(".rate-label");
-  if (labelElement) labelElement.textContent = `${remaining}/${limit} left - resets in ${resetInSeconds}s`;
+  if (labelElement) labelElement.textContent = `${remaining}/${limit} left - resets in ${formatRateLimitDuration(resetInSeconds)}`;
 }
 
 function ratePercent(rate) {
@@ -1236,6 +1236,39 @@ function ratePercent(rate) {
 
 function clampPercent(value) {
   return Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
+}
+
+function formatRateLimitDuration(seconds) {
+  const totalSeconds = Math.max(0, Math.floor(Number(seconds) || 0));
+  if (totalSeconds <= 0) return "now";
+
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const remainingSeconds = totalSeconds % 60;
+
+  if (days > 0) {
+    const parts = [`${days} ${days === 1 ? "day" : "days"}`];
+    if (hours > 0) parts.push(`${hours} ${hours === 1 ? "hr" : "hrs"}`);
+    if (minutes > 0 && parts.length < 3) parts.push(`${minutes} ${minutes === 1 ? "min" : "mins"}`);
+    return parts.join(" ");
+  }
+
+  if (hours > 0) {
+    const parts = [`${hours} ${hours === 1 ? "hr" : "hrs"}`];
+    if (minutes > 0) parts.push(`${minutes} ${minutes === 1 ? "min" : "mins"}`);
+    return parts.join(" ");
+  }
+
+  if (minutes > 0) {
+    const minuteLabel = `${minutes} ${minutes === 1 ? "min" : "minutes"}`;
+    if (remainingSeconds > 0) {
+      return `${minuteLabel} and ${remainingSeconds} ${remainingSeconds === 1 ? "second" : "seconds"}`;
+    }
+    return minuteLabel;
+  }
+
+  return `${totalSeconds} ${totalSeconds === 1 ? "second" : "seconds"}`;
 }
 
 function rateColor(percent) {
