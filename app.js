@@ -8,6 +8,7 @@
     activeChatId: null,
     composerDraft: "",
     sidebarSearch: "",
+    mobileSidebarOpen: false,
     toast: "",
     thinking: false,
     profanityPopup: false,
@@ -192,9 +193,11 @@ function bootstrap() {
 function render() {
   const root = document.getElementById("app");
   const chat = activeChat();
+  const mobileSidebarClass = Aether.state.mobileSidebarOpen ? " mobile-sidebar-open" : "";
 
   root.innerHTML = `
-    <div class="app-shell">
+    <div class="app-shell${mobileSidebarClass}">
+      <button class="mobile-sidebar-scrim" type="button" data-action="close-mobile-sidebar" aria-label="Close sidebar"></button>
       <aside class="sidebar">
         <button class="brand" data-action="home" aria-label="Aether home">
           <img src="assets/Aether.png" alt="Aether" width="60" height="60">
@@ -228,7 +231,11 @@ function renderChatPage(chat) {
     <main class="chat-page">
       <div class="animated-bg" aria-hidden="true"></div>
       <header class="topbar">
-        <div>
+        <div class="topbar-title-row">
+          <button class="mobile-sidebar-toggle" type="button" data-action="toggle-mobile-sidebar" aria-label="${Aether.state.mobileSidebarOpen ? "Close sidebar" : "Open sidebar"}" aria-expanded="${Aether.state.mobileSidebarOpen ? "true" : "false"}">
+            <span></span>
+            <span></span>
+          </button>
           <h1>${escapeHtml(chat.title)}</h1>
         </div>
         <div class="topbar-actions">
@@ -381,11 +388,21 @@ function renderRateLimitPopup() {
 
 function bindEvents(root) {
   root.querySelector("[data-action='home']")?.addEventListener("click", () => {
+    Aether.state.mobileSidebarOpen = false;
     render();
   });
 
   root.querySelector("[data-action='new-chat']")?.addEventListener("click", () => {
+    Aether.state.mobileSidebarOpen = false;
     createNewChat();
+  });
+  root.querySelector("[data-action='toggle-mobile-sidebar']")?.addEventListener("click", () => {
+    Aether.state.mobileSidebarOpen = !Aether.state.mobileSidebarOpen;
+    render();
+  });
+  root.querySelector("[data-action='close-mobile-sidebar']")?.addEventListener("click", () => {
+    Aether.state.mobileSidebarOpen = false;
+    render();
   });
 
   root.querySelector("[data-action='rename-chat']")?.addEventListener("click", renameCurrentChat);
@@ -436,6 +453,7 @@ function bindChatListEvents(root) {
   root.querySelectorAll("[data-chat-id]").forEach((button) => {
     button.addEventListener("click", () => {
       Aether.state.activeChatId = button.dataset.chatId;
+      Aether.state.mobileSidebarOpen = false;
       storage.save();
       render();
     });
@@ -1365,6 +1383,10 @@ function injectStyles() {
       animation: auraTurn 28s ease-in-out infinite alternate;
       opacity: 0.78;
     }
+    .mobile-sidebar-scrim,
+    .mobile-sidebar-toggle {
+      display: none;
+    }
     .animated-bg {
       position: fixed;
       inset: 0;
@@ -1660,10 +1682,19 @@ function injectStyles() {
       width: 100%;
       margin: 0 auto;
     }
+    .topbar-title-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
     .topbar h1 {
       margin: 0;
       font-size: 24px;
       letter-spacing: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .topbar-actions {
       display: flex;
@@ -2073,33 +2104,193 @@ function injectStyles() {
       }
     }
     @media (max-width: 860px) {
-      .app-shell { grid-template-columns: 1fr; }
+      html, body, #app {
+        min-width: 320px;
+      }
+      .app-shell {
+        grid-template-columns: 1fr;
+        overflow: hidden;
+      }
+      .mobile-sidebar-scrim {
+        position: fixed;
+        inset: 0;
+        z-index: 30;
+        display: block;
+        border: 0;
+        background: rgba(2, 6, 23, 0.58);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 180ms ease;
+      }
+      .mobile-sidebar-open .mobile-sidebar-scrim {
+        opacity: 1;
+        pointer-events: auto;
+      }
       .sidebar {
         position: fixed;
-        inset: auto 14px 14px;
-        z-index: 4;
-        display: grid;
-        grid-template-columns: 1fr auto;
-        border: 1px solid rgba(191, 219, 254, 0.16);
-        border-radius: 18px;
+        inset: 0 auto 0 0;
+        z-index: 40;
+        width: min(88vw, 336px);
+        padding: 16px;
+        border-right: 1px solid rgba(191, 219, 254, 0.18);
+        border-radius: 0 18px 18px 0;
+        background: rgba(3, 8, 18, 0.96);
+        box-shadow: 24px 0 70px rgba(0, 0, 0, 0.46);
+        transform: translateX(-104%);
+        transition: transform 220ms ease;
+        overflow: hidden;
       }
-      .brand, .chat-list { display: none; }
-      .sidebar-search { display: none; }
-      .rate-card { display: none; }
-      .chat-page { padding: 18px 16px 100px; }
+      .mobile-sidebar-open .sidebar {
+        transform: translateX(0);
+      }
+      .brand,
+      .chat-list,
+      .sidebar-search,
+      .rate-card {
+        display: grid;
+      }
+      .brand {
+        display: flex;
+      }
+      .sidebar-search {
+        display: block;
+      }
+      .chat-list {
+        overflow-y: auto;
+      }
+      .rate-card {
+        margin-top: 0;
+        padding: 12px;
+      }
+      .rate-percent {
+        font-size: 28px;
+      }
+      .mobile-sidebar-toggle {
+        display: inline-grid;
+        place-items: center;
+        gap: 5px;
+        width: 42px;
+        height: 42px;
+        flex: 0 0 auto;
+        border: 1px solid rgba(191, 219, 254, 0.2);
+        border-radius: 12px;
+        background: rgba(5, 10, 20, 0.72);
+        box-shadow: 0 14px 38px rgba(0, 0, 0, 0.24);
+      }
+      .mobile-sidebar-toggle span {
+        width: 18px;
+        height: 2px;
+        border-radius: 999px;
+        background: #dbeafe;
+      }
+      .mobile-sidebar-toggle:hover,
+      .mobile-sidebar-toggle:focus-visible {
+        outline: none;
+        background: rgba(191, 219, 254, 0.16);
+      }
+      .chat-page {
+        height: 100dvh;
+        padding: calc(12px + env(safe-area-inset-top)) 12px calc(14px + env(safe-area-inset-bottom));
+      }
       .topbar {
+        width: 100%;
+        max-width: none;
         align-items: stretch;
         flex-direction: column;
+        gap: 10px;
+      }
+      .topbar-title-row {
+        width: 100%;
+      }
+      .topbar h1 {
+        min-width: 0;
+        font-size: 18px;
+        line-height: 42px;
       }
       .topbar-actions {
         width: 100%;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
       }
       .topbar-actions .secondary-button {
-        flex: 1 1 0;
+        width: 100%;
+        min-width: 0;
+        padding: 0 10px;
+        font-size: 13px;
+      }
+      .messages {
+        max-width: none;
+        gap: 14px;
+        padding: 18px 0 14px;
+      }
+      .message-stack,
+      .bubble {
+        max-width: min(100%, 86vw);
+      }
+      .message-row.user .message-stack {
+        align-items: flex-end;
+      }
+      .bubble {
+        border-radius: 18px;
+        padding: 12px 14px;
+      }
+      .composer-area {
+        width: 100%;
+        gap: 6px;
+      }
+      .composer {
+        grid-template-columns: 1fr 46px 64px;
+        gap: 7px;
+        padding: 7px;
+        border-radius: 22px;
+      }
+      .composer-input-wrap,
+      .composer textarea,
+      .composer-highlights {
+        min-height: 40px;
+      }
+      .composer-highlights,
+      .composer textarea {
+        padding: 9px 10px;
+        font-size: 15px;
+      }
+      .composer button {
+        min-width: 0;
+        min-height: 40px;
+        border-radius: 18px;
+        font-size: 13px;
+      }
+      .composer .voice-button {
+        width: 46px;
+        min-width: 46px;
+        font-size: 12px;
+      }
+      .composer-note {
+        font-size: 11px;
       }
       .toast {
-        right: 16px;
-        bottom: 88px;
+        right: 12px;
+        bottom: calc(82px + env(safe-area-inset-bottom));
+        max-width: calc(100vw - 24px);
+      }
+    }
+    @media (max-width: 430px) {
+      .chat-page {
+        padding-left: 10px;
+        padding-right: 10px;
+      }
+      .topbar-actions {
+        gap: 6px;
+      }
+      .composer {
+        grid-template-columns: 1fr 42px 56px;
+      }
+      .composer .voice-button {
+        width: 42px;
+        min-width: 42px;
+      }
+      .composer button {
+        font-size: 12px;
       }
     }
   `;
