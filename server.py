@@ -586,9 +586,9 @@ def groq_reply(message: str, chat: list[dict]) -> str:
         {
             "role": "system",
             "content": (
-                "You are Aether, a friendly web assistant. "
+                "You are Aether, a friendly AI model on a website. "
                 f"The user's current system time is {now}. "
-                "Always be friendly. Keep responses as short as possible while still answering clearly. "
+                "Always be friendly. Keep responses as helpful as possible while still answering clearly. "
                 "Never mention GPT, ChatGPT, OpenAI, AI, providers, sources, tokens, API calls, "
                 "models, or implementation details. Reply in plain text only. Do not use Markdown syntax. "
                 "Do not use bold, italics, headings, tables, code fences, bullet markdown, or asterisks for emphasis."
@@ -612,7 +612,7 @@ def looks_like_weather_request(message: str) -> bool:
 
 
 def looks_like_location_time_request(message: str) -> bool:
-    return bool(re.search(r"\bwhat\b", message, re.I) and re.search(r"\btime\b", message, re.I))
+    return bool(re.search(r"\b(?:what\s+time\s+is\s+it|what['’]?s\s+the\s+time)\b", message, re.I))
 
 
 def weather_reply(latitude: float, longitude: float) -> str:
@@ -713,18 +713,18 @@ def chat_response(payload: dict, ip_address: str) -> dict:
     if not message:
         return {"reply": "Send a message first."}
     if not is_aether_available():
-        return {"reply": "Aether is currently unavailable.", "aetherUnavailable": True}
+        return {"reply": "Aether is unavailable as of this moment, you may return in 10 minutes to 1 day and try again.", "aetherUnavailable": True}
     if is_ip_banned(ip_address):
-        return {"reply": "Aether is currently unavailable for this network.", "ipBanned": True}
+        return {"reply": "You can not use Aether because you are currently IP banned, you can try again later and see if you are unbanned. Thank you.", "ipBanned": True}
     if contains_profanity(message):
         safe_record_blocked_attempt(ip_address, message, chat)
         return {"reply": PROFANITY_BLOCK_MESSAGE, "profanityBlocked": True}
     if looks_like_location_time_request(message) and not location:
-        return {"reply": "Accept Aether's permission to view your location to see what timezone you are in."}
+        return {"reply": "Aether needs your permission to see your location to give your location."}
     rate = consume_rate_limit(ip_address)
     if not rate["allowed"]:
         return {
-            "reply": "Rate limit reached. Wait up to 1 minute.",
+            "reply": "The server rate limit has been reached, try again later.",
             "rateLimited": True,
             "rateLimit": rate["rateLimit"],
         }
@@ -902,6 +902,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 
 

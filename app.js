@@ -292,7 +292,7 @@ function renderAdminPage() {
         </div>
         <div class="topbar-actions">
           <button class="secondary-button" data-action="admin-refresh"${locked ? " disabled" : ""}>Refresh</button>
-          <button class="secondary-button" data-action="admin-lock"${locked ? " disabled" : ""}>Lock</button>
+          <button class="secondary-button" data-action="admin-lock"${locked ? " disabled" : ""}>Lock Admin Portal</button>
         </div>
       </header>
       <div class="admin-scroll">
@@ -302,7 +302,7 @@ function renderAdminPage() {
             <div>
               <span class="admin-kicker">${escapeHtml(database.provider || "database")} database</span>
               <h2>${available ? "Aether is available" : "Aether is unavailable"}</h2>
-              <p>Admin access is protected by your server secret. Browsers do not expose a visitor MAC address to Wasmer.</p>
+              <p>You can disable or enable Aether globally if rate limits are wasting too fast or for other reasons.</p>
             </div>
             <label class="admin-switch">
               <input type="checkbox" data-action="admin-availability" ${available ? "checked" : ""}${Aether.state.adminLoading ? " disabled" : ""}>
@@ -324,7 +324,7 @@ function renderAdminPage() {
             </div>
           </section>
           <section class="admin-actions">
-            <button class="danger-button" data-action="admin-reset-rate"${Aether.state.adminLoading ? " disabled" : ""}>Manual global reset</button>
+            <button class="danger-button" data-action="admin-reset-rate"${Aether.state.adminLoading ? " disabled" : ""}>Reset rate limit (Global)</button>
           </section>
           <section class="admin-two-column">
             ${renderBanIpPanel(status.bannedIps || [])}
@@ -339,10 +339,10 @@ function renderAdminPage() {
 function renderAdminLogin() {
   return `
     <form class="admin-login" data-action="admin-login">
-      <h2>Admin access</h2>
-      <p>Enter the value from your server's AETHER_ADMIN_SECRET environment variable.</p>
+      <h2>Admin login</h2>
+      <p>Please enter your password.</p>
       ${Aether.state.adminError ? `<div class="admin-alert">${escapeHtml(Aether.state.adminError)}</div>` : ""}
-      <input name="adminSecret" autocomplete="current-password" type="password" placeholder="Admin secret">
+      <input name="adminSecret" autocomplete="current-password" type="password" placeholder="Enter your password here.">
       <button class="primary-button" type="submit"${Aether.state.adminLoading ? " disabled" : ""}>Unlock</button>
     </form>
   `;
@@ -1364,7 +1364,7 @@ function looksLikeWeatherRequest(text) {
 }
 
 function looksLikeLocationTimeRequest(text) {
-  return /\bwhat\b/i.test(text) && /\btime\b/i.test(text);
+  return /\b(?:what\s+time\s+is\s+it|what['\u2019]?s\s+the\s+time)\b/i.test(text);
 }
 
 function browserTimeReply() {
