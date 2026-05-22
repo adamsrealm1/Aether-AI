@@ -667,14 +667,9 @@ def location_time_reply(latitude: float, longitude: float) -> str:
     with urllib.request.urlopen(request, timeout=12) as response:
         data = json.loads(response.read().decode("utf-8"))
 
-    current = data.get("current") if isinstance(data.get("current"), dict) else {}
-    current_time = current.get("time")
     timezone_name = data.get("timezone") or "UTC"
     offset_seconds = int(data.get("utc_offset_seconds") or 0)
-    try:
-        now = datetime.fromisoformat(current_time) if current_time else datetime.now(timezone.utc) + timedelta(seconds=offset_seconds)
-    except Exception:
-        now = datetime.now(timezone.utc) + timedelta(seconds=offset_seconds)
+    now = datetime.now(timezone.utc) + timedelta(seconds=offset_seconds)
 
     abbreviation = data.get("timezone_abbreviation") or timezone_name
     time_text = now.strftime("%I:%M %p").lstrip("0")
@@ -902,5 +897,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 
