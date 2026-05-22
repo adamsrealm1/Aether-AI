@@ -15,8 +15,8 @@ from groq import APIConnectionError, APIStatusError, APITimeoutError, Groq
 
 ROOT = Path(__file__).resolve().parent
 PROFANITY_BLOCK_MESSAGE = "You cant send Aether a message with profanity in it. You can try again without profanity in your message."
-GUEST_RATE_LIMIT = 300
-RATE_LIMIT_WINDOW_SECONDS = 60
+DEFAULT_RATE_LIMIT = 300
+DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60
 RATE_LIMITS: dict[str, dict] = {}
 DB_INITIALIZED = False
 app = Flask(__name__, static_folder=str(ROOT), static_url_path="")
@@ -68,16 +68,25 @@ def rate_limit_key() -> str:
 
 
 def rate_limit_for_request() -> int:
-    return GUEST_RATE_LIMIT
+    return rate_limit_settings()["limit"]
+
+
+def rate_limit_window_seconds() -> int:
+    return rate_limit_settings()["windowSeconds"]
 
 
 def rate_limit_status(ip_address: str | None = None) -> dict:
     limit = rate_limit_for_request()
+    window_seconds = rate_limit_window_seconds()
     now = datetime.now().astimezone()
     key = rate_limit_key()
     bucket = RATE_LIMITS.get(key)
-    if not bucket or bucket["resetAt"] <= now:
-        bucket = {"count": 0, "resetAt": now + timedelta(seconds=RATE_LIMIT_WINDOW_SECONDS)}
+    if not bucket or bucket["resetAt"] <= now or int(bucket.get("windowSeconds", 0)) != window_seconds:
+        bucket = {
+            "count": 0,
+            "resetAt": now + timedelta(seconds=window_seconds),
+            "windowSeconds": window_seconds,
+        }
         RATE_LIMITS[key] = bucket
 
     used = int(bucket["count"])
@@ -89,6 +98,7 @@ def rate_limit_status(ip_address: str | None = None) -> dict:
         "remaining": remaining,
         "percentUsed": round((used / limit) * 100) if limit else 0,
         "resetInSeconds": reset_in,
+        "windowSeconds": window_seconds,
     }
 
 
@@ -273,6 +283,10 @@ def ensure_admin_db() -> None:
     DB_INITIALIZED = True
     if get_admin_setting("aether_available") is None:
         set_admin_setting("aether_available", "1")
+    if get_admin_setting("rate_limit") is None:
+        set_admin_setting("rate_limit", str(DEFAULT_RATE_LIMIT))
+    if get_admin_setting("rate_limit_window_seconds") is None:
+        set_admin_setting("rate_limit_window_seconds", str(DEFAULT_RATE_LIMIT_WINDOW_SECONDS))
 
 
 def db_query(sql: str, params: tuple = ()) -> list[dict]:
@@ -309,6 +323,35 @@ def is_aether_available() -> bool:
 def set_aether_available(available: bool) -> None:
     ensure_admin_db()
     set_admin_setting("aether_available", "1" if available else "0")
+
+
+def bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
+    try:
+        number = int(value)
+    except Exception:
+        number = default
+    return max(minimum, min(maximum, number))
+
+
+def rate_limit_settings() -> dict:
+    ensure_admin_db()
+    limit = bounded_int(get_admin_setting("rate_limit"), DEFAULT_RATE_LIMIT, 1, 100000)
+    window_seconds = bounded_int(
+        get_admin_setting("rate_limit_window_seconds"),
+        DEFAULT_RATE_LIMIT_WINDOW_SECONDS,
+        1,
+        86400,
+    )
+    return {"limit": limit, "windowSeconds": window_seconds}
+
+
+def set_rate_limit_settings(limit: object, window_seconds: object) -> None:
+    limit_value = bounded_int(limit, DEFAULT_RATE_LIMIT, 1, 100000)
+    window_value = bounded_int(window_seconds, DEFAULT_RATE_LIMIT_WINDOW_SECONDS, 1, 86400)
+    ensure_admin_db()
+    set_admin_setting("rate_limit", str(limit_value))
+    set_admin_setting("rate_limit_window_seconds", str(window_value))
+    reset_global_rate_limit()
 
 
 def reset_global_rate_limit() -> None:
@@ -788,6 +831,18 @@ def api_admin_reset_rate_limit():
     return jsonify(admin_status())
 
 
+@app.post("/api/admin/rate-limit")
+def api_admin_rate_limit():
+    denied = require_admin()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    set_rate_limit_settings(payload.get("limit"), payload.get("windowSeconds"))
+    return jsonify(admin_status())
+
+
 @app.post("/api/admin/ban-ip")
 def api_admin_ban_ip():
     denied = require_admin()
@@ -897,4 +952,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

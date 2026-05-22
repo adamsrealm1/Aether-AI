@@ -20,6 +20,7 @@
       remaining: 300,
       percentUsed: 0,
       resetInSeconds: 60,
+      windowSeconds: 60,
     },
     rateMeter: {
       displayPercent: 100,
@@ -276,6 +277,7 @@ function renderAdminPage() {
   const status = Aether.state.adminStatus || {};
   const counts = status.requestCounts || { minute: 0, hour: 0, day: 0 };
   const database = status.database || {};
+  const rate = status.rateLimit || Aether.state.rateLimit || {};
   const available = status.aetherAvailable !== false;
   const locked = !Aether.state.adminSecret;
 
@@ -300,7 +302,7 @@ function renderAdminPage() {
           ${Aether.state.adminError ? `<div class="admin-alert">${escapeHtml(Aether.state.adminError)}</div>` : ""}
           <section class="admin-hero">
             <div>
-              <span class="admin-kicker">${escapeHtml(database.provider || "database")} database</span>
+              <span class="admin-kicker">${escapeHtml(database.provider || "database")} </span>
               <h2>${available ? "Aether is available" : "Aether is unavailable"}</h2>
               <p>You can disable or enable Aether globally if rate limits are wasting too fast or for other reasons.</p>
             </div>
@@ -324,6 +326,17 @@ function renderAdminPage() {
             </div>
           </section>
           <section class="admin-actions">
+            <form class="admin-rate-form" data-action="admin-rate-limit">
+              <label>
+                <span>Messages</span>
+                <input name="limit" type="number" min="1" max="100000" step="1" value="${escapeHtml(rate.limit || 300)}">
+              </label>
+              <label>
+                <span>Seconds</span>
+                <input name="windowSeconds" type="number" min="1" max="86400" step="1" value="${escapeHtml(rate.windowSeconds || 60)}">
+              </label>
+              <button class="primary-button" type="submit"${Aether.state.adminLoading ? " disabled" : ""}>Save rate limit</button>
+            </form>
             <button class="danger-button" data-action="admin-reset-rate"${Aether.state.adminLoading ? " disabled" : ""}>Reset rate limit (Global)</button>
           </section>
           <section class="admin-two-column">
@@ -2109,6 +2122,9 @@ function injectStyles() {
     }
     .admin-actions {
       display: flex;
+      flex-wrap: wrap;
+      align-items: end;
+      gap: 10px;
       justify-content: flex-start;
     }
     .admin-two-column {
@@ -2141,13 +2157,29 @@ function injectStyles() {
       font-size: 12px;
       font-weight: 820;
     }
-    .admin-ban-form {
+    .admin-ban-form,
+    .admin-rate-form {
       display: grid;
       grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
       gap: 8px;
     }
+    .admin-rate-form {
+      width: min(560px, 100%);
+      align-items: end;
+    }
+    .admin-rate-form label {
+      display: grid;
+      gap: 5px;
+      min-width: 0;
+    }
+    .admin-rate-form label span {
+      color: #bfdbfe;
+      font-size: 12px;
+      font-weight: 780;
+    }
     .admin-login input,
-    .admin-ban-form input {
+    .admin-ban-form input,
+    .admin-rate-form input {
       width: 100%;
       min-height: 40px;
       border: 1px solid rgba(191, 219, 254, 0.18);
@@ -2158,7 +2190,8 @@ function injectStyles() {
       padding: 0 12px;
     }
     .admin-login input:focus,
-    .admin-ban-form input:focus {
+    .admin-ban-form input:focus,
+    .admin-rate-form input:focus {
       border-color: rgba(45, 212, 191, 0.56);
       box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.12);
     }
@@ -2711,7 +2744,8 @@ function injectStyles() {
       .admin-hero,
       .admin-two-column,
       .admin-grid,
-      .admin-ban-form {
+      .admin-ban-form,
+      .admin-rate-form {
         grid-template-columns: 1fr;
       }
       .admin-hero {
