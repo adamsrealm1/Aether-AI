@@ -1,3 +1,4 @@
+kind: wasmer.io/App.v0
 name: aether-ai
 app_id: da_nkPI5tJUkwd1
 owner: adamsrealm1
@@ -6,12 +7,6 @@ env:
   PYTHONEXECUTABLE: /bin/python
   PYTHONPATH: /app
   AETHER_GROQ_MODELS: openai/gpt-oss-120b,llama-3.1-8b-instant,qwen/qwen3-32b
-capabilities:
-  database:
-    engine: mysql
-locality:
-  regions:
-  - us-socal1
 cli_args:
 - -m
 - flask
@@ -23,7 +18,9 @@ cli_args:
 - --port
 - '5000'
 - --no-reload
-kind: wasmer.io/App.v0
+capabilities:
+  database:
+    engine: mysql
 annotations:
   shipitcli.com/config:
     commands:
@@ -43,5 +40,6 @@ annotations:
     uses_pandoc: false
     uv_version: 0.8.15
     wsgi_application: main:app
+    database: mysql
   shipitcli.com/provider: python
   shipitcli.com/version: 0.19.8
