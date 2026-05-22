@@ -26,6 +26,12 @@
       targetPercent: 100,
     },
     serverOnline: false,
+    adminView: false,
+    adminSecret: "",
+    adminStatus: null,
+    adminLoading: false,
+    adminError: "",
+    blockedAttemptsExpanded: false,
   },
 };
 
@@ -74,6 +80,7 @@ const storage = {
     Aether.config.apiEndpoint = defaultApiEndpoint();
     Aether.state.chats = readJson("aether.chats", []).map(normalizeChat);
     Aether.state.activeChatId = localStorage.getItem("aether.activeChatId");
+    Aether.state.adminSecret = localStorage.getItem("aether.adminSecret") || "";
 
     if (!Aether.state.chats.length) {
       const chat = createChat("New conversation");
@@ -209,6 +216,7 @@ function render() {
           </span>
         </button>
         <button class="new-chat" data-action="new-chat">+ New conversation</button>
+        <button class="admin-tab ${Aether.state.adminView ? "active" : ""}" data-action="admin-tab">Admin</button>
         <input class="sidebar-search" data-action="sidebar-search" autocomplete="off" placeholder="Search conversations" value="${escapeHtml(Aether.state.sidebarSearch)}">
         <div class="chat-list">
           ${filteredChats().map(chatListItem).join("") || `<div class="sidebar-empty">No conversations found.</div>`}
@@ -216,7 +224,7 @@ function render() {
         ${renderRateLimitMeter()}
       </aside>
 
-      ${renderChatPage(chat)}
+      ${Aether.state.adminView ? renderAdminPage() : renderChatPage(chat)}
       ${renderProfanityPopup()}
       ${renderRateLimitPopup()}
       ${renderToast()}
@@ -261,6 +269,135 @@ function renderChatPage(chat) {
         <p class="composer-note">Aether can make mistakes. Double check important info.</p>
       </div>
     </main>
+  `;
+}
+
+function renderAdminPage() {
+  const status = Aether.state.adminStatus || {};
+  const counts = status.requestCounts || { minute: 0, hour: 0, day: 0 };
+  const database = status.database || {};
+  const available = status.aetherAvailable !== false;
+  const locked = !Aether.state.adminSecret;
+
+  return `
+    <main class="chat-page admin-page">
+      <div class="animated-bg" aria-hidden="true"></div>
+      <header class="topbar">
+        <div class="topbar-title-row">
+          <button class="mobile-sidebar-toggle" type="button" data-action="toggle-mobile-sidebar" aria-label="${Aether.state.mobileSidebarOpen ? "Close sidebar" : "Open sidebar"}" aria-expanded="${Aether.state.mobileSidebarOpen ? "true" : "false"}">
+            <span></span>
+            <span></span>
+          </button>
+          <h1>Admin</h1>
+        </div>
+        <div class="topbar-actions">
+          <button class="secondary-button" data-action="admin-refresh"${locked ? " disabled" : ""}>Refresh</button>
+          <button class="secondary-button" data-action="admin-lock"${locked ? " disabled" : ""}>Lock</button>
+        </div>
+      </header>
+      <div class="admin-scroll">
+        ${locked ? renderAdminLogin() : `
+          ${Aether.state.adminError ? `<div class="admin-alert">${escapeHtml(Aether.state.adminError)}</div>` : ""}
+          <section class="admin-hero">
+            <div>
+              <span class="admin-kicker">${escapeHtml(database.provider || "database")} database</span>
+              <h2>${available ? "Aether is available" : "Aether is unavailable"}</h2>
+              <p>Admin access is protected by your server secret. Browsers do not expose a visitor MAC address to Wasmer.</p>
+            </div>
+            <label class="admin-switch">
+              <input type="checkbox" data-action="admin-availability" ${available ? "checked" : ""}${Aether.state.adminLoading ? " disabled" : ""}>
+              <span>${available ? "Available" : "Unavailable"}</span>
+            </label>
+          </section>
+          <section class="admin-grid">
+            <div class="admin-metric">
+              <span>Last minute</span>
+              <strong>${Number(counts.minute || 0)}</strong>
+            </div>
+            <div class="admin-metric">
+              <span>Last hour</span>
+              <strong>${Number(counts.hour || 0)}</strong>
+            </div>
+            <div class="admin-metric">
+              <span>Last day</span>
+              <strong>${Number(counts.day || 0)}</strong>
+            </div>
+          </section>
+          <section class="admin-actions">
+            <button class="danger-button" data-action="admin-reset-rate"${Aether.state.adminLoading ? " disabled" : ""}>Manual global reset</button>
+          </section>
+          <section class="admin-two-column">
+            ${renderBanIpPanel(status.bannedIps || [])}
+            ${renderBlockedAttemptsPanel(status.blockedAttempts || [])}
+          </section>
+        `}
+      </div>
+    </main>
+  `;
+}
+
+function renderAdminLogin() {
+  return `
+    <form class="admin-login" data-action="admin-login">
+      <h2>Admin access</h2>
+      <p>Enter the value from your server's AETHER_ADMIN_SECRET environment variable.</p>
+      ${Aether.state.adminError ? `<div class="admin-alert">${escapeHtml(Aether.state.adminError)}</div>` : ""}
+      <input name="adminSecret" autocomplete="current-password" type="password" placeholder="Admin secret">
+      <button class="primary-button" type="submit"${Aether.state.adminLoading ? " disabled" : ""}>Unlock</button>
+    </form>
+  `;
+}
+
+function renderBanIpPanel(bannedIps) {
+  return `
+    <section class="admin-panel">
+      <div class="admin-panel-head">
+        <h2>Ban IPs</h2>
+        <span>${bannedIps.length}</span>
+      </div>
+      <form class="admin-ban-form" data-action="admin-ban-ip">
+        <input name="ipAddress" autocomplete="off" placeholder="IP address">
+        <input name="reason" autocomplete="off" placeholder="Reason">
+        <button class="primary-button" type="submit"${Aether.state.adminLoading ? " disabled" : ""}>Ban</button>
+      </form>
+      <div class="admin-list">
+        ${bannedIps.map((item) => `
+          <div class="admin-list-item">
+            <div>
+              <strong>${escapeHtml(item.ipAddress || "")}</strong>
+              <small>${escapeHtml(item.reason || "No reason")} - ${escapeHtml(formatAdminDate(item.createdAt))}</small>
+            </div>
+            <button class="secondary-button" data-unban-ip="${escapeHtml(item.ipAddress || "")}">Unban</button>
+          </div>
+        `).join("") || `<div class="admin-empty">No banned IPs.</div>`}
+      </div>
+    </section>
+  `;
+}
+
+function renderBlockedAttemptsPanel(attempts) {
+  return `
+    <section class="admin-panel">
+      <div class="admin-panel-head">
+        <h2>Blocked attempts</h2>
+        <span>${attempts.length}${Aether.state.blockedAttemptsExpanded ? " shown" : " recent"}</span>
+      </div>
+      <div class="admin-list blocked-list">
+        ${attempts.map((attempt) => `
+          <div class="blocked-attempt">
+            <div class="blocked-attempt-head">
+              <strong>${escapeHtml(attempt.ipAddress || "")}</strong>
+              <small>${escapeHtml(formatAdminDate(attempt.createdAt))}</small>
+            </div>
+            <p>${escapeHtml(attempt.message || "")}</p>
+            <ol>
+              ${(attempt.context || []).map((message) => `<li>${escapeHtml(message)}</li>`).join("")}
+            </ol>
+          </div>
+        `).join("") || `<div class="admin-empty">No blocked attempts.</div>`}
+      </div>
+      <button class="secondary-button show-all-button" data-action="admin-show-all"${Aether.state.blockedAttemptsExpanded ? " disabled" : ""}>Show all</button>
+    </section>
   `;
 }
 
@@ -390,13 +527,21 @@ function renderRateLimitPopup() {
 
 function bindEvents(root) {
   root.querySelector("[data-action='home']")?.addEventListener("click", () => {
+    Aether.state.adminView = false;
     Aether.state.mobileSidebarOpen = false;
     render();
   });
 
   root.querySelector("[data-action='new-chat']")?.addEventListener("click", () => {
+    Aether.state.adminView = false;
     Aether.state.mobileSidebarOpen = false;
     createNewChat();
+  });
+  root.querySelector("[data-action='admin-tab']")?.addEventListener("click", () => {
+    Aether.state.adminView = true;
+    Aether.state.mobileSidebarOpen = false;
+    render();
+    loadAdminStatus();
   });
   root.querySelector("[data-action='toggle-mobile-sidebar']")?.addEventListener("click", () => {
     Aether.state.mobileSidebarOpen = !Aether.state.mobileSidebarOpen;
@@ -449,12 +594,14 @@ function bindEvents(root) {
   root.querySelectorAll("[data-copy-message]").forEach((button) => {
     button.addEventListener("click", () => copyAssistantMessage(button.dataset.copyMessage, button));
   });
+  bindAdminEvents(root);
 }
 
 function bindChatListEvents(root) {
   root.querySelectorAll("[data-chat-id]").forEach((button) => {
     button.addEventListener("click", () => {
       Aether.state.activeChatId = button.dataset.chatId;
+      Aether.state.adminView = false;
       Aether.state.mobileSidebarOpen = false;
       storage.save();
       render();
@@ -466,6 +613,65 @@ function bindChatListEvents(root) {
       event.stopPropagation();
       deleteChat(button.dataset.deleteChat);
     });
+  });
+}
+
+function bindAdminEvents(root) {
+  root.querySelector("[data-action='admin-login']")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const secret = String(new FormData(form).get("adminSecret") || "").trim();
+    if (!secret) {
+      Aether.state.adminError = "Enter the admin secret first.";
+      render();
+      return;
+    }
+    Aether.state.adminSecret = secret;
+    localStorage.setItem("aether.adminSecret", secret);
+    await loadAdminStatus();
+  });
+
+  root.querySelector("[data-action='admin-refresh']")?.addEventListener("click", () => loadAdminStatus());
+  root.querySelector("[data-action='admin-lock']")?.addEventListener("click", () => {
+    Aether.state.adminSecret = "";
+    Aether.state.adminStatus = null;
+    Aether.state.adminError = "";
+    localStorage.removeItem("aether.adminSecret");
+    render();
+  });
+  root.querySelector("[data-action='admin-availability']")?.addEventListener("change", async (event) => {
+    await adminRequest("/api/admin/availability", {
+      method: "POST",
+      body: JSON.stringify({ available: Boolean(event.currentTarget.checked) }),
+    });
+  });
+  root.querySelector("[data-action='admin-reset-rate']")?.addEventListener("click", async () => {
+    await adminRequest("/api/admin/reset-rate-limit", { method: "POST" });
+  });
+  root.querySelector("[data-action='admin-ban-ip']")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    await adminRequest("/api/admin/ban-ip", {
+      method: "POST",
+      body: JSON.stringify({
+        ipAddress: String(data.get("ipAddress") || "").trim(),
+        reason: String(data.get("reason") || "").trim(),
+      }),
+    });
+    form.reset();
+  });
+  root.querySelectorAll("[data-unban-ip]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await adminRequest("/api/admin/unban-ip", {
+        method: "POST",
+        body: JSON.stringify({ ipAddress: button.dataset.unbanIp || "" }),
+      });
+    });
+  });
+  root.querySelector("[data-action='admin-show-all']")?.addEventListener("click", () => {
+    Aether.state.blockedAttemptsExpanded = true;
+    loadAdminStatus({ all: true });
   });
 }
 
@@ -499,6 +705,7 @@ function createNewChat(seedText = "") {
   const chat = createChat(seedText ? seedText.slice(0, 36) : "New conversation");
   Aether.state.chats.unshift(chat);
   Aether.state.activeChatId = chat.id;
+  Aether.state.adminView = false;
   Aether.state.composerDraft = seedText;
   storage.save();
   render();
@@ -1031,6 +1238,71 @@ async function authHeaders(base = {}) {
   return { ...base };
 }
 
+async function adminHeaders(base = {}) {
+  return {
+    ...base,
+    "X-Aether-Admin-Secret": Aether.state.adminSecret || "",
+  };
+}
+
+async function loadAdminStatus(options = {}) {
+  if (!Aether.state.adminSecret) return;
+  Aether.state.adminLoading = true;
+  Aether.state.adminError = "";
+  if (Aether.state.adminView) render();
+  try {
+    const all = options.all || Aether.state.blockedAttemptsExpanded;
+    const response = await fetch(apiUrl(`/api/admin/status${all ? "?all=1" : ""}`), {
+      headers: await adminHeaders(),
+      cache: "no-store",
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.error || `Admin request failed with HTTP ${response.status}`);
+    }
+    Aether.state.adminStatus = data;
+    if (data.rateLimit) updateRateLimit(data.rateLimit);
+    Aether.state.adminError = "";
+  } catch (error) {
+    Aether.state.adminError = error?.message || "Admin request failed.";
+  } finally {
+    Aether.state.adminLoading = false;
+    if (Aether.state.adminView) render();
+  }
+}
+
+async function adminRequest(path, options = {}) {
+  if (!Aether.state.adminSecret) {
+    Aether.state.adminError = "Enter the admin secret first.";
+    render();
+    return null;
+  }
+  Aether.state.adminLoading = true;
+  Aether.state.adminError = "";
+  render();
+  try {
+    const response = await fetch(apiUrl(path), {
+      ...options,
+      headers: await adminHeaders({ "Content-Type": "application/json;charset=UTF-8", ...(options.headers || {}) }),
+      cache: "no-store",
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.error || `Admin request failed with HTTP ${response.status}`);
+    }
+    Aether.state.adminStatus = data;
+    if (data.rateLimit) updateRateLimit(data.rateLimit);
+    Aether.state.adminError = "";
+    return data;
+  } catch (error) {
+    Aether.state.adminError = error?.message || "Admin request failed.";
+    return null;
+  } finally {
+    Aether.state.adminLoading = false;
+    render();
+  }
+}
+
 
 function apiUrl(path) {
   if (Aether.config.apiEndpoint?.startsWith("http://") || Aether.config.apiEndpoint?.startsWith("https://")) {
@@ -1099,6 +1371,13 @@ function browserTimeReply() {
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "your local timezone";
   const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", timeZoneName: "short" });
   return `It is ${time} in ${timezone}.`;
+}
+
+function formatAdminDate(value) {
+  if (!value) return "Unknown";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
 function addAssistantMessage(text) {
@@ -1458,7 +1737,7 @@ function injectStyles() {
       backdrop-filter: blur(18px);
       min-width: 0;
     }
-    .brand, .new-chat, .chat-item, .delete-chat, .copy-message, .composer button, .primary-button, .secondary-button, .danger-button { border: 0; }
+    .brand, .new-chat, .admin-tab, .chat-item, .delete-chat, .copy-message, .composer button, .primary-button, .secondary-button, .danger-button { border: 0; }
     .brand {
       display: flex;
       align-items: center;
@@ -1540,6 +1819,22 @@ function injectStyles() {
       transform: translateY(-1px);
       filter: brightness(1.04);
       outline: none;
+    }
+    .admin-tab {
+      display: grid;
+      place-items: center;
+      height: 38px;
+      border-radius: 10px;
+      color: #dbeafe;
+      background: rgba(191, 219, 254, 0.1);
+      font-weight: 780;
+      transition: background 160ms ease, color 160ms ease, transform 160ms ease;
+    }
+    .admin-tab:hover, .admin-tab:focus-visible, .admin-tab.active {
+      color: #07111f;
+      background: #a7f3d0;
+      outline: none;
+      transform: translateY(-1px);
     }
     .sidebar-search {
       width: 100%;
@@ -1720,6 +2015,226 @@ function injectStyles() {
       align-items: center;
       gap: 8px;
       flex: 0 0 auto;
+    }
+    .admin-page {
+      grid-template-rows: auto 1fr;
+    }
+    .admin-scroll {
+      position: relative;
+      z-index: 1;
+      width: min(1060px, 100%);
+      margin: 0 auto;
+      padding: 28px 0 8px;
+      overflow-y: auto;
+      scrollbar-width: none;
+      display: grid;
+      gap: 18px;
+      align-content: start;
+    }
+    .admin-scroll::-webkit-scrollbar { width: 0; height: 0; }
+    .admin-hero {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 22px;
+      border: 1px solid rgba(191, 219, 254, 0.16);
+      border-radius: 8px;
+      background: rgba(5, 10, 20, 0.66);
+    }
+    .admin-kicker {
+      display: inline-flex;
+      margin-bottom: 8px;
+      color: #a7f3d0;
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+    .admin-hero h2,
+    .admin-login h2,
+    .admin-panel h2 {
+      margin: 0;
+      letter-spacing: 0;
+    }
+    .admin-hero h2 {
+      font-size: 26px;
+    }
+    .admin-hero p,
+    .admin-login p {
+      margin: 8px 0 0;
+      max-width: 620px;
+      color: #bfdbfe;
+      line-height: 1.45;
+    }
+    .admin-switch {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 44px;
+      padding: 0 14px;
+      border-radius: 999px;
+      color: #07111f;
+      background: #dbeafe;
+      font-weight: 820;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+    .admin-switch input {
+      width: 18px;
+      height: 18px;
+      accent-color: #16a34a;
+    }
+    .admin-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .admin-metric {
+      display: grid;
+      gap: 8px;
+      padding: 18px;
+      border: 1px solid rgba(191, 219, 254, 0.16);
+      border-radius: 8px;
+      background: rgba(5, 10, 20, 0.56);
+    }
+    .admin-metric span {
+      color: #bfdbfe;
+      font-size: 13px;
+      font-weight: 760;
+    }
+    .admin-metric strong {
+      font-size: 34px;
+      line-height: 1;
+    }
+    .admin-actions {
+      display: flex;
+      justify-content: flex-start;
+    }
+    .admin-two-column {
+      display: grid;
+      grid-template-columns: minmax(280px, 0.84fr) minmax(320px, 1.16fr);
+      gap: 14px;
+      align-items: start;
+    }
+    .admin-panel,
+    .admin-login {
+      display: grid;
+      gap: 14px;
+      padding: 20px;
+      border: 1px solid rgba(191, 219, 254, 0.16);
+      border-radius: 8px;
+      background: rgba(5, 10, 20, 0.62);
+    }
+    .admin-login {
+      width: min(520px, 100%);
+      margin: 48px auto 0;
+    }
+    .admin-panel-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+    .admin-panel-head span {
+      color: #a7f3d0;
+      font-size: 12px;
+      font-weight: 820;
+    }
+    .admin-ban-form {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+      gap: 8px;
+    }
+    .admin-login input,
+    .admin-ban-form input {
+      width: 100%;
+      min-height: 40px;
+      border: 1px solid rgba(191, 219, 254, 0.18);
+      border-radius: 10px;
+      color: #f8fbff;
+      background: rgba(2, 6, 23, 0.54);
+      outline: none;
+      padding: 0 12px;
+    }
+    .admin-login input:focus,
+    .admin-ban-form input:focus {
+      border-color: rgba(45, 212, 191, 0.56);
+      box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.12);
+    }
+    .admin-list {
+      display: grid;
+      gap: 10px;
+      max-height: min(54vh, 520px);
+      overflow-y: auto;
+      padding-right: 4px;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(219, 234, 254, 0.26) transparent;
+    }
+    .admin-list-item,
+    .blocked-attempt {
+      display: grid;
+      gap: 8px;
+      padding: 12px;
+      border-radius: 8px;
+      border: 1px solid rgba(191, 219, 254, 0.12);
+      background: rgba(2, 6, 23, 0.44);
+    }
+    .admin-list-item {
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+    }
+    .admin-list-item strong,
+    .blocked-attempt strong {
+      display: block;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    .admin-list-item small,
+    .blocked-attempt small {
+      display: block;
+      margin-top: 3px;
+      color: #bfdbfe;
+      line-height: 1.35;
+    }
+    .blocked-attempt-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .blocked-attempt p {
+      margin: 0;
+      color: #fecaca;
+      overflow-wrap: anywhere;
+      line-height: 1.4;
+    }
+    .blocked-attempt ol {
+      margin: 0;
+      padding-left: 20px;
+      color: #dbeafe;
+      line-height: 1.35;
+    }
+    .blocked-attempt li {
+      overflow-wrap: anywhere;
+      margin-top: 4px;
+    }
+    .admin-empty {
+      padding: 12px;
+      color: #bfdbfe;
+      border: 1px dashed rgba(191, 219, 254, 0.18);
+      border-radius: 8px;
+      text-align: center;
+    }
+    .admin-alert {
+      padding: 12px;
+      border-radius: 8px;
+      color: #fecaca;
+      background: rgba(127, 29, 29, 0.26);
+      border: 1px solid rgba(248, 113, 113, 0.26);
+    }
+    .show-all-button {
+      justify-self: start;
     }
     .messages {
       position: relative;
@@ -2163,6 +2678,7 @@ function injectStyles() {
         transform: translateX(0);
       }
       .brand,
+      .admin-tab,
       .chat-list,
       .sidebar-search,
       .rate-card {
@@ -2183,6 +2699,50 @@ function injectStyles() {
       }
       .rate-percent {
         font-size: 28px;
+      }
+      .admin-page {
+        height: 100dvh;
+      }
+      .admin-scroll {
+        width: 100%;
+        max-width: none;
+        padding: 18px 0 10px;
+      }
+      .admin-hero,
+      .admin-two-column,
+      .admin-grid,
+      .admin-ban-form {
+        grid-template-columns: 1fr;
+      }
+      .admin-hero {
+        display: grid;
+        padding: 16px;
+      }
+      .admin-hero h2 {
+        font-size: 22px;
+      }
+      .admin-switch {
+        justify-self: start;
+      }
+      .admin-two-column {
+        gap: 12px;
+      }
+      .admin-panel,
+      .admin-login {
+        padding: 16px;
+      }
+      .admin-login {
+        margin-top: 20px;
+      }
+      .admin-list {
+        max-height: none;
+      }
+      .blocked-attempt-head,
+      .admin-list-item {
+        grid-template-columns: 1fr;
+      }
+      .blocked-attempt-head {
+        display: grid;
       }
       .mobile-sidebar-toggle {
         display: inline-grid;

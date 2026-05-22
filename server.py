@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import sqlite3
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -17,6 +18,7 @@ PROFANITY_BLOCK_MESSAGE = "You cant send Aether a message with profanity in it. 
 GUEST_RATE_LIMIT = 300
 RATE_LIMIT_WINDOW_SECONDS = 60
 RATE_LIMITS: dict[str, dict] = {}
+DB_INITIALIZED = False
 app = Flask(__name__, static_folder=str(ROOT), static_url_path="")
 PROFANITY_PATTERNS = [
     re.compile(pattern, re.I)
@@ -122,6 +124,367 @@ def load_dotenv() -> None:
         value = value.strip().strip('"').strip("'")
         if key and key not in os.environ:
             os.environ[key] = value
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def utc_iso() -> str:
+    return utc_now().isoformat()
+
+
+def mysql_configured() -> bool:
+    return bool(
+        os.getenv("DB_HOST")
+        and os.getenv("DB_NAME")
+        and (os.getenv("DB_USERNAME") or os.getenv("DB_USER"))
+    )
+
+
+def database_provider() -> str:
+    return "mysql" if mysql_configured() else "sqlite"
+
+
+def database_summary() -> dict:
+    return {"provider": database_provider(), "ready": DB_INITIALIZED}
+
+
+def db_placeholder() -> str:
+    return "%s" if database_provider() == "mysql" else "?"
+
+
+def db_connect():
+    if database_provider() == "mysql":
+        import pymysql
+
+        return pymysql.connect(
+            host=os.getenv("DB_HOST", ""),
+            port=int(os.getenv("DB_PORT", "3306")),
+            user=os.getenv("DB_USERNAME") or os.getenv("DB_USER") or "",
+            password=os.getenv("DB_PASSWORD", ""),
+            database=os.getenv("DB_NAME", ""),
+            cursorclass=pymysql.cursors.DictCursor,
+            autocommit=True,
+            charset="utf8mb4",
+        )
+
+    connection = sqlite3.connect(ROOT / "aether_admin.sqlite3")
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def db_execute_raw(sql: str, params: tuple = (), fetch: bool = False) -> list[dict]:
+    connection = db_connect()
+    try:
+        cursor = connection.cursor()
+        cursor.execute(sql, params)
+        rows = cursor.fetchall() if fetch else []
+        if database_provider() == "sqlite":
+            connection.commit()
+        return [dict(row) for row in rows]
+    finally:
+        connection.close()
+
+
+def ensure_admin_db() -> None:
+    global DB_INITIALIZED
+    if DB_INITIALIZED:
+        return
+
+    if database_provider() == "mysql":
+        statements = [
+            """
+            CREATE TABLE IF NOT EXISTS admin_settings (
+              name VARCHAR(80) PRIMARY KEY,
+              value TEXT NOT NULL
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS request_events (
+              id BIGINT AUTO_INCREMENT PRIMARY KEY,
+              created_at VARCHAR(40) NOT NULL,
+              ip_address VARCHAR(80) NOT NULL,
+              kind VARCHAR(40) NOT NULL
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS banned_ips (
+              ip_address VARCHAR(80) PRIMARY KEY,
+              reason TEXT,
+              created_at VARCHAR(40) NOT NULL
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS blocked_attempts (
+              id BIGINT AUTO_INCREMENT PRIMARY KEY,
+              created_at VARCHAR(40) NOT NULL,
+              ip_address VARCHAR(80) NOT NULL,
+              message TEXT NOT NULL,
+              context_json TEXT NOT NULL
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+            """,
+            "CREATE INDEX idx_request_events_created_at ON request_events (created_at)",
+            "CREATE INDEX idx_blocked_attempts_created_at ON blocked_attempts (created_at)",
+        ]
+    else:
+        statements = [
+            """
+            CREATE TABLE IF NOT EXISTS admin_settings (
+              name TEXT PRIMARY KEY,
+              value TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS request_events (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              created_at TEXT NOT NULL,
+              ip_address TEXT NOT NULL,
+              kind TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS banned_ips (
+              ip_address TEXT PRIMARY KEY,
+              reason TEXT,
+              created_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS blocked_attempts (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              created_at TEXT NOT NULL,
+              ip_address TEXT NOT NULL,
+              message TEXT NOT NULL,
+              context_json TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_request_events_created_at ON request_events (created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_blocked_attempts_created_at ON blocked_attempts (created_at)",
+        ]
+
+    for statement in statements:
+        try:
+            db_execute_raw(statement)
+        except Exception:
+            if "CREATE INDEX" not in statement:
+                raise
+
+    DB_INITIALIZED = True
+    if get_admin_setting("aether_available") is None:
+        set_admin_setting("aether_available", "1")
+
+
+def db_query(sql: str, params: tuple = ()) -> list[dict]:
+    ensure_admin_db()
+    return db_execute_raw(sql, params, fetch=True)
+
+
+def db_execute(sql: str, params: tuple = ()) -> None:
+    ensure_admin_db()
+    db_execute_raw(sql, params, fetch=False)
+
+
+def get_admin_setting(name: str) -> str | None:
+    placeholder = db_placeholder()
+    rows = db_execute_raw(f"SELECT value FROM admin_settings WHERE name = {placeholder}", (name,), fetch=True)
+    return str(rows[0]["value"]) if rows else None
+
+
+def set_admin_setting(name: str, value: str) -> None:
+    if database_provider() == "mysql":
+        db_execute_raw(
+            "INSERT INTO admin_settings (name, value) VALUES (%s, %s) ON DUPLICATE KEY UPDATE value = VALUES(value)",
+            (name, value),
+        )
+    else:
+        db_execute_raw("INSERT OR REPLACE INTO admin_settings (name, value) VALUES (?, ?)", (name, value))
+
+
+def is_aether_available() -> bool:
+    ensure_admin_db()
+    return get_admin_setting("aether_available") != "0"
+
+
+def set_aether_available(available: bool) -> None:
+    ensure_admin_db()
+    set_admin_setting("aether_available", "1" if available else "0")
+
+
+def reset_global_rate_limit() -> None:
+    RATE_LIMITS.clear()
+
+
+def parse_utc(value: object) -> datetime:
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc)
+    try:
+        return datetime.fromisoformat(str(value)).astimezone(timezone.utc)
+    except Exception:
+        return utc_now()
+
+
+def record_request_event(ip_address: str, kind: str = "chat") -> None:
+    placeholder = db_placeholder()
+    db_execute(
+        f"INSERT INTO request_events (created_at, ip_address, kind) VALUES ({placeholder}, {placeholder}, {placeholder})",
+        (utc_iso(), ip_address[:80], kind[:40]),
+    )
+
+
+def safe_record_request_event(ip_address: str, kind: str = "chat") -> None:
+    try:
+        record_request_event(ip_address, kind)
+    except Exception:
+        pass
+
+
+def request_counts() -> dict:
+    since_day = utc_now() - timedelta(days=1)
+    placeholder = db_placeholder()
+    rows = db_query(f"SELECT created_at FROM request_events WHERE created_at >= {placeholder}", (since_day.isoformat(),))
+    now = utc_now()
+    counts = {"minute": 0, "hour": 0, "day": 0}
+    for row in rows:
+        created_at = parse_utc(row.get("created_at"))
+        age = now - created_at
+        if age <= timedelta(minutes=1):
+            counts["minute"] += 1
+        if age <= timedelta(hours=1):
+            counts["hour"] += 1
+        if age <= timedelta(days=1):
+            counts["day"] += 1
+    return counts
+
+
+def banned_ips() -> list[dict]:
+    rows = db_query("SELECT ip_address, reason, created_at FROM banned_ips ORDER BY created_at DESC")
+    return [
+        {
+            "ipAddress": row.get("ip_address"),
+            "reason": row.get("reason") or "",
+            "createdAt": row.get("created_at"),
+        }
+        for row in rows
+    ]
+
+
+def is_ip_banned(ip_address: str) -> bool:
+    placeholder = db_placeholder()
+    rows = db_query(f"SELECT ip_address FROM banned_ips WHERE ip_address = {placeholder}", (ip_address[:80],))
+    return bool(rows)
+
+
+def ban_ip(ip_address: str, reason: str = "") -> None:
+    ip_address = ip_address.strip()[:80]
+    if not ip_address:
+        raise ValueError("IP address is required.")
+    reason = reason.strip()[:500]
+    if database_provider() == "mysql":
+        db_execute(
+            "INSERT INTO banned_ips (ip_address, reason, created_at) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE reason = VALUES(reason)",
+            (ip_address, reason, utc_iso()),
+        )
+    else:
+        db_execute(
+            "INSERT OR REPLACE INTO banned_ips (ip_address, reason, created_at) VALUES (?, ?, ?)",
+            (ip_address, reason, utc_iso()),
+        )
+
+
+def unban_ip(ip_address: str) -> None:
+    placeholder = db_placeholder()
+    db_execute(f"DELETE FROM banned_ips WHERE ip_address = {placeholder}", (ip_address.strip()[:80],))
+
+
+def last_user_messages(chat: list[dict], current_message: str) -> list[str]:
+    messages: list[str] = []
+    for item in chat:
+        if item.get("role") == "user" and isinstance(item.get("content"), str):
+            value = item["content"].strip()
+            if value:
+                messages.append(value[:1200])
+    if current_message and (not messages or messages[-1] != current_message):
+        messages.append(current_message[:1200])
+    return messages[-5:]
+
+
+def record_blocked_attempt(ip_address: str, message: str, chat: list[dict]) -> None:
+    context = last_user_messages(chat, message)
+    placeholder = db_placeholder()
+    db_execute(
+        f"INSERT INTO blocked_attempts (created_at, ip_address, message, context_json) VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder})",
+        (utc_iso(), ip_address[:80], message[:2000], json.dumps(context)),
+    )
+
+
+def safe_record_blocked_attempt(ip_address: str, message: str, chat: list[dict]) -> None:
+    try:
+        record_blocked_attempt(ip_address, message, chat)
+    except Exception:
+        pass
+
+
+def blocked_attempts(include_all: bool = False) -> list[dict]:
+    sql = "SELECT id, created_at, ip_address, message, context_json FROM blocked_attempts ORDER BY created_at DESC"
+    if not include_all:
+        sql += " LIMIT 20"
+    rows = db_query(sql)
+    attempts = []
+    for row in rows:
+        try:
+            context = json.loads(row.get("context_json") or "[]")
+        except Exception:
+            context = []
+        attempts.append(
+            {
+                "id": row.get("id"),
+                "createdAt": row.get("created_at"),
+                "ipAddress": row.get("ip_address"),
+                "message": row.get("message") or "",
+                "context": context[-5:],
+            }
+        )
+    return attempts
+
+
+def admin_secret() -> str:
+    return os.getenv("AETHER_ADMIN_SECRET", "").strip()
+
+
+def request_admin_secret() -> str:
+    header_secret = request.headers.get("X-Aether-Admin-Secret", "").strip()
+    if header_secret:
+        return header_secret
+    query_secret = request.args.get("adminSecret", "").strip()
+    if query_secret:
+        return query_secret
+    payload = request.get_json(silent=True) if request.is_json else None
+    if isinstance(payload, dict):
+        return str(payload.get("adminSecret", "")).strip()
+    return ""
+
+
+def require_admin():
+    secret = admin_secret()
+    if not secret:
+        return jsonify({"error": "Admin is not configured. Set AETHER_ADMIN_SECRET in Wasmer."}), 403
+    if request_admin_secret() != secret:
+        return jsonify({"error": "Admin access denied."}), 403
+    return None
+
+
+def admin_status(include_all_blocked: bool = False) -> dict:
+    ensure_admin_db()
+    return {
+        "admin": True,
+        "aetherAvailable": is_aether_available(),
+        "rateLimit": rate_limit_status(),
+        "requestCounts": request_counts(),
+        "bannedIps": banned_ips(),
+        "blockedAttempts": blocked_attempts(include_all_blocked),
+        "database": database_summary(),
+    }
 
 
 def groq_api_keys() -> list[str]:
@@ -349,7 +712,12 @@ def chat_response(payload: dict, ip_address: str) -> dict:
     location = payload.get("location")
     if not message:
         return {"reply": "Send a message first."}
+    if not is_aether_available():
+        return {"reply": "Aether is currently unavailable.", "aetherUnavailable": True}
+    if is_ip_banned(ip_address):
+        return {"reply": "Aether is currently unavailable for this network.", "ipBanned": True}
     if contains_profanity(message):
+        safe_record_blocked_attempt(ip_address, message, chat)
         return {"reply": PROFANITY_BLOCK_MESSAGE, "profanityBlocked": True}
     if looks_like_location_time_request(message) and not location:
         return {"reply": "Accept Aether's permission to view your location to see what timezone you are in."}
@@ -376,7 +744,7 @@ def chat_response(payload: dict, ip_address: str) -> dict:
 def add_cors_headers(response):
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Aether-Admin-Secret"
     return response
 
 
@@ -394,7 +762,72 @@ def api_status():
     )
 
 
-@app.route("/api/admin/status", methods=["GET", "POST", "OPTIONS"])
+@app.route("/api/admin/status", methods=["GET", "OPTIONS"])
+def api_admin_status():
+    if request.method == "OPTIONS":
+        return ("", 204)
+    denied = require_admin()
+    if denied:
+        return denied
+    include_all = request.args.get("all") == "1"
+    return jsonify(admin_status(include_all))
+
+
+@app.post("/api/admin/availability")
+def api_admin_availability():
+    denied = require_admin()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True)
+    available = bool(isinstance(payload, dict) and payload.get("available"))
+    set_aether_available(available)
+    return jsonify(admin_status())
+
+
+@app.post("/api/admin/reset-rate-limit")
+def api_admin_reset_rate_limit():
+    denied = require_admin()
+    if denied:
+        return denied
+    reset_global_rate_limit()
+    return jsonify(admin_status())
+
+
+@app.post("/api/admin/ban-ip")
+def api_admin_ban_ip():
+    denied = require_admin()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    ban_ip(str(payload.get("ipAddress", "")), str(payload.get("reason", "")))
+    return jsonify(admin_status())
+
+
+@app.post("/api/admin/unban-ip")
+def api_admin_unban_ip():
+    denied = require_admin()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    unban_ip(str(payload.get("ipAddress", "")))
+    return jsonify(admin_status())
+
+
+@app.route("/api/admin/blocked-attempts", methods=["GET", "OPTIONS"])
+def api_admin_blocked_attempts():
+    if request.method == "OPTIONS":
+        return ("", 204)
+    denied = require_admin()
+    if denied:
+        return denied
+    include_all = request.args.get("all") == "1"
+    return jsonify({"blockedAttempts": blocked_attempts(include_all)})
+
+
 @app.route("/api/report", methods=["GET", "POST", "OPTIONS"])
 def removed_endpoints():
     return jsonify({"error": "Not found"}), 404
@@ -407,6 +840,7 @@ def api_chat():
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
             payload = {}
+        safe_record_request_event(ip_address)
         return jsonify(chat_response(payload, ip_address))
     except APIStatusError as exc:
         return jsonify({"reply": groq_error_message(exc)})

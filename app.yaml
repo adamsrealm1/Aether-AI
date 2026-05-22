@@ -6,6 +6,12 @@ env:
   PYTHONEXECUTABLE: /bin/python
   PYTHONPATH: /app
   AETHER_GROQ_MODELS: openai/gpt-oss-120b,llama-3.1-8b-instant,qwen/qwen3-32b
+capabilities:
+  database:
+    engine: mysql
+locality:
+  regions:
+  - us-socal1
 cli_args:
 - -m
 - flask
