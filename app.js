@@ -253,7 +253,7 @@ function renderChatPage(chat) {
             <div class="composer-highlights" aria-hidden="true">${renderHighlightedComposerText(Aether.state.composerDraft)}</div>
             <textarea name="message" autocomplete="off" rows="1" placeholder="Send a message here." spellcheck="true">${escapeHtml(Aether.state.composerDraft)}</textarea>
           </div>
-          <button class="voice-button ${Aether.state.voiceListening ? "listening" : ""}" type="button" data-action="voice-input" aria-label="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}" aria-pressed="${Aether.state.voiceListening ? "true" : "false"}" title="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}"${Aether.state.thinking ? " disabled" : ""}>Mic</button>
+          <button class="voice-button ${Aether.state.voiceListening ? "listening" : ""}" type="button" data-action="voice-input" aria-label="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}" aria-pressed="${Aether.state.voiceListening ? "true" : "false"}" title="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}"${Aether.state.thinking ? " disabled" : ""}>🎙️</button>
           <button type="submit">Send</button>
         </form>
         <p class="composer-note">Aether can make mistakes. Check important info.</p>
