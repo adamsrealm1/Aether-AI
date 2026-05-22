@@ -752,7 +752,11 @@ def chat_response(payload: dict, ip_address: str) -> dict:
     if not message:
         return {"reply": "Send a message first."}
     if not is_aether_available():
-        return {"reply": "Aether is unavailable as of this moment, you may return in 10 minutes to 1 day and try again.", "aetherUnavailable": True}
+        return {
+            "aetherUnavailable": True,
+            "aetherAvailable": False,
+            "rateLimit": rate_limit_status(ip_address),
+        }
     if is_ip_banned(ip_address):
         return {"reply": "You can not use Aether because you are currently IP banned, you can try again later and see if you are unbanned. Thank you.", "ipBanned": True}
     if contains_profanity(message):
@@ -796,6 +800,7 @@ def index():
 def api_status():
     return jsonify(
         {
+            "aetherAvailable": is_aether_available(),
             "rateLimit": rate_limit_status(client_ip()),
         }
     )

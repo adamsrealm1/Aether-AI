@@ -27,6 +27,7 @@
       targetPercent: 100,
     },
     serverOnline: false,
+    aetherAvailable: true,
     adminView: false,
     adminSecret: "",
     adminStatus: null,
@@ -238,6 +239,9 @@ function render() {
 }
 
 function renderChatPage(chat) {
+  const unavailable = Aether.state.aetherAvailable === false;
+  const composerPlaceholder = unavailable ? "Aether AI is currently unavailable" : "Send a message here.";
+  const composerDisabled = unavailable || Aether.state.thinking;
   return `
     <main class="chat-page">
       <div class="animated-bg" aria-hidden="true"></div>
@@ -251,7 +255,7 @@ function renderChatPage(chat) {
         </div>
         <div class="topbar-actions">
           <button class="secondary-button" data-action="rename-chat">Rename</button>
-          <button class="secondary-button" data-action="regenerate-last">Resend last</button>
+          <button class="secondary-button" data-action="regenerate-last"${unavailable ? " disabled" : ""}>Resend last</button>
         </div>
       </header>
       <div class="messages" id="messages">
@@ -259,13 +263,13 @@ function renderChatPage(chat) {
         ${Aether.state.thinking ? renderThinking() : ""}
       </div>
       <div class="composer-area">
-        <form class="composer" data-action="send-message">
+        <form class="composer${unavailable ? " unavailable" : ""}" data-action="send-message">
           <div class="composer-input-wrap">
             <div class="composer-highlights" aria-hidden="true">${renderHighlightedComposerText(Aether.state.composerDraft)}</div>
-            <textarea name="message" autocomplete="off" rows="1" placeholder="Send a message here." spellcheck="true">${escapeHtml(Aether.state.composerDraft)}</textarea>
+            <textarea name="message" autocomplete="off" rows="1" placeholder="${escapeHtml(composerPlaceholder)}" spellcheck="true"${unavailable ? " disabled" : ""}>${escapeHtml(Aether.state.composerDraft)}</textarea>
           </div>
-          <button class="voice-button ${Aether.state.voiceListening ? "listening" : ""}" type="button" data-action="voice-input" aria-label="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}" aria-pressed="${Aether.state.voiceListening ? "true" : "false"}" title="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}"${Aether.state.thinking ? " disabled" : ""}>🎙️</button>
-          <button type="submit">Send</button>
+          <button class="voice-button ${Aether.state.voiceListening ? "listening" : ""}" type="button" data-action="voice-input" aria-label="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}" aria-pressed="${Aether.state.voiceListening ? "true" : "false"}" title="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}"${composerDisabled ? " disabled" : ""}>🎙️</button>
+          <button type="submit"${composerDisabled ? " disabled" : ""}>Send</button>
         </form>
         <p class="composer-note">Aether can make mistakes. Double check important info.</p>
       </div>
@@ -788,6 +792,7 @@ function renderHighlightedComposerText(text) {
 async function sendMessage(event) {
   event.preventDefault();
   if (Aether.state.thinking) return;
+  if (!isAetherAvailable()) return;
   stopVoiceInput({ keepDraft: true });
 
   const form = event.currentTarget;
@@ -813,6 +818,7 @@ async function sendMessage(event) {
 
 async function sendTextMessage(text, options = {}) {
   if (Aether.state.thinking) return;
+  if (!isAetherAvailable()) return;
   if (isRateLimited()) {
     Aether.state.rateLimitPopup = true;
     render();
@@ -873,6 +879,7 @@ function speechRecognitionConstructor() {
 
 function toggleVoiceInput() {
   if (Aether.state.thinking) return;
+  if (!isAetherAvailable()) return;
   if (Aether.state.voiceListening) {
     stopVoiceInput({ keepDraft: true });
     return;
@@ -1072,7 +1079,12 @@ async function fetchAssistantReply(text, location = null) {
           render();
           return "";
         }
+        if (data.aetherUnavailable) {
+          applyServerStatus({ ...data, aetherAvailable: false });
+          return "";
+        }
         if (data.reply) return data.reply;
+        return "";
       } catch (error) {
         await wait(retryDelayMs);
         retryDelayMs = nextRetryDelay(retryDelayMs);
@@ -1107,9 +1119,28 @@ function isRateLimited() {
   return Boolean(rate && Number(rate.remaining) <= 0);
 }
 
+function isAetherAvailable() {
+  return Aether.state.aetherAvailable !== false;
+}
+
 function applyServerStatus(data) {
+  if (Object.prototype.hasOwnProperty.call(data, "aetherAvailable")) {
+    setAetherAvailability(data.aetherAvailable !== false);
+  }
   if (data.rateLimit) {
     updateRateLimit(data.rateLimit);
+  }
+}
+
+function setAetherAvailability(available) {
+  const nextAvailable = available !== false;
+  const changed = Aether.state.aetherAvailable !== nextAvailable;
+  Aether.state.aetherAvailable = nextAvailable;
+  if (!nextAvailable) {
+    stopVoiceInput({ keepDraft: true, silent: true });
+  }
+  if (changed && !Aether.state.adminView) {
+    render();
   }
 }
 
@@ -1132,7 +1163,7 @@ function updateServerStatusDom() {
 
 function startServerStatusPolling() {
   if (serverStatusTimer) clearInterval(serverStatusTimer);
-  serverStatusTimer = setInterval(pingServerStatus, 15000);
+  serverStatusTimer = setInterval(pingServerStatus, 2000);
 }
 
 async function pingServerStatus() {
@@ -1320,6 +1351,9 @@ async function loadAdminStatus(options = {}) {
       throw new Error(data.error || `Admin request failed with HTTP ${response.status}`);
     }
     Aether.state.adminStatus = data;
+    if (Object.prototype.hasOwnProperty.call(data, "aetherAvailable")) {
+      setAetherAvailability(data.aetherAvailable !== false);
+    }
     if (data.rateLimit) updateRateLimit(data.rateLimit);
     Aether.state.adminError = "";
   } catch (error) {
@@ -1350,6 +1384,9 @@ async function adminRequest(path, options = {}) {
       throw new Error(data.error || `Admin request failed with HTTP ${response.status}`);
     }
     Aether.state.adminStatus = data;
+    if (Object.prototype.hasOwnProperty.call(data, "aetherAvailable")) {
+      setAetherAvailability(data.aetherAvailable !== false);
+    }
     if (data.rateLimit) updateRateLimit(data.rateLimit);
     Aether.state.adminError = "";
     return data;
@@ -2497,6 +2534,10 @@ function injectStyles() {
       background: rgba(5, 10, 20, 0.92);
       box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
     }
+    .composer.unavailable {
+      border-color: rgba(148, 163, 184, 0.22);
+      background: rgba(15, 23, 42, 0.72);
+    }
     .composer-input-wrap {
       position: relative;
       min-height: 42px;
@@ -2544,6 +2585,11 @@ function injectStyles() {
     .composer textarea::placeholder {
       color: rgba(219, 234, 254, 0.52);
     }
+    .composer textarea:disabled {
+      cursor: not-allowed;
+      opacity: 1;
+      caret-color: transparent;
+    }
     .composer button {
       min-width: 76px;
       min-height: 42px;
@@ -2572,10 +2618,25 @@ function injectStyles() {
       cursor: not-allowed;
       transform: none;
     }
+    .composer button:disabled {
+      opacity: 0.48;
+      cursor: not-allowed;
+      transform: none;
+    }
     .composer button:hover, .composer button:focus-visible {
       background: #a7f3d0;
       outline: none;
       transform: translateY(-1px);
+    }
+    .composer button:disabled:hover,
+    .composer button:disabled:focus-visible {
+      background: #bfdbfe;
+      outline: none;
+      transform: none;
+    }
+    .composer .voice-button:disabled:hover,
+    .composer .voice-button:disabled:focus-visible {
+      background: rgba(148, 163, 184, 0.16);
     }
     @keyframes micPulse {
       0%, 100% {
