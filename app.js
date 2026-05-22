@@ -36,6 +36,8 @@ let serverStatusTimer = null;
 let voiceRecognition = null;
 let voiceSilenceTimer = null;
 let voiceBaseDraft = "";
+let voiceFinalTranscript = "";
+let voiceFinalResultIndexes = new Set();
 let voiceTranscript = "";
 let voiceAutoSending = false;
 const thoughtTimerTimeouts = new Map();
@@ -256,7 +258,7 @@ function renderChatPage(chat) {
           <button class="voice-button ${Aether.state.voiceListening ? "listening" : ""}" type="button" data-action="voice-input" aria-label="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}" aria-pressed="${Aether.state.voiceListening ? "true" : "false"}" title="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}"${Aether.state.thinking ? " disabled" : ""}>🎙️</button>
           <button type="submit">Send</button>
         </form>
-        <p class="composer-note">Aether can make mistakes. Check important info.</p>
+        <p class="composer-note">Aether can make mistakes. Double check important info.</p>
       </div>
     </main>
   `;
@@ -657,6 +659,8 @@ function startVoiceInput() {
 
   stopVoiceInput({ keepDraft: true, silent: true });
   voiceBaseDraft = input.value.trim();
+  voiceFinalTranscript = "";
+  voiceFinalResultIndexes = new Set();
   voiceTranscript = "";
   voiceAutoSending = false;
   voiceRecognition = new Recognition();
@@ -693,13 +697,26 @@ function startVoiceInput() {
 }
 
 function handleVoiceResult(event) {
-  let transcript = "";
-  for (let index = 0; index < event.results.length; index += 1) {
-    transcript += event.results[index][0]?.transcript || "";
+  let interimTranscript = "";
+  for (let index = event.resultIndex || 0; index < event.results.length; index += 1) {
+    const result = event.results[index];
+    const phrase = String(result[0]?.transcript || "").trim();
+    if (!phrase) continue;
+    if (result.isFinal) {
+      if (voiceFinalResultIndexes.has(index)) continue;
+      voiceFinalResultIndexes.add(index);
+      voiceFinalTranscript = joinVoiceText(voiceFinalTranscript, phrase);
+    } else {
+      interimTranscript = joinVoiceText(interimTranscript, phrase);
+    }
   }
-  voiceTranscript = transcript.trim();
+  voiceTranscript = joinVoiceText(voiceFinalTranscript, interimTranscript);
   applyVoiceTranscript();
   scheduleVoiceAutoSend();
+}
+
+function joinVoiceText(...parts) {
+  return parts.map((part) => String(part || "").trim()).filter(Boolean).join(" ");
 }
 
 function applyVoiceTranscript() {
@@ -746,6 +763,8 @@ function stopVoiceInput(options = {}) {
     }
   }
   voiceBaseDraft = options.keepDraft ? Aether.state.composerDraft : "";
+  voiceFinalTranscript = "";
+  voiceFinalResultIndexes = new Set();
   voiceTranscript = "";
   Aether.state.voiceListening = false;
   updateVoiceButtonDom();
