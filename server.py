@@ -1,8 +1,11 @@
 ﻿from __future__ import annotations
 
 import json
+import hashlib
+import hmac
 import os
 import re
+import secrets
 import sqlite3
 import urllib.error
 import urllib.parse
@@ -17,6 +20,9 @@ ROOT = Path(__file__).resolve().parent
 PROFANITY_BLOCK_MESSAGE = "You cant send Aether a message with profanity in it. You can try again without profanity in your message."
 DEFAULT_RATE_LIMIT = 300
 DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60
+SESSION_COOKIE_NAME = "aether_session"
+SESSION_LIFETIME_DAYS = 30
+PASSWORD_HASH_ITERATIONS = 260000
 RATE_LIMITS: dict[str, dict] = {}
 DB_INITIALIZED = False
 app = Flask(__name__, static_folder=str(ROOT), static_url_path="")
@@ -235,6 +241,29 @@ def ensure_admin_db() -> None:
               context_json TEXT NOT NULL
             ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
             """,
+            """
+            CREATE TABLE IF NOT EXISTS accounts (
+              id BIGINT AUTO_INCREMENT PRIMARY KEY,
+              username VARCHAR(32) NOT NULL,
+              username_lc VARCHAR(32) NOT NULL UNIQUE,
+              password_hash TEXT NOT NULL,
+              created_at VARCHAR(40) NOT NULL,
+              updated_at VARCHAR(40) NOT NULL,
+              last_login_at VARCHAR(40)
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS account_sessions (
+              id BIGINT AUTO_INCREMENT PRIMARY KEY,
+              account_id BIGINT NOT NULL,
+              token_hash VARCHAR(128) NOT NULL UNIQUE,
+              created_at VARCHAR(40) NOT NULL,
+              expires_at VARCHAR(40) NOT NULL,
+              last_seen_at VARCHAR(40) NOT NULL,
+              ip_address VARCHAR(80),
+              user_agent VARCHAR(255)
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+            """,
             "CREATE INDEX idx_request_events_created_at ON request_events (created_at)",
             "CREATE INDEX idx_blocked_attempts_created_at ON blocked_attempts (created_at)",
         ]
@@ -268,6 +297,29 @@ def ensure_admin_db() -> None:
               ip_address TEXT NOT NULL,
               message TEXT NOT NULL,
               context_json TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS accounts (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              username TEXT NOT NULL,
+              username_lc TEXT NOT NULL UNIQUE,
+              password_hash TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              last_login_at TEXT
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS account_sessions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              account_id INTEGER NOT NULL,
+              token_hash TEXT NOT NULL UNIQUE,
+              created_at TEXT NOT NULL,
+              expires_at TEXT NOT NULL,
+              last_seen_at TEXT NOT NULL,
+              ip_address TEXT,
+              user_agent TEXT
             )
             """,
             "CREATE INDEX IF NOT EXISTS idx_request_events_created_at ON request_events (created_at)",
@@ -492,6 +544,249 @@ def blocked_attempts(include_all: bool = False) -> list[dict]:
     return attempts
 
 
+def normalize_username(username: object) -> str:
+    return re.sub(r"\s+", "", str(username or "").strip())[:32]
+
+
+def validate_username(username: str) -> str:
+    username = normalize_username(username)
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{3,24}", username):
+        raise ValueError("Username must be 3-24 characters and use letters, numbers, dots, dashes, or underscores.")
+    return username
+
+
+def validate_password(password: object) -> str:
+    password = str(password or "")
+    if len(password) < 8:
+        raise ValueError("Password must be at least 8 characters.")
+    if len(password) > 128:
+        raise ValueError("Password must be 128 characters or fewer.")
+    return password
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PASSWORD_HASH_ITERATIONS)
+    return f"pbkdf2_sha256${PASSWORD_HASH_ITERATIONS}${salt.hex()}${digest.hex()}"
+
+
+def verify_password(password: object, stored_hash: object) -> bool:
+    try:
+        algorithm, iterations, salt_hex, digest_hex = str(stored_hash or "").split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        expected = hashlib.pbkdf2_hmac(
+            "sha256",
+            str(password or "").encode("utf-8"),
+            bytes.fromhex(salt_hex),
+            int(iterations),
+        ).hex()
+        return hmac.compare_digest(expected, digest_hex)
+    except Exception:
+        return False
+
+
+def account_public(row: dict | None) -> dict | None:
+    if not row:
+        return None
+    return {
+        "id": row.get("id"),
+        "username": row.get("username") or "",
+        "createdAt": row.get("created_at"),
+        "lastLoginAt": row.get("last_login_at"),
+    }
+
+
+def find_account_by_username(username: str) -> dict | None:
+    placeholder = db_placeholder()
+    rows = db_query(f"SELECT id, username, username_lc, password_hash, created_at, updated_at, last_login_at FROM accounts WHERE username_lc = {placeholder}", (username.lower(),))
+    return rows[0] if rows else None
+
+
+def find_account_by_id(account_id: object) -> dict | None:
+    placeholder = db_placeholder()
+    rows = db_query(f"SELECT id, username, username_lc, password_hash, created_at, updated_at, last_login_at FROM accounts WHERE id = {placeholder}", (account_id,))
+    return rows[0] if rows else None
+
+
+def create_account(username: object, password: object) -> dict:
+    username = validate_username(username)
+    password = validate_password(password)
+    if find_account_by_username(username):
+        raise ValueError("That username is already taken.")
+
+    placeholder = db_placeholder()
+    now = utc_iso()
+    db_execute(
+        f"INSERT INTO accounts (username, username_lc, password_hash, created_at, updated_at) VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})",
+        (username, username.lower(), hash_password(password), now, now),
+    )
+    account = find_account_by_username(username)
+    if not account:
+        raise ValueError("Account could not be created.")
+    return account
+
+
+def update_account_username(account_id: object, username: object) -> dict:
+    username = validate_username(username)
+    existing = find_account_by_username(username)
+    if existing and str(existing.get("id")) != str(account_id):
+        raise ValueError("That username is already taken.")
+
+    placeholder = db_placeholder()
+    db_execute(
+        f"UPDATE accounts SET username = {placeholder}, username_lc = {placeholder}, updated_at = {placeholder} WHERE id = {placeholder}",
+        (username, username.lower(), utc_iso(), account_id),
+    )
+    account = find_account_by_id(account_id)
+    if not account:
+        raise ValueError("Account was not found.")
+    return account
+
+
+def update_account_password(account_id: object, current_password: object, new_password: object) -> None:
+    account = find_account_by_id(account_id)
+    if not account or not verify_password(current_password, account.get("password_hash")):
+        raise ValueError("Current password is incorrect.")
+    new_password = validate_password(new_password)
+    placeholder = db_placeholder()
+    db_execute(
+        f"UPDATE accounts SET password_hash = {placeholder}, updated_at = {placeholder} WHERE id = {placeholder}",
+        (hash_password(new_password), utc_iso(), account_id),
+    )
+    db_execute(f"DELETE FROM account_sessions WHERE account_id = {placeholder}", (account_id,))
+
+
+def delete_account(account_id: object) -> None:
+    placeholder = db_placeholder()
+    db_execute(f"DELETE FROM account_sessions WHERE account_id = {placeholder}", (account_id,))
+    db_execute(f"DELETE FROM accounts WHERE id = {placeholder}", (account_id,))
+
+
+def account_summaries() -> list[dict]:
+    rows = db_query("SELECT id, username, created_at, updated_at, last_login_at FROM accounts ORDER BY created_at DESC")
+    return [
+        {
+            "id": row.get("id"),
+            "username": row.get("username") or "",
+            "createdAt": row.get("created_at"),
+            "updatedAt": row.get("updated_at"),
+            "lastLoginAt": row.get("last_login_at"),
+        }
+        for row in rows
+    ]
+
+
+def session_token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def request_session_token() -> str:
+    cookie_token = request.cookies.get(SESSION_COOKIE_NAME, "").strip()
+    if cookie_token:
+        return cookie_token
+    authorization = request.headers.get("Authorization", "").strip()
+    if authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+    return ""
+
+
+def create_account_session(account_id: object, ip_address: str, user_agent: str) -> str:
+    token = secrets.token_urlsafe(32)
+    now = utc_now()
+    expires_at = now + timedelta(days=SESSION_LIFETIME_DAYS)
+    placeholder = db_placeholder()
+    db_execute(
+        f"INSERT INTO account_sessions (account_id, token_hash, created_at, expires_at, last_seen_at, ip_address, user_agent) VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})",
+        (
+            account_id,
+            session_token_hash(token),
+            now.isoformat(),
+            expires_at.isoformat(),
+            now.isoformat(),
+            ip_address[:80],
+            user_agent[:255],
+        ),
+    )
+    db_execute(f"UPDATE accounts SET last_login_at = {placeholder}, updated_at = {placeholder} WHERE id = {placeholder}", (now.isoformat(), now.isoformat(), account_id))
+    return token
+
+
+def delete_account_session(token: str) -> None:
+    if not token:
+        return
+    placeholder = db_placeholder()
+    db_execute(f"DELETE FROM account_sessions WHERE token_hash = {placeholder}", (session_token_hash(token),))
+
+
+def current_account() -> dict | None:
+    token = request_session_token()
+    if not token:
+        return None
+
+    placeholder = db_placeholder()
+    rows = db_query(
+        (
+            "SELECT accounts.id, accounts.username, accounts.username_lc, accounts.password_hash, "
+            "accounts.created_at, accounts.updated_at, accounts.last_login_at, account_sessions.expires_at "
+            f"FROM account_sessions JOIN accounts ON accounts.id = account_sessions.account_id WHERE account_sessions.token_hash = {placeholder}"
+        ),
+        (session_token_hash(token),),
+    )
+    if not rows:
+        return None
+
+    row = rows[0]
+    if parse_utc(row.get("expires_at")) <= utc_now():
+        delete_account_session(token)
+        return None
+    return row
+
+
+def account_auth_status() -> dict:
+    account = account_public(current_account())
+    return {"signedIn": bool(account), "account": account}
+
+
+def cookie_is_secure() -> bool:
+    forwarded_proto = request.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip().lower()
+    host = request.host.split(":", 1)[0].strip().lower()
+    if host in {"127.0.0.1", "localhost", "::1"}:
+        return False
+    return request.is_secure or forwarded_proto == "https" or bool(host)
+
+
+def set_session_cookie(response, token: str) -> None:
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        token,
+        max_age=SESSION_LIFETIME_DAYS * 24 * 60 * 60,
+        httponly=True,
+        secure=cookie_is_secure(),
+        samesite="Lax",
+        path="/",
+    )
+
+
+def clear_session_cookie(response) -> None:
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        "",
+        max_age=0,
+        httponly=True,
+        secure=cookie_is_secure(),
+        samesite="Lax",
+        path="/",
+    )
+
+
+def account_response(account: dict | None = None, extra: dict | None = None):
+    payload = account_auth_status() if account is None else {"signedIn": True, "account": account_public(account)}
+    if extra:
+        payload.update(extra)
+    return jsonify(payload)
+
+
 def admin_secret() -> str:
     return os.getenv("AETHER_ADMIN_SECRET", "").strip()
 
@@ -527,6 +822,7 @@ def admin_status(include_all_blocked: bool = False) -> dict:
         "requestCounts": request_counts(),
         "bannedIps": banned_ips(),
         "blockedAttempts": blocked_attempts(include_all_blocked),
+        "accounts": account_summaries(),
         "database": database_summary(),
     }
 
@@ -632,10 +928,10 @@ def groq_reply(message: str, chat: list[dict]) -> str:
             "content": (
                 "You are Aether, a friendly AI model on a website. "
                 f"The user's current system time is {now}. "
-                "Always be friendly. Keep responses as helpful as possible while still answering clearly. "
+                "Be friendly. Respond as helpful as possible and be respectful. "
                 "Never mention GPT, ChatGPT, OpenAI, AI, providers, sources, tokens, API calls, "
-                "models, or implementation details. Reply in plain text only. Do not use Markdown syntax. "
-                "Do not use bold, italics, headings, tables, code fences, bullet markdown, or asterisks for emphasis."
+                "models, or implementation details."
+                "Keep responses medium length."
             ),
         }
     ]
@@ -786,8 +1082,8 @@ def chat_response(payload: dict, ip_address: str) -> dict:
 @app.after_request
 def add_cors_headers(response):
     response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Aether-Admin-Secret"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Aether-Admin-Secret, Authorization"
     return response
 
 
@@ -801,9 +1097,105 @@ def api_status():
     return jsonify(
         {
             "aetherAvailable": is_aether_available(),
+            **account_auth_status(),
             "rateLimit": rate_limit_status(client_ip()),
         }
     )
+
+
+@app.get("/api/account/session")
+def api_account_session():
+    return account_response()
+
+
+@app.post("/api/account/create")
+def api_account_create():
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    try:
+        account = create_account(payload.get("username"), payload.get("password"))
+        token = create_account_session(account.get("id"), client_ip(), request.headers.get("User-Agent", ""))
+        response = account_response(account, {"message": "Account created."})
+        set_session_cookie(response, token)
+        return response
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/account/signin")
+def api_account_signin():
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    username = normalize_username(payload.get("username"))
+    password = str(payload.get("password") or "")
+    account = find_account_by_username(username) if username else None
+    if not account or not verify_password(password, account.get("password_hash")):
+        return jsonify({"error": "Username or password is incorrect."}), 401
+
+    token = create_account_session(account.get("id"), client_ip(), request.headers.get("User-Agent", ""))
+    response = account_response(account, {"message": "Signed in."})
+    set_session_cookie(response, token)
+    return response
+
+
+@app.post("/api/account/signout")
+def api_account_signout():
+    delete_account_session(request_session_token())
+    response = jsonify({"signedIn": False, "account": None, "message": "Signed out."})
+    clear_session_cookie(response)
+    return response
+
+
+@app.post("/api/account/username")
+def api_account_username():
+    account = current_account()
+    if not account:
+        return jsonify({"error": "Sign in first."}), 401
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    try:
+        account = update_account_username(account.get("id"), payload.get("username"))
+        return account_response(account, {"message": "Username updated."})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/account/password")
+def api_account_password():
+    account = current_account()
+    if not account:
+        return jsonify({"error": "Sign in first."}), 401
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    try:
+        update_account_password(account.get("id"), payload.get("currentPassword"), payload.get("newPassword"))
+        token = create_account_session(account.get("id"), client_ip(), request.headers.get("User-Agent", ""))
+        account = find_account_by_id(account.get("id"))
+        response = account_response(account, {"message": "Password updated."})
+        set_session_cookie(response, token)
+        return response
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.delete("/api/account")
+def api_account_delete():
+    account = current_account()
+    if not account:
+        return jsonify({"error": "Sign in first."}), 401
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    if not verify_password(payload.get("password"), account.get("password_hash")):
+        return jsonify({"error": "Password is incorrect."}), 400
+    delete_account(account.get("id"))
+    response = jsonify({"signedIn": False, "account": None, "message": "Account deleted."})
+    clear_session_cookie(response)
+    return response
 
 
 @app.route("/api/admin/status", methods=["GET", "OPTIONS"])
@@ -870,6 +1262,21 @@ def api_admin_unban_ip():
     if not isinstance(payload, dict):
         payload = {}
     unban_ip(str(payload.get("ipAddress", "")))
+    return jsonify(admin_status())
+
+
+@app.post("/api/admin/delete-account")
+def api_admin_delete_account():
+    denied = require_admin()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    account_id = payload.get("accountId")
+    if not find_account_by_id(account_id):
+        return jsonify({"error": "Account was not found."}), 404
+    delete_account(account_id)
     return jsonify(admin_status())
 
 

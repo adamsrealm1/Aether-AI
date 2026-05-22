@@ -28,6 +28,15 @@
     },
     serverOnline: false,
     aetherAvailable: true,
+    signedIn: false,
+    account: null,
+    authModal: false,
+    authMode: "signin",
+    authLoading: false,
+    authError: "",
+    accountModal: false,
+    accountLoading: false,
+    accountError: "",
     adminView: false,
     adminSecret: "",
     adminStatus: null,
@@ -218,6 +227,7 @@ function render() {
           </span>
         </button>
         <button class="new-chat" data-action="new-chat">+ New conversation</button>
+        ${renderAccountSidebarButton()}
         <button class="admin-tab ${Aether.state.adminView ? "active" : ""}" data-action="admin-tab">Admin</button>
         <input class="sidebar-search" data-action="sidebar-search" autocomplete="off" placeholder="Search conversations" value="${escapeHtml(Aether.state.sidebarSearch)}">
         <div class="chat-list">
@@ -229,6 +239,8 @@ function render() {
       ${Aether.state.adminView ? renderAdminPage() : renderChatPage(chat)}
       ${renderProfanityPopup()}
       ${renderRateLimitPopup()}
+      ${renderAuthModal()}
+      ${renderAccountModal()}
       ${renderToast()}
     </div>
   `;
@@ -236,6 +248,21 @@ function render() {
   bindEvents(root);
   observeMessageVisibility();
   scrollChatToBottom();
+}
+
+function renderAccountSidebarButton() {
+  if (Aether.state.signedIn && Aether.state.account) {
+    return `
+      <button class="account-tab signed-in" data-action="account-tab">
+        <span class="account-avatar">${escapeHtml(accountInitials(Aether.state.account.username))}</span>
+        <span class="account-tab-copy">
+          <strong>${escapeHtml(Aether.state.account.username)}</strong>
+          <small>Account</small>
+        </span>
+      </button>
+    `;
+  }
+  return `<button class="account-tab" data-action="signin-tab">Sign in</button>`;
 }
 
 function renderChatPage(chat) {
@@ -282,6 +309,7 @@ function renderAdminPage() {
   const counts = status.requestCounts || { minute: 0, hour: 0, day: 0 };
   const database = status.database || {};
   const rate = status.rateLimit || Aether.state.rateLimit || {};
+  const accounts = status.accounts || [];
   const available = status.aetherAvailable !== false;
   const locked = !Aether.state.adminSecret;
 
@@ -347,6 +375,7 @@ function renderAdminPage() {
             ${renderBanIpPanel(status.bannedIps || [])}
             ${renderBlockedAttemptsPanel(status.blockedAttempts || [])}
           </section>
+          ${renderAdminAccountsPanel(accounts)}
         `}
       </div>
     </main>
@@ -414,6 +443,28 @@ function renderBlockedAttemptsPanel(attempts) {
         `).join("") || `<div class="admin-empty">No blocked attempts.</div>`}
       </div>
       <button class="secondary-button show-all-button" data-action="admin-show-all"${Aether.state.blockedAttemptsExpanded ? " disabled" : ""}>Show all</button>
+    </section>
+  `;
+}
+
+function renderAdminAccountsPanel(accounts) {
+  return `
+    <section class="admin-panel account-admin-panel">
+      <div class="admin-panel-head">
+        <h2>Accounts</h2>
+        <span>${accounts.length}</span>
+      </div>
+      <div class="admin-list account-admin-list">
+        ${accounts.map((account) => `
+          <div class="admin-list-item account-admin-item">
+            <div>
+              <strong>${escapeHtml(account.username || "")}</strong>
+              <small>Created ${escapeHtml(formatAdminDate(account.createdAt))} - Last login ${escapeHtml(formatAdminDate(account.lastLoginAt))}</small>
+            </div>
+            <button class="danger-button" data-admin-delete-account="${escapeHtml(account.id || "")}"${Aether.state.adminLoading ? " disabled" : ""}>Delete</button>
+          </div>
+        `).join("") || `<div class="admin-empty">No accounts yet.</div>`}
+      </div>
     </section>
   `;
 }
@@ -542,6 +593,85 @@ function renderRateLimitPopup() {
   `;
 }
 
+function renderAuthModal() {
+  if (!Aether.state.authModal) return "";
+  const creating = Aether.state.authMode === "create";
+  return `
+    <div class="account-overlay" role="dialog" aria-modal="true" aria-labelledby="auth-title" data-action="close-auth-modal">
+      <form class="auth-card" data-action="auth-submit">
+        <button class="modal-close" type="button" data-action="close-auth-modal" aria-label="Close">×</button>
+        <div class="auth-card-head">
+          <span class="auth-badge">${creating ? "New account" : "Welcome back"}</span>
+          <h2 id="auth-title">${creating ? "Create Account" : "Sign In"}</h2>
+        </div>
+        <div class="auth-mode-switch" role="tablist" aria-label="Account mode">
+          <button type="button" class="${!creating ? "active" : ""}" data-auth-mode="signin">Sign in</button>
+          <button type="button" class="${creating ? "active" : ""}" data-auth-mode="create">Create account</button>
+        </div>
+        ${Aether.state.authError ? `<div class="form-alert">${escapeHtml(Aether.state.authError)}</div>` : ""}
+        <label>
+          <span>Username</span>
+          <input name="username" autocomplete="username" minlength="3" maxlength="24" required placeholder="adam">
+        </label>
+        <label>
+          <span>Password</span>
+          <input name="password" type="password" autocomplete="${creating ? "new-password" : "current-password"}" minlength="8" maxlength="128" required placeholder="At least 8 characters">
+        </label>
+        <button class="primary-button" type="submit"${Aether.state.authLoading ? " disabled" : ""}>${creating ? "Create account" : "Sign in"}</button>
+      </form>
+    </div>
+  `;
+}
+
+function renderAccountModal() {
+  if (!Aether.state.accountModal || !Aether.state.signedIn || !Aether.state.account) return "";
+  const account = Aether.state.account;
+  return `
+    <div class="account-overlay" role="dialog" aria-modal="true" aria-labelledby="account-title" data-action="close-account-modal">
+      <div class="account-card">
+        <button class="modal-close" type="button" data-action="close-account-modal" aria-label="Close">×</button>
+        <div class="account-card-head">
+          <div class="account-avatar large">${escapeHtml(accountInitials(account.username))}</div>
+          <div>
+            <span class="auth-badge">Signed in</span>
+            <h2 id="account-title">${escapeHtml(account.username)}</h2>
+            <p>Created ${escapeHtml(formatAdminDate(account.createdAt))}</p>
+          </div>
+        </div>
+        ${Aether.state.accountError ? `<div class="form-alert">${escapeHtml(Aether.state.accountError)}</div>` : ""}
+        <form class="account-form" data-action="account-username">
+          <label>
+            <span>Change username</span>
+            <input name="username" autocomplete="username" minlength="3" maxlength="24" required value="${escapeHtml(account.username)}">
+          </label>
+          <button class="secondary-button" type="submit"${Aether.state.accountLoading ? " disabled" : ""}>Save username</button>
+        </form>
+        <form class="account-form" data-action="account-password">
+          <label>
+            <span>Current password</span>
+            <input name="currentPassword" type="password" autocomplete="current-password" required>
+          </label>
+          <label>
+            <span>New password</span>
+            <input name="newPassword" type="password" autocomplete="new-password" minlength="8" maxlength="128" required>
+          </label>
+          <button class="secondary-button" type="submit"${Aether.state.accountLoading ? " disabled" : ""}>Change password</button>
+        </form>
+        <div class="account-danger">
+          <button class="secondary-button" type="button" data-action="account-signout"${Aether.state.accountLoading ? " disabled" : ""}>Sign out</button>
+          <form class="account-form" data-action="account-delete">
+            <label>
+              <span>Delete account</span>
+              <input name="password" type="password" autocomplete="current-password" required placeholder="Confirm password">
+            </label>
+            <button class="danger-button" type="submit"${Aether.state.accountLoading ? " disabled" : ""}>Delete</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function bindEvents(root) {
   root.querySelector("[data-action='home']")?.addEventListener("click", () => {
     Aether.state.adminView = false;
@@ -553,6 +683,19 @@ function bindEvents(root) {
     Aether.state.adminView = false;
     Aether.state.mobileSidebarOpen = false;
     createNewChat();
+  });
+  root.querySelector("[data-action='signin-tab']")?.addEventListener("click", () => {
+    Aether.state.authMode = "signin";
+    Aether.state.authModal = true;
+    Aether.state.authError = "";
+    Aether.state.mobileSidebarOpen = false;
+    render();
+  });
+  root.querySelector("[data-action='account-tab']")?.addEventListener("click", () => {
+    Aether.state.accountModal = true;
+    Aether.state.accountError = "";
+    Aether.state.mobileSidebarOpen = false;
+    render();
   });
   root.querySelector("[data-action='admin-tab']")?.addEventListener("click", () => {
     Aether.state.adminView = true;
@@ -611,7 +754,151 @@ function bindEvents(root) {
   root.querySelectorAll("[data-copy-message]").forEach((button) => {
     button.addEventListener("click", () => copyAssistantMessage(button.dataset.copyMessage, button));
   });
+  bindAccountEvents(root);
   bindAdminEvents(root);
+}
+
+function bindAccountEvents(root) {
+  root.querySelectorAll("[data-action='close-auth-modal']").forEach((element) => {
+    element.addEventListener("click", (event) => {
+      if (element.classList.contains("account-overlay") && event.target !== element) return;
+      Aether.state.authModal = false;
+      Aether.state.authError = "";
+      render();
+    });
+  });
+  root.querySelectorAll("[data-action='close-account-modal']").forEach((element) => {
+    element.addEventListener("click", (event) => {
+      if (element.classList.contains("account-overlay") && event.target !== element) return;
+      Aether.state.accountModal = false;
+      Aether.state.accountError = "";
+      render();
+    });
+  });
+  root.querySelectorAll("[data-auth-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      Aether.state.authMode = button.dataset.authMode || "signin";
+      Aether.state.authError = "";
+      render();
+    });
+  });
+  root.querySelector("[data-action='auth-submit']")?.addEventListener("submit", submitAuthForm);
+  root.querySelector("[data-action='account-username']")?.addEventListener("submit", submitUsernameChange);
+  root.querySelector("[data-action='account-password']")?.addEventListener("submit", submitPasswordChange);
+  root.querySelector("[data-action='account-delete']")?.addEventListener("submit", submitAccountDelete);
+  root.querySelector("[data-action='account-signout']")?.addEventListener("click", signOutAccount);
+}
+
+async function submitAuthForm(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const data = new FormData(form);
+  const username = String(data.get("username") || "").trim();
+  const password = String(data.get("password") || "");
+  const path = Aether.state.authMode === "create" ? "/api/account/create" : "/api/account/signin";
+
+  Aether.state.authLoading = true;
+  Aether.state.authError = "";
+  render();
+  try {
+    const result = await accountRequest(path, {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    });
+    applyAccountStatus(result);
+    Aether.state.authModal = false;
+    showToast(result.message || (Aether.state.authMode === "create" ? "Account created." : "Signed in."));
+  } catch (error) {
+    Aether.state.authError = error?.message || "Account request failed.";
+  } finally {
+    Aether.state.authLoading = false;
+    render();
+  }
+}
+
+async function submitUsernameChange(event) {
+  event.preventDefault();
+  const data = new FormData(event.currentTarget);
+  await runAccountAction(
+    "/api/account/username",
+    { username: String(data.get("username") || "").trim() },
+    "Username updated.",
+  );
+}
+
+async function submitPasswordChange(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const data = new FormData(form);
+  const success = await runAccountAction(
+    "/api/account/password",
+    {
+      currentPassword: String(data.get("currentPassword") || ""),
+      newPassword: String(data.get("newPassword") || ""),
+    },
+    "Password updated.",
+  );
+  if (success) form.reset();
+}
+
+async function submitAccountDelete(event) {
+  event.preventDefault();
+  const data = new FormData(event.currentTarget);
+  Aether.state.accountLoading = true;
+  Aether.state.accountError = "";
+  render();
+  try {
+    const result = await accountRequest("/api/account", {
+      method: "DELETE",
+      body: JSON.stringify({ password: String(data.get("password") || "") }),
+    });
+    applyAccountStatus(result);
+    Aether.state.accountModal = false;
+    showToast("Account deleted.");
+  } catch (error) {
+    Aether.state.accountError = error?.message || "Account could not be deleted.";
+  } finally {
+    Aether.state.accountLoading = false;
+    render();
+  }
+}
+
+async function signOutAccount() {
+  Aether.state.accountLoading = true;
+  Aether.state.accountError = "";
+  render();
+  try {
+    const result = await accountRequest("/api/account/signout", { method: "POST" });
+    applyAccountStatus(result);
+    Aether.state.accountModal = false;
+    showToast("Signed out.");
+  } catch (error) {
+    Aether.state.accountError = error?.message || "Sign out failed.";
+  } finally {
+    Aether.state.accountLoading = false;
+    render();
+  }
+}
+
+async function runAccountAction(path, payload, successMessage) {
+  Aether.state.accountLoading = true;
+  Aether.state.accountError = "";
+  render();
+  try {
+    const result = await accountRequest(path, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    applyAccountStatus(result);
+    showToast(result.message || successMessage);
+    return true;
+  } catch (error) {
+    Aether.state.accountError = error?.message || "Account update failed.";
+    return false;
+  } finally {
+    Aether.state.accountLoading = false;
+    render();
+  }
 }
 
 function bindChatListEvents(root) {
@@ -697,6 +984,17 @@ function bindAdminEvents(root) {
         method: "POST",
         body: JSON.stringify({ ipAddress: button.dataset.unbanIp || "" }),
       });
+    });
+  });
+  root.querySelectorAll("[data-admin-delete-account]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const accountId = button.dataset.adminDeleteAccount || "";
+      if (!accountId) return;
+      const deleted = await adminRequest("/api/admin/delete-account", {
+        method: "POST",
+        body: JSON.stringify({ accountId }),
+      });
+      if (deleted) showToast("Account deleted.");
     });
   });
   root.querySelector("[data-action='admin-show-all']")?.addEventListener("click", () => {
@@ -1127,8 +1425,19 @@ function applyServerStatus(data) {
   if (Object.prototype.hasOwnProperty.call(data, "aetherAvailable")) {
     setAetherAvailability(data.aetherAvailable !== false);
   }
+  if (Object.prototype.hasOwnProperty.call(data, "signedIn")) {
+    applyAccountStatus(data);
+  }
   if (data.rateLimit) {
     updateRateLimit(data.rateLimit);
+  }
+}
+
+function applyAccountStatus(data) {
+  Aether.state.signedIn = Boolean(data?.signedIn && data?.account);
+  Aether.state.account = Aether.state.signedIn ? data.account : null;
+  if (!Aether.state.signedIn) {
+    Aether.state.accountModal = false;
   }
 }
 
@@ -1328,6 +1637,22 @@ async function authHeaders(base = {}) {
   return { ...base };
 }
 
+async function accountRequest(path, options = {}) {
+  const response = await fetch(apiUrl(path), {
+    ...options,
+    headers: {
+      "Content-Type": "application/json;charset=UTF-8",
+      ...(options.headers || {}),
+    },
+    cache: "no-store",
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error || `Account request failed with HTTP ${response.status}`);
+  }
+  return data;
+}
+
 async function adminHeaders(base = {}) {
   return {
     ...base,
@@ -1474,6 +1799,11 @@ function formatAdminDate(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return String(value);
   return date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+function accountInitials(username) {
+  const cleaned = String(username || "A").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+  return cleaned.slice(0, 2) || "A";
 }
 
 function addAssistantMessage(text) {
@@ -1833,7 +2163,7 @@ function injectStyles() {
       backdrop-filter: blur(18px);
       min-width: 0;
     }
-    .brand, .new-chat, .admin-tab, .chat-item, .delete-chat, .copy-message, .composer button, .primary-button, .secondary-button, .danger-button { border: 0; }
+    .brand, .new-chat, .account-tab, .admin-tab, .chat-item, .delete-chat, .copy-message, .composer button, .primary-button, .secondary-button, .danger-button, .modal-close, .auth-mode-switch button { border: 0; }
     .brand {
       display: flex;
       align-items: center;
@@ -1916,6 +2246,7 @@ function injectStyles() {
       filter: brightness(1.04);
       outline: none;
     }
+    .account-tab,
     .admin-tab {
       display: grid;
       place-items: center;
@@ -1926,11 +2257,58 @@ function injectStyles() {
       font-weight: 780;
       transition: background 160ms ease, color 160ms ease, transform 160ms ease;
     }
-    .admin-tab:hover, .admin-tab:focus-visible, .admin-tab.active {
+    .account-tab.signed-in {
+      grid-template-columns: auto minmax(0, 1fr);
+      place-items: center stretch;
+      gap: 10px;
+      height: auto;
+      min-height: 48px;
+      padding: 8px 10px;
+      text-align: left;
+    }
+    .account-avatar {
+      display: grid;
+      place-items: center;
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      color: #07111f;
+      background: linear-gradient(135deg, #bfdbfe, #a7f3d0);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 0;
+    }
+    .account-avatar.large {
+      width: 54px;
+      height: 54px;
+      font-size: 18px;
+      flex: 0 0 auto;
+    }
+    .account-tab-copy {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+    }
+    .account-tab-copy strong,
+    .account-tab-copy small {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .account-tab-copy small {
+      color: #93c5fd;
+      font-size: 11px;
+      font-weight: 760;
+    }
+    .account-tab:hover, .account-tab:focus-visible, .admin-tab:hover, .admin-tab:focus-visible, .admin-tab.active {
       color: #07111f;
       background: #a7f3d0;
       outline: none;
       transform: translateY(-1px);
+    }
+    .account-tab:hover .account-tab-copy small,
+    .account-tab:focus-visible .account-tab-copy small {
+      color: #0f172a;
     }
     .sidebar-search {
       width: 100%;
@@ -2262,7 +2640,9 @@ function injectStyles() {
     }
     .admin-login input,
     .admin-ban-form input,
-    .admin-rate-form input {
+    .admin-rate-form input,
+    .auth-card input,
+    .account-form input {
       width: 100%;
       min-height: 40px;
       border: 1px solid rgba(191, 219, 254, 0.18);
@@ -2274,7 +2654,9 @@ function injectStyles() {
     }
     .admin-login input:focus,
     .admin-ban-form input:focus,
-    .admin-rate-form input:focus {
+    .admin-rate-form input:focus,
+    .auth-card input:focus,
+    .account-form input:focus {
       border-color: rgba(45, 212, 191, 0.56);
       box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.12);
     }
@@ -2664,6 +3046,153 @@ function injectStyles() {
         text-shadow: 0 0 18px rgba(147, 197, 253, 0.42);
       }
     }
+    .account-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 70;
+      display: grid;
+      place-items: center;
+      padding: 22px;
+      background: rgba(2, 6, 23, 0.72);
+      backdrop-filter: blur(18px);
+      animation: warningFade 180ms ease-out both;
+    }
+    .auth-card,
+    .account-card {
+      position: relative;
+      width: min(460px, 100%);
+      display: grid;
+      gap: 14px;
+      padding: 22px;
+      border: 1px solid rgba(191, 219, 254, 0.18);
+      border-radius: 12px;
+      background:
+        linear-gradient(160deg, rgba(15, 23, 42, 0.98), rgba(2, 6, 23, 0.96)),
+        radial-gradient(circle at 18% 0%, rgba(45, 212, 191, 0.16), transparent 32%);
+      box-shadow: 0 28px 90px rgba(0, 0, 0, 0.5);
+      animation: warningPop 220ms ease-out both;
+    }
+    .account-card {
+      width: min(620px, 100%);
+      max-height: min(760px, calc(100dvh - 34px));
+      overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(219, 234, 254, 0.26) transparent;
+    }
+    .modal-close {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      color: #dbeafe;
+      background: rgba(191, 219, 254, 0.1);
+      font-size: 22px;
+      line-height: 1;
+    }
+    .modal-close:hover,
+    .modal-close:focus-visible {
+      outline: none;
+      background: rgba(191, 219, 254, 0.18);
+    }
+    .auth-card-head,
+    .account-card-head {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding-right: 38px;
+    }
+    .auth-card-head {
+      display: grid;
+      gap: 8px;
+    }
+    .auth-badge {
+      width: max-content;
+      padding: 5px 9px;
+      border-radius: 999px;
+      color: #07111f;
+      background: #a7f3d0;
+      font-size: 11px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+    }
+    .auth-card h2,
+    .account-card h2 {
+      margin: 0;
+      font-size: 28px;
+      line-height: 1.05;
+      letter-spacing: 0;
+    }
+    .account-card p {
+      margin: 4px 0 0;
+      color: #93c5fd;
+      font-size: 13px;
+      font-weight: 720;
+    }
+    .auth-mode-switch {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      padding: 5px;
+      border: 1px solid rgba(191, 219, 254, 0.14);
+      border-radius: 12px;
+      background: rgba(2, 6, 23, 0.5);
+    }
+    .auth-mode-switch button {
+      min-height: 36px;
+      border-radius: 9px;
+      color: #bfdbfe;
+      background: transparent;
+      font-weight: 850;
+    }
+    .auth-mode-switch button.active {
+      color: #07111f;
+      background: #bfdbfe;
+    }
+    .auth-card label,
+    .account-form label {
+      display: grid;
+      gap: 6px;
+      color: #bfdbfe;
+      font-size: 12px;
+      font-weight: 820;
+    }
+    .form-alert {
+      padding: 10px 12px;
+      border: 1px solid rgba(248, 113, 113, 0.3);
+      border-radius: 10px;
+      color: #fecaca;
+      background: rgba(127, 29, 29, 0.24);
+      font-size: 13px;
+      font-weight: 760;
+    }
+    .account-form {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: end;
+      gap: 10px;
+      padding: 14px;
+      border: 1px solid rgba(191, 219, 254, 0.12);
+      border-radius: 10px;
+      background: rgba(2, 6, 23, 0.34);
+    }
+    .account-form:has(label + label) {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+    }
+    .account-danger {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 10px;
+      align-items: stretch;
+    }
+    .account-admin-panel {
+      margin-top: 14px;
+    }
+    .account-admin-item .danger-button {
+      align-self: center;
+    }
     .warning-overlay {
       position: fixed;
       inset: 0;
@@ -2729,7 +3258,7 @@ function injectStyles() {
       color: #fff;
       background: #b91c1c;
     }
-    .secondary-button:disabled, .danger-button:disabled {
+    .primary-button:disabled, .secondary-button:disabled, .danger-button:disabled {
       cursor: not-allowed;
       opacity: 0.45;
     }
@@ -2818,6 +3347,7 @@ function injectStyles() {
         transform: translateX(0);
       }
       .brand,
+      .account-tab,
       .admin-tab,
       .chat-list,
       .sidebar-search,
@@ -2852,7 +3382,10 @@ function injectStyles() {
       .admin-two-column,
       .admin-grid,
       .admin-ban-form,
-      .admin-rate-form {
+      .admin-rate-form,
+      .account-form,
+      .account-form:has(label + label),
+      .account-danger {
         grid-template-columns: 1fr;
       }
       .admin-hero {
