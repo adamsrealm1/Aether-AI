@@ -82,16 +82,26 @@ def rate_limit_window_seconds() -> int:
     return rate_limit_settings()["windowSeconds"]
 
 
+def global_rate_limit_reset_at(now: datetime, window_seconds: int) -> datetime:
+    window_seconds = max(1, int(window_seconds or DEFAULT_RATE_LIMIT_WINDOW_SECONDS))
+    epoch_seconds = int(now.timestamp())
+    seconds_until_reset = window_seconds - (epoch_seconds % window_seconds)
+    if seconds_until_reset <= 0:
+        seconds_until_reset = window_seconds
+    return datetime.fromtimestamp(epoch_seconds + seconds_until_reset, timezone.utc)
+
+
 def rate_limit_status(ip_address: str | None = None) -> dict:
     limit = rate_limit_for_request()
     window_seconds = rate_limit_window_seconds()
-    now = datetime.now().astimezone()
+    now = utc_now()
+    reset_at = global_rate_limit_reset_at(now, window_seconds)
     key = rate_limit_key(ip_address)
     bucket = RATE_LIMITS.get(key)
     if not bucket or bucket["resetAt"] <= now or int(bucket.get("windowSeconds", 0)) != window_seconds:
         bucket = {
             "count": 0,
-            "resetAt": now + timedelta(seconds=window_seconds),
+            "resetAt": reset_at,
             "windowSeconds": window_seconds,
         }
         RATE_LIMITS[key] = bucket
@@ -104,6 +114,7 @@ def rate_limit_status(ip_address: str | None = None) -> dict:
         "used": used,
         "remaining": remaining,
         "percentUsed": round((used / limit) * 100) if limit else 0,
+        "resetAt": bucket["resetAt"].isoformat(),
         "resetInSeconds": reset_in,
         "windowSeconds": window_seconds,
     }

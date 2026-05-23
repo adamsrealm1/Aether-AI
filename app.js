@@ -19,6 +19,7 @@
       used: 0,
       remaining: 300,
       percentUsed: 0,
+      resetAt: "",
       resetInSeconds: 60,
       windowSeconds: 60,
     },
@@ -207,6 +208,7 @@ function bootstrap() {
   injectStyles();
   storage.load();
   bindScrollFadePreferenceChanges();
+  bindRateLimitClockEvents();
   startRateLimitCountdown();
   render();
   checkServerStatus();
@@ -529,7 +531,7 @@ function renderRateLimitMeter() {
   const remaining = Math.max(0, Math.min(limit, Number(rate.remaining ?? limit)));
   const targetPercent = Math.round((remaining / limit) * 100);
   const displayPercent = clampPercent(Aether.state.rateMeter?.displayPercent ?? targetPercent);
-  const resetInSeconds = Math.max(0, Number(rate.resetInSeconds || 0));
+  const resetInSeconds = currentRateResetSeconds(rate);
   return `
     <div class="rate-card" style="--rate-color: ${rateColor(displayPercent)}">
       <div class="rate-percent">${displayPercent}%</div>
@@ -590,11 +592,12 @@ function renderProfanityPopup() {
 function renderRateLimitPopup() {
   if (!Aether.state.rateLimitPopup) return "";
   const rate = Aether.state.rateLimit || {};
+  const resetInSeconds = currentRateResetSeconds(rate);
   return `
     <div class="warning-overlay compact" role="dialog" aria-modal="true">
       <div class="warning-modal compact-modal">
         <h2>Oops!</h2>
-        <p>Wait ${escapeHtml(formatRateLimitDuration(rate.resetInSeconds || 0))} to use <strong>Aether</strong> AI again.</p>
+        <p>Wait ${escapeHtml(formatRateLimitDuration(resetInSeconds))} to use <strong>Aether</strong> AI again.</p>
         <button class="warning-understand" data-action="close-rate-limit">Okay.</button>
       </div>
     </div>
@@ -1537,10 +1540,11 @@ async function pingServerStatus() {
 }
 
 function updateRateLimit(rateLimit) {
-  Aether.state.rateLimit = {
+  const merged = {
     ...Aether.state.rateLimit,
     ...rateLimit,
   };
+  Aether.state.rateLimit = normalizeRateLimitDeadline(merged, rateLimit);
   animateRateMeterTo(ratePercent(Aether.state.rateLimit));
   updateRateMeterDom();
 }
@@ -1550,16 +1554,11 @@ function startRateLimitCountdown() {
   rateLimitCountdownTimer = setInterval(() => {
     const rate = Aether.state.rateLimit;
     if (!rate) return;
-    const current = Number(rate.resetInSeconds);
-    if (!Number.isFinite(current)) return;
-    if (current <= 0) {
+    rate.resetInSeconds = currentRateResetSeconds(rate);
+    if (rate.resetInSeconds <= 0) {
       resetExpiredRateLimitWindow();
       updateRateMeterDom();
       return;
-    }
-    rate.resetInSeconds = Math.max(0, current - 1);
-    if (rate.resetInSeconds === 0) {
-      resetExpiredRateLimitWindow();
     }
     updateRateMeterDom();
   }, 1000);
@@ -1569,12 +1568,51 @@ function resetExpiredRateLimitWindow() {
   const rate = Aether.state.rateLimit;
   if (!rate) return;
   const limit = Number(rate.limit || 0);
-  if (!limit || Number(rate.resetInSeconds || 0) > 0) return;
+  if (!limit || currentRateResetSeconds(rate) > 0) return;
   rate.used = 0;
   rate.remaining = limit;
   rate.percentUsed = 0;
-  rate.resetInSeconds = Math.max(1, Number(rate.windowSeconds || 60));
+  rate.resetAt = nextGlobalRateResetAt(rate.windowSeconds);
+  rate.resetInSeconds = currentRateResetSeconds(rate);
   animateRateMeterTo(100);
+}
+
+function normalizeRateLimitDeadline(rate, source = rate) {
+  const normalized = { ...rate };
+  if (!Object.prototype.hasOwnProperty.call(source || {}, "resetAt")) {
+    const resetInSeconds = Number(normalized.resetInSeconds);
+    if (Number.isFinite(resetInSeconds) && resetInSeconds > 0) {
+      normalized.resetAt = new Date(Date.now() + resetInSeconds * 1000).toISOString();
+    }
+  }
+  normalized.resetInSeconds = currentRateResetSeconds(normalized);
+  return normalized;
+}
+
+function currentRateResetSeconds(rate) {
+  const resetAtMs = Date.parse(rate?.resetAt || "");
+  if (Number.isFinite(resetAtMs)) {
+    return Math.max(0, Math.ceil((resetAtMs - Date.now()) / 1000));
+  }
+  return Math.max(0, Math.floor(Number(rate?.resetInSeconds || 0)));
+}
+
+function nextGlobalRateResetAt(windowSeconds) {
+  const windowMs = Math.max(1, Number(windowSeconds || 60)) * 1000;
+  const now = Date.now();
+  const remainder = now % windowMs;
+  const nextReset = now + (remainder === 0 ? windowMs : windowMs - remainder);
+  return new Date(nextReset).toISOString();
+}
+
+function bindRateLimitClockEvents() {
+  const refreshClock = () => {
+    resetExpiredRateLimitWindow();
+    updateRateMeterDom();
+    if (!document.hidden) pingServerStatus();
+  };
+  document.addEventListener("visibilitychange", refreshClock);
+  window.addEventListener("focus", refreshClock);
 }
 
 function animateRateMeterTo(targetPercent) {
@@ -1604,7 +1642,7 @@ function updateRateMeterDom() {
   const limit = Math.max(1, Number(rate.limit || 300));
   const remaining = Math.max(0, Math.min(limit, Number(rate.remaining ?? limit)));
   const displayPercent = clampPercent(Aether.state.rateMeter?.displayPercent ?? ratePercent(rate));
-  const resetInSeconds = Math.max(0, Number(rate.resetInSeconds || 0));
+  const resetInSeconds = currentRateResetSeconds(rate);
   card.style.setProperty("--rate-color", rateColor(displayPercent));
   const percentElement = card.querySelector(".rate-percent");
   if (percentElement) percentElement.textContent = `${displayPercent}%`;
