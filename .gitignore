@@ -2,13 +2,3 @@
 __pycache__/
 *.pyc
 aether_admin.sqlite3*
-app.js
-app.py
-main.py
-requirements.txt
-server.py
-wasmer.toml
-wsgi.py
-CNAME
-app.yaml
-.gitignore

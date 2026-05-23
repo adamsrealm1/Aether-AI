@@ -173,7 +173,7 @@ def db_placeholder() -> str:
 
 def db_connect():
     if database_provider() == "mysql":
-        import pymysql
+        import pymysql # type: ignore
 
         return pymysql.connect(
             host=os.getenv("DB_HOST", ""),
