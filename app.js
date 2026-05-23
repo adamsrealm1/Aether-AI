@@ -62,6 +62,7 @@ const LOCATION_TIME_PERMISSION_MESSAGE = "Aether needs your permission to see yo
 const PROFANITY_BLOCK_MESSAGE = "You cant send Aether a message with profanity in it. You can try again without profanity in your message.";
 const VOICE_AUTO_SEND_DELAY_MS = 1800;
 const ACCOUNT_SESSION_TOKEN_KEY = "aether.accountSessionToken";
+const MOBILE_SCROLL_FADE_QUERY = "(max-width: 860px), (pointer: coarse)";
 const PROFANITY_PATTERNS = [
   /\bass\b/i,
   /\basshole\b/i,
@@ -205,6 +206,7 @@ function activeChat() {
 function bootstrap() {
   injectStyles();
   storage.load();
+  bindScrollFadePreferenceChanges();
   startRateLimitCountdown();
   render();
   checkServerStatus();
@@ -2045,6 +2047,12 @@ function observeMessageVisibility() {
 
   if (messageVisibilityObserver) {
     messageVisibilityObserver.disconnect();
+    messageVisibilityObserver = null;
+  }
+
+  if (isMobileScrollFadeDisabled()) {
+    clearMessageFadeState(messages);
+    return;
   }
 
   messageVisibilityObserver = new IntersectionObserver(
@@ -2064,6 +2072,29 @@ function observeMessageVisibility() {
   messages.querySelectorAll(".message-row").forEach((row) => {
     messageVisibilityObserver.observe(row);
   });
+}
+
+function isMobileScrollFadeDisabled() {
+  return Boolean(window.matchMedia?.(MOBILE_SCROLL_FADE_QUERY).matches);
+}
+
+function clearMessageFadeState(root = document) {
+  root.querySelectorAll(".message-row").forEach((row) => {
+    row.style.opacity = "";
+    row.classList.remove("is-faded");
+  });
+}
+
+function bindScrollFadePreferenceChanges() {
+  const media = window.matchMedia?.(MOBILE_SCROLL_FADE_QUERY);
+  if (!media) return;
+
+  const handleChange = () => observeMessageVisibility();
+  if (typeof media.addEventListener === "function") {
+    media.addEventListener("change", handleChange);
+  } else if (typeof media.addListener === "function") {
+    media.addListener(handleChange);
+  }
 }
 
 function wait(ms) {
