@@ -493,6 +493,28 @@ def unban_ip(ip_address: str) -> None:
     db_execute(f"DELETE FROM banned_ips WHERE ip_address = {placeholder}", (ip_address.strip()[:80],))
 
 
+def latest_account_ip(username: object) -> tuple[str, str]:
+    username_lc = normalize_username(username)
+    if not username_lc:
+        raise ValueError("Username is required.")
+    account = find_account_by_username(username_lc)
+    if not account:
+        raise ValueError("Account was not found.")
+
+    placeholder = db_placeholder()
+    rows = db_query(
+        (
+            "SELECT ip_address FROM account_sessions "
+            f"WHERE account_id = {placeholder} AND ip_address IS NOT NULL AND ip_address <> '' "
+            "ORDER BY last_seen_at DESC, created_at DESC LIMIT 1"
+        ),
+        (account.get("id"),),
+    )
+    if not rows:
+        raise ValueError("That account does not have a recorded IP yet.")
+    return str(rows[0].get("ip_address") or "").strip(), str(account.get("username") or username_lc)
+
+
 def last_user_messages(chat: list[dict], current_message: str) -> list[str]:
     messages: list[str] = []
     for item in chat:
@@ -1249,8 +1271,30 @@ def api_admin_ban_ip():
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
         payload = {}
-    ban_ip(str(payload.get("ipAddress", "")), str(payload.get("reason", "")))
-    return jsonify(admin_status())
+    try:
+        ban_ip(str(payload.get("ipAddress", "")), str(payload.get("reason", "")))
+        return jsonify(admin_status())
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/admin/ban-user")
+def api_admin_ban_user():
+    denied = require_admin()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    try:
+        ip_address, username = latest_account_ip(payload.get("username"))
+        reason = str(payload.get("reason", "")).strip() or f"User ban: {username}"
+        ban_ip(ip_address, reason)
+        status = admin_status()
+        status["message"] = f"Banned {username} at {ip_address}."
+        return jsonify(status)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
 
 @app.post("/api/admin/unban-ip")

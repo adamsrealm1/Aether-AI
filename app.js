@@ -401,13 +401,18 @@ function renderBanIpPanel(bannedIps) {
   return `
     <section class="admin-panel">
       <div class="admin-panel-head">
-        <h2>Ban IPs</h2>
+        <h2>Ban a user</h2>
         <span>${bannedIps.length}</span>
       </div>
       <form class="admin-ban-form" data-action="admin-ban-ip">
         <input name="ipAddress" autocomplete="off" placeholder="IP address">
         <input name="reason" autocomplete="off" placeholder="Reason">
-        <button class="primary-button" type="submit"${Aether.state.adminLoading ? " disabled" : ""}>Ban</button>
+        <button class="primary-button" type="submit"${Aether.state.adminLoading ? " disabled" : ""}>Ban IP</button>
+      </form>
+      <form class="admin-ban-form" data-action="admin-ban-user">
+        <input name="username" autocomplete="off" placeholder="Username">
+        <input name="reason" autocomplete="off" placeholder="Reason">
+        <button class="primary-button" type="submit"${Aether.state.adminLoading ? " disabled" : ""}>Ban user</button>
       </form>
       <div class="admin-list">
         ${bannedIps.map((item) => `
@@ -972,14 +977,27 @@ function bindAdminEvents(root) {
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
-    await adminRequest("/api/admin/ban-ip", {
+    const banned = await adminRequest("/api/admin/ban-ip", {
       method: "POST",
       body: JSON.stringify({
         ipAddress: String(data.get("ipAddress") || "").trim(),
         reason: String(data.get("reason") || "").trim(),
       }),
     });
-    form.reset();
+    if (banned) form.reset();
+  });
+  root.querySelector("[data-action='admin-ban-user']")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const banned = await adminRequest("/api/admin/ban-user", {
+      method: "POST",
+      body: JSON.stringify({
+        username: String(data.get("username") || "").trim(),
+        reason: String(data.get("reason") || "").trim(),
+      }),
+    });
+    if (banned) form.reset();
   });
   root.querySelectorAll("[data-unban-ip]").forEach((button) => {
     button.addEventListener("click", async () => {
