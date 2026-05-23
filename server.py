@@ -930,7 +930,8 @@ def groq_reply(message: str, chat: list[dict]) -> str:
                 "Be friendly. Respond as helpful as possible and be respectful. "
                 "Never mention ChatGPT, OpenAI, AI, providers, sources, tokens, API calls, "
                 "or implementation details."
-                "Keep responses as short as possible but enough to be helpful or complete."
+                "Keep responses as short as possible."
+                "Use plain text, never use formatting like bolding, italics, headers, or emojis."
             ),
         }
     ]
@@ -1115,7 +1116,7 @@ def api_account_create():
     try:
         account = create_account(payload.get("username"), payload.get("password"))
         token = create_account_session(account.get("id"), client_ip(), request.headers.get("User-Agent", ""))
-        response = account_response(account, {"message": "Account created."})
+        response = account_response(account, {"message": "Account created.", "sessionToken": token})
         set_session_cookie(response, token)
         return response
     except ValueError as exc:
@@ -1134,7 +1135,7 @@ def api_account_signin():
         return jsonify({"error": "Username or password is incorrect."}), 401
 
     token = create_account_session(account.get("id"), client_ip(), request.headers.get("User-Agent", ""))
-    response = account_response(account, {"message": "Signed in."})
+    response = account_response(account, {"message": "Signed in.", "sessionToken": token})
     set_session_cookie(response, token)
     return response
 
@@ -1174,7 +1175,7 @@ def api_account_password():
         update_account_password(account.get("id"), payload.get("currentPassword"), payload.get("newPassword"))
         token = create_account_session(account.get("id"), client_ip(), request.headers.get("User-Agent", ""))
         account = find_account_by_id(account.get("id"))
-        response = account_response(account, {"message": "Password updated."})
+        response = account_response(account, {"message": "Password updated.", "sessionToken": token})
         set_session_cookie(response, token)
         return response
     except ValueError as exc:

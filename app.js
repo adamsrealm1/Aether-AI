@@ -61,6 +61,7 @@ const thoughtTimerTimeouts = new Map();
 const LOCATION_TIME_PERMISSION_MESSAGE = "Aether needs your permission to see your location to give your location.";
 const PROFANITY_BLOCK_MESSAGE = "You cant send Aether a message with profanity in it. You can try again without profanity in your message.";
 const VOICE_AUTO_SEND_DELAY_MS = 1800;
+const ACCOUNT_SESSION_TOKEN_KEY = "aether.accountSessionToken";
 const PROFANITY_PATTERNS = [
   /\bass\b/i,
   /\basshole\b/i,
@@ -1434,10 +1435,35 @@ function applyServerStatus(data) {
 }
 
 function applyAccountStatus(data) {
+  if (data?.sessionToken) {
+    setAccountSessionToken(data.sessionToken);
+  } else if (data?.signedIn === false) {
+    setAccountSessionToken("");
+  }
   Aether.state.signedIn = Boolean(data?.signedIn && data?.account);
   Aether.state.account = Aether.state.signedIn ? data.account : null;
   if (!Aether.state.signedIn) {
     Aether.state.accountModal = false;
+  }
+}
+
+function accountSessionToken() {
+  try {
+    return localStorage.getItem(ACCOUNT_SESSION_TOKEN_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function setAccountSessionToken(token) {
+  try {
+    if (token) {
+      localStorage.setItem(ACCOUNT_SESSION_TOKEN_KEY, token);
+    } else {
+      localStorage.removeItem(ACCOUNT_SESSION_TOKEN_KEY);
+    }
+  } catch {
+    // Browsers can block localStorage in hardened modes; cookies still work for same-origin installs.
   }
 }
 
@@ -1621,7 +1647,10 @@ function rateColor(percent) {
 
 async function checkServerStatus() {
   try {
-    const response = await fetch(apiUrl("/api/status"), { cache: "no-store" });
+    const response = await fetch(apiUrl("/api/status"), {
+      headers: await authHeaders(),
+      cache: "no-store",
+    });
     if (!response.ok) throw new Error(`Status failed with HTTP ${response.status}`);
     const data = await response.json();
     setServerOnline(true);
@@ -1634,16 +1663,17 @@ async function checkServerStatus() {
 }
 
 async function authHeaders(base = {}) {
-  return { ...base };
+  const token = accountSessionToken();
+  return token ? { ...base, Authorization: `Bearer ${token}` } : { ...base };
 }
 
 async function accountRequest(path, options = {}) {
   const response = await fetch(apiUrl(path), {
     ...options,
-    headers: {
+    headers: await authHeaders({
       "Content-Type": "application/json;charset=UTF-8",
       ...(options.headers || {}),
-    },
+    }),
     cache: "no-store",
   });
   const data = await response.json().catch(() => ({}));
