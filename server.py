@@ -135,7 +135,7 @@ def rate_limit_status(ip_address: str | None = None, account_id: object = None) 
     reset_at = global_rate_limit_reset_at(now, window_seconds)
     key = rate_limit_key(ip_address, account_id)
     bucket = load_rate_limit_bucket(key)
-    if not bucket or bucket["resetAt"] <= now or int(bucket.get("windowSeconds", 0)) != window_seconds:
+    if not bucket or bucket["resetAt"] <= now or int(bucket.get("windowSeconds", 0)) != window_seconds or bucket["resetAt"] != reset_at:
         bucket = {
             "count": 0,
             "resetAt": reset_at,
