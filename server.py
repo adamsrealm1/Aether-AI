@@ -69,9 +69,12 @@ WEATHER_CODES = {
 def contains_profanity(message: str) -> bool:
     return any(pattern.search(message) for pattern in PROFANITY_PATTERNS)
 
-def rate_limit_key(ip_address: str | None = None) -> str:
+def rate_limit_key(ip_address: str | None = None, account_id: object = None) -> str:
+    account_value = str(account_id or "").strip()
+    if account_value:
+        return f"account:{account_value[:120]}"
     cleaned = str(ip_address or "unknown").strip() or "unknown"
-    return f"user:{cleaned[:120]}"
+    return f"ip:{cleaned[:120]}"
 
 
 def rate_limit_for_request() -> int:
@@ -91,20 +94,20 @@ def global_rate_limit_reset_at(now: datetime, window_seconds: int) -> datetime:
     return datetime.fromtimestamp(epoch_seconds + seconds_until_reset, timezone.utc)
 
 
-def rate_limit_status(ip_address: str | None = None) -> dict:
+def rate_limit_status(ip_address: str | None = None, account_id: object = None) -> dict:
     limit = rate_limit_for_request()
     window_seconds = rate_limit_window_seconds()
     now = utc_now()
     reset_at = global_rate_limit_reset_at(now, window_seconds)
-    key = rate_limit_key(ip_address)
-    bucket = RATE_LIMITS.get(key)
+    key = rate_limit_key(ip_address, account_id)
+    bucket = load_rate_limit_bucket(key)
     if not bucket or bucket["resetAt"] <= now or int(bucket.get("windowSeconds", 0)) != window_seconds:
         bucket = {
             "count": 0,
             "resetAt": reset_at,
             "windowSeconds": window_seconds,
         }
-        RATE_LIMITS[key] = bucket
+        save_rate_limit_bucket(key, bucket["count"], bucket["resetAt"], window_seconds)
 
     used = int(bucket["count"])
     remaining = max(0, limit - used)
@@ -120,22 +123,23 @@ def rate_limit_status(ip_address: str | None = None) -> dict:
     }
 
 
-def consume_rate_limit(ip_address: str) -> dict:
-    status = rate_limit_status(ip_address)
+def consume_rate_limit(ip_address: str, account_id: object = None) -> dict:
+    status = rate_limit_status(ip_address, account_id)
     if status["remaining"] <= 0:
         return {"allowed": False, "rateLimit": status}
 
-    key = rate_limit_key(ip_address)
-    RATE_LIMITS[key]["count"] = int(RATE_LIMITS[key]["count"]) + 1
-    return {"allowed": True, "rateLimit": rate_limit_status(ip_address)}
+    key = rate_limit_key(ip_address, account_id)
+    used = int(status["used"]) + 1
+    save_rate_limit_bucket(key, used, parse_utc(status["resetAt"]), int(status["windowSeconds"]))
+    return {"allowed": True, "rateLimit": rate_limit_status(ip_address, account_id)}
 
 
-def refund_rate_limit(ip_address: str) -> None:
-    key = rate_limit_key(ip_address)
-    bucket = RATE_LIMITS.get(key)
+def refund_rate_limit(ip_address: str, account_id: object = None) -> None:
+    key = rate_limit_key(ip_address, account_id)
+    bucket = load_rate_limit_bucket(key)
     if not bucket:
         return
-    bucket["count"] = max(0, int(bucket.get("count", 0)) - 1)
+    save_rate_limit_bucket(key, max(0, int(bucket.get("count", 0)) - 1), bucket["resetAt"], int(bucket["windowSeconds"]))
 
 
 def load_dotenv() -> None:
@@ -155,7 +159,7 @@ def load_dotenv() -> None:
 
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(timezone.utc) 
 
 
 def utc_iso() -> str:
@@ -275,6 +279,15 @@ def ensure_admin_db() -> None:
               user_agent VARCHAR(255)
             ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
             """,
+            """
+            CREATE TABLE IF NOT EXISTS rate_limit_buckets (
+              bucket_key VARCHAR(160) PRIMARY KEY,
+              count INT NOT NULL,
+              reset_at VARCHAR(40) NOT NULL,
+              window_seconds INT NOT NULL,
+              updated_at VARCHAR(40) NOT NULL
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+            """,
             "CREATE INDEX idx_request_events_created_at ON request_events (created_at)",
             "CREATE INDEX idx_blocked_attempts_created_at ON blocked_attempts (created_at)",
         ]
@@ -331,6 +344,15 @@ def ensure_admin_db() -> None:
               last_seen_at TEXT NOT NULL,
               ip_address TEXT,
               user_agent TEXT
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS rate_limit_buckets (
+              bucket_key TEXT PRIMARY KEY,
+              count INTEGER NOT NULL,
+              reset_at TEXT NOT NULL,
+              window_seconds INTEGER NOT NULL,
+              updated_at TEXT NOT NULL
             )
             """,
             "CREATE INDEX IF NOT EXISTS idx_request_events_created_at ON request_events (created_at)",
@@ -420,6 +442,51 @@ def set_rate_limit_settings(limit: object, window_seconds: object) -> None:
 
 def reset_all_rate_limits() -> None:
     RATE_LIMITS.clear()
+    try:
+        db_execute("DELETE FROM rate_limit_buckets")
+    except Exception:
+        pass
+
+
+def load_rate_limit_bucket(key: str) -> dict | None:
+    placeholder = db_placeholder()
+    rows = db_query(
+        f"SELECT bucket_key, count, reset_at, window_seconds FROM rate_limit_buckets WHERE bucket_key = {placeholder}",
+        (key,),
+    )
+    if not rows:
+        return None
+    row = rows[0]
+    return {
+        "count": int(row.get("count") or 0),
+        "resetAt": parse_utc(row.get("reset_at")),
+        "windowSeconds": int(row.get("window_seconds") or DEFAULT_RATE_LIMIT_WINDOW_SECONDS),
+    }
+
+
+def save_rate_limit_bucket(key: str, count: int, reset_at: datetime, window_seconds: int) -> None:
+    now = utc_iso()
+    reset_value = reset_at.astimezone(timezone.utc).isoformat()
+    count = max(0, int(count))
+    window_seconds = max(1, int(window_seconds or DEFAULT_RATE_LIMIT_WINDOW_SECONDS))
+    if database_provider() == "mysql":
+        db_execute(
+            (
+                "INSERT INTO rate_limit_buckets (bucket_key, count, reset_at, window_seconds, updated_at) "
+                "VALUES (%s, %s, %s, %s, %s) "
+                "ON DUPLICATE KEY UPDATE count = VALUES(count), reset_at = VALUES(reset_at), "
+                "window_seconds = VALUES(window_seconds), updated_at = VALUES(updated_at)"
+            ),
+            (key, count, reset_value, window_seconds, now),
+        )
+    else:
+        db_execute(
+            (
+                "INSERT OR REPLACE INTO rate_limit_buckets "
+                "(bucket_key, count, reset_at, window_seconds, updated_at) VALUES (?, ?, ?, ?, ?)"
+            ),
+            (key, count, reset_value, window_seconds, now),
+        )
 
 
 def parse_utc(value: object) -> datetime:
@@ -1074,7 +1141,7 @@ def client_ip() -> str:
     return request.remote_addr or "127.0.0.1"
 
 
-def chat_response(payload: dict, ip_address: str) -> dict:
+def chat_response(payload: dict, ip_address: str, account_id: object = None) -> dict:
     message = str(payload.get("message", "")).strip()
     chat = payload.get("chat") if isinstance(payload.get("chat"), list) else []
     location = payload.get("location")
@@ -1084,7 +1151,7 @@ def chat_response(payload: dict, ip_address: str) -> dict:
         return {
             "aetherUnavailable": True,
             "aetherAvailable": False,
-            "rateLimit": rate_limit_status(ip_address),
+            "rateLimit": rate_limit_status(ip_address, account_id),
         }
     if is_ip_banned(ip_address):
         return {"reply": "You can not use Aether because you are currently IP banned, you can try again later and see if you are unbanned. Thank you.", "ipBanned": True}
@@ -1093,7 +1160,7 @@ def chat_response(payload: dict, ip_address: str) -> dict:
         return {"reply": PROFANITY_BLOCK_MESSAGE, "profanityBlocked": True}
     if looks_like_location_time_request(message) and not location:
         return {"reply": "Aether needs your permission to see your location to give your location."}
-    rate = consume_rate_limit(ip_address)
+    rate = consume_rate_limit(ip_address, account_id)
     if not rate["allowed"]:
         return {
             "reply": "Your rate limit has been reached, try again later.",
@@ -1127,11 +1194,14 @@ def index():
 
 @app.get("/api/status")
 def api_status():
+    account = current_account()
+    public_account = account_public(account)
     return jsonify(
         {
             "aetherAvailable": is_aether_available(),
-            **account_auth_status(),
-            "rateLimit": rate_limit_status(client_ip()),
+            "signedIn": bool(public_account),
+            "account": public_account,
+            "rateLimit": rate_limit_status(client_ip(), account.get("id") if account else None),
         }
     )
 
@@ -1354,24 +1424,26 @@ def removed_endpoints():
 @app.post("/api/chat")
 def api_chat():
     ip_address = client_ip()
+    account = current_account()
+    account_id = account.get("id") if account else None
     try:
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
             payload = {}
         safe_record_request_event(ip_address)
-        return jsonify(chat_response(payload, ip_address))
+        return jsonify(chat_response(payload, ip_address, account_id))
     except APIStatusError as exc:
         return jsonify({"reply": groq_error_message(exc)})
     except (APIConnectionError, APITimeoutError):
-        refund_rate_limit(ip_address)
+        refund_rate_limit(ip_address, account_id)
         return jsonify({"retryable": True, "retryAfterSeconds": 4})
     except urllib.error.HTTPError as exc:
         return jsonify({"reply": http_error_message(exc)})
     except urllib.error.URLError:
-        refund_rate_limit(ip_address)
+        refund_rate_limit(ip_address, account_id)
         return jsonify({"retryable": True, "retryAfterSeconds": 4})
     except TimeoutError:
-        refund_rate_limit(ip_address)
+        refund_rate_limit(ip_address, account_id)
         return jsonify({"retryable": True, "retryAfterSeconds": 4})
     except Exception as exc:
         return jsonify({"reply": f"Server error: {exc}"})

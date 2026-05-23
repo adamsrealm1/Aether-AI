@@ -532,11 +532,12 @@ function renderRateLimitMeter() {
   const targetPercent = Math.round((remaining / limit) * 100);
   const displayPercent = clampPercent(Aether.state.rateMeter?.displayPercent ?? targetPercent);
   const resetInSeconds = currentRateResetSeconds(rate);
+  const resetTime = formatRateLimitResetTime(rate);
   return `
     <div class="rate-card" style="--rate-color: ${rateColor(displayPercent)}">
       <div class="rate-percent">${displayPercent}%</div>
       <div class="rate-track"><span class="rate-fill" style="width: ${displayPercent}%"></span></div>
-      <div class="rate-label">${remaining}/${limit} left - resets in ${escapeHtml(formatRateLimitDuration(resetInSeconds))}</div>
+      <div class="rate-label">${remaining}/${limit} left - resets in ${escapeHtml(formatRateLimitDuration(resetInSeconds))}${resetTime ? ` at ${escapeHtml(resetTime)}` : ""}</div>
     </div>
   `;
 }
@@ -593,11 +594,12 @@ function renderRateLimitPopup() {
   if (!Aether.state.rateLimitPopup) return "";
   const rate = Aether.state.rateLimit || {};
   const resetInSeconds = currentRateResetSeconds(rate);
+  const resetTime = formatRateLimitResetTime(rate);
   return `
     <div class="warning-overlay compact" role="dialog" aria-modal="true">
       <div class="warning-modal compact-modal">
         <h2>Oops!</h2>
-        <p>Wait ${escapeHtml(formatRateLimitDuration(resetInSeconds))} to use <strong>Aether</strong> AI again.</p>
+        <p>Wait ${escapeHtml(formatRateLimitDuration(resetInSeconds))}${resetTime ? ` until ${escapeHtml(resetTime)}` : ""} to use <strong>Aether</strong> AI again.</p>
         <button class="warning-understand" data-action="close-rate-limit">Okay.</button>
       </div>
     </div>
@@ -1643,13 +1645,16 @@ function updateRateMeterDom() {
   const remaining = Math.max(0, Math.min(limit, Number(rate.remaining ?? limit)));
   const displayPercent = clampPercent(Aether.state.rateMeter?.displayPercent ?? ratePercent(rate));
   const resetInSeconds = currentRateResetSeconds(rate);
+  const resetTime = formatRateLimitResetTime(rate);
   card.style.setProperty("--rate-color", rateColor(displayPercent));
   const percentElement = card.querySelector(".rate-percent");
   if (percentElement) percentElement.textContent = `${displayPercent}%`;
   const fillElement = card.querySelector(".rate-fill");
   if (fillElement) fillElement.style.width = `${displayPercent}%`;
   const labelElement = card.querySelector(".rate-label");
-  if (labelElement) labelElement.textContent = `${remaining}/${limit} left - resets in ${formatRateLimitDuration(resetInSeconds)}`;
+  if (labelElement) {
+    labelElement.textContent = `${remaining}/${limit} left - resets in ${formatRateLimitDuration(resetInSeconds)}${resetTime ? ` at ${resetTime}` : ""}`;
+  }
 }
 
 function ratePercent(rate) {
@@ -1723,6 +1728,19 @@ async function checkServerStatus() {
 async function authHeaders(base = {}) {
   const token = accountSessionToken();
   return token ? { ...base, Authorization: `Bearer ${token}` } : { ...base };
+}
+
+function formatRateLimitResetTime(rate) {
+  const resetAtMs = Date.parse(rate?.resetAt || "");
+  if (!Number.isFinite(resetAtMs)) return "";
+  try {
+    return new Date(resetAtMs).toLocaleTimeString([], {
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  } catch {
+    return "";
+  }
 }
 
 async function accountRequest(path, options = {}) {
