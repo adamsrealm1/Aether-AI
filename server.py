@@ -12,6 +12,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import Flask, jsonify, request, send_from_directory
 from groq import APIConnectionError, APIStatusError, APITimeoutError, Groq
@@ -20,6 +21,7 @@ ROOT = Path(__file__).resolve().parent
 PROFANITY_BLOCK_MESSAGE = "You cant send Aether a message with profanity in it. You can try again without profanity in your message."
 DEFAULT_RATE_LIMIT = 300
 DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60
+DEFAULT_RATE_LIMIT_TIMEZONE = "America/New_York"
 SESSION_COOKIE_NAME = "aether_session"
 SESSION_LIFETIME_DAYS = 30
 PASSWORD_HASH_ITERATIONS = 260000
@@ -87,11 +89,43 @@ def rate_limit_window_seconds() -> int:
 
 def global_rate_limit_reset_at(now: datetime, window_seconds: int) -> datetime:
     window_seconds = max(1, int(window_seconds or DEFAULT_RATE_LIMIT_WINDOW_SECONDS))
-    epoch_seconds = int(now.timestamp())
-    seconds_until_reset = window_seconds - (epoch_seconds % window_seconds)
+    local_now = now.astimezone(rate_limit_timezone(now))
+    local_midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    seconds_since_midnight = int((local_now - local_midnight).total_seconds())
+    seconds_until_reset = window_seconds - (seconds_since_midnight % window_seconds)
     if seconds_until_reset <= 0:
         seconds_until_reset = window_seconds
-    return datetime.fromtimestamp(epoch_seconds + seconds_until_reset, timezone.utc)
+    return (local_now + timedelta(seconds=seconds_until_reset)).astimezone(timezone.utc).replace(microsecond=0)
+
+
+def rate_limit_timezone(now: datetime | None = None):
+    try:
+        return ZoneInfo(os.getenv("AETHER_RATE_LIMIT_TIMEZONE", DEFAULT_RATE_LIMIT_TIMEZONE).strip() or DEFAULT_RATE_LIMIT_TIMEZONE)
+    except ZoneInfoNotFoundError:
+        if (os.getenv("AETHER_RATE_LIMIT_TIMEZONE", DEFAULT_RATE_LIMIT_TIMEZONE).strip() or DEFAULT_RATE_LIMIT_TIMEZONE) == DEFAULT_RATE_LIMIT_TIMEZONE:
+            return timezone(eastern_utc_offset(now or utc_now()), DEFAULT_RATE_LIMIT_TIMEZONE)
+        return timezone.utc
+
+
+def eastern_utc_offset(now: datetime) -> timedelta:
+    utc_now_value = now.astimezone(timezone.utc)
+    year = utc_now_value.year
+    dst_start = eastern_dst_transition_utc(year, 3, 2, -5)
+    dst_end = eastern_dst_transition_utc(year, 11, 1, -4)
+    return timedelta(hours=-4 if dst_start <= utc_now_value < dst_end else -5)
+
+
+def eastern_dst_transition_utc(year: int, month: int, occurrence: int, offset_before_hours: int) -> datetime:
+    day = 1
+    matches = 0
+    while True:
+        candidate = datetime(year, month, day, 2, 0)
+        if candidate.weekday() == 6:
+            matches += 1
+            if matches == occurrence:
+                local_before_transition = candidate.replace(tzinfo=timezone(timedelta(hours=offset_before_hours)))
+                return local_before_transition.astimezone(timezone.utc)
+        day += 1
 
 
 def rate_limit_status(ip_address: str | None = None, account_id: object = None) -> dict:

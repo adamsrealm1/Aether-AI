@@ -425,7 +425,7 @@ function renderBanIpPanel(bannedIps) {
             </div>
             <button class="secondary-button" data-unban-ip="${escapeHtml(item.ipAddress || "")}">Unban</button>
           </div>
-        `).join("") || `<div class="admin-empty">No banned IPs.</div>`}
+        `).join("") || `<div class="admin-empty">No banned users/IPs.</div>`}
       </div>
     </section>
   `;
@@ -531,13 +531,12 @@ function renderRateLimitMeter() {
   const remaining = Math.max(0, Math.min(limit, Number(rate.remaining ?? limit)));
   const targetPercent = Math.round((remaining / limit) * 100);
   const displayPercent = clampPercent(Aether.state.rateMeter?.displayPercent ?? targetPercent);
-  const resetInSeconds = currentRateResetSeconds(rate);
   const resetTime = formatRateLimitResetTime(rate);
   return `
     <div class="rate-card" style="--rate-color: ${rateColor(displayPercent)}">
       <div class="rate-percent">${displayPercent}%</div>
       <div class="rate-track"><span class="rate-fill" style="width: ${displayPercent}%"></span></div>
-      <div class="rate-label">${remaining}/${limit} left - resets in ${escapeHtml(formatRateLimitDuration(resetInSeconds))}${resetTime ? ` at ${escapeHtml(resetTime)}` : ""}</div>
+      <div class="rate-label">${remaining}/${limit} left - ${escapeHtml(rateResetLabel(resetTime))}</div>
     </div>
   `;
 }
@@ -593,13 +592,12 @@ function renderProfanityPopup() {
 function renderRateLimitPopup() {
   if (!Aether.state.rateLimitPopup) return "";
   const rate = Aether.state.rateLimit || {};
-  const resetInSeconds = currentRateResetSeconds(rate);
   const resetTime = formatRateLimitResetTime(rate);
   return `
     <div class="warning-overlay compact" role="dialog" aria-modal="true">
       <div class="warning-modal compact-modal">
         <h2>Oops!</h2>
-        <p>Wait ${escapeHtml(formatRateLimitDuration(resetInSeconds))}${resetTime ? ` until ${escapeHtml(resetTime)}` : ""} to use <strong>Aether</strong> AI again.</p>
+        <p>${escapeHtml(rateResetLabel(resetTime))}.</p>
         <button class="warning-understand" data-action="close-rate-limit">Okay.</button>
       </div>
     </div>
@@ -1574,18 +1572,15 @@ function resetExpiredRateLimitWindow() {
   rate.used = 0;
   rate.remaining = limit;
   rate.percentUsed = 0;
-  rate.resetAt = nextGlobalRateResetAt(rate.windowSeconds);
+  rate.resetAt = "";
   rate.resetInSeconds = currentRateResetSeconds(rate);
   animateRateMeterTo(100);
 }
 
 function normalizeRateLimitDeadline(rate, source = rate) {
   const normalized = { ...rate };
-  if (!Object.prototype.hasOwnProperty.call(source || {}, "resetAt")) {
-    const resetInSeconds = Number(normalized.resetInSeconds);
-    if (Number.isFinite(resetInSeconds) && resetInSeconds > 0) {
-      normalized.resetAt = new Date(Date.now() + resetInSeconds * 1000).toISOString();
-    }
+  if (!Object.prototype.hasOwnProperty.call(source || {}, "resetAt") && !Date.parse(normalized.resetAt || "")) {
+    normalized.resetAt = "";
   }
   normalized.resetInSeconds = currentRateResetSeconds(normalized);
   return normalized;
@@ -1597,14 +1592,6 @@ function currentRateResetSeconds(rate) {
     return Math.max(0, Math.ceil((resetAtMs - Date.now()) / 1000));
   }
   return Math.max(0, Math.floor(Number(rate?.resetInSeconds || 0)));
-}
-
-function nextGlobalRateResetAt(windowSeconds) {
-  const windowMs = Math.max(1, Number(windowSeconds || 60)) * 1000;
-  const now = Date.now();
-  const remainder = now % windowMs;
-  const nextReset = now + (remainder === 0 ? windowMs : windowMs - remainder);
-  return new Date(nextReset).toISOString();
 }
 
 function bindRateLimitClockEvents() {
@@ -1644,7 +1631,6 @@ function updateRateMeterDom() {
   const limit = Math.max(1, Number(rate.limit || 300));
   const remaining = Math.max(0, Math.min(limit, Number(rate.remaining ?? limit)));
   const displayPercent = clampPercent(Aether.state.rateMeter?.displayPercent ?? ratePercent(rate));
-  const resetInSeconds = currentRateResetSeconds(rate);
   const resetTime = formatRateLimitResetTime(rate);
   card.style.setProperty("--rate-color", rateColor(displayPercent));
   const percentElement = card.querySelector(".rate-percent");
@@ -1653,7 +1639,7 @@ function updateRateMeterDom() {
   if (fillElement) fillElement.style.width = `${displayPercent}%`;
   const labelElement = card.querySelector(".rate-label");
   if (labelElement) {
-    labelElement.textContent = `${remaining}/${limit} left - resets in ${formatRateLimitDuration(resetInSeconds)}${resetTime ? ` at ${resetTime}` : ""}`;
+    labelElement.textContent = `${remaining}/${limit} left - ${rateResetLabel(resetTime)}`;
   }
 }
 
@@ -1665,39 +1651,6 @@ function ratePercent(rate) {
 
 function clampPercent(value) {
   return Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
-}
-
-function formatRateLimitDuration(seconds) {
-  const totalSeconds = Math.max(0, Math.floor(Number(seconds) || 0));
-  if (totalSeconds <= 0) return "now";
-
-  const days = Math.floor(totalSeconds / 86400);
-  const hours = Math.floor((totalSeconds % 86400) / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const remainingSeconds = totalSeconds % 60;
-
-  if (days > 0) {
-    const parts = [`${days} ${days === 1 ? "day" : "days"}`];
-    if (hours > 0) parts.push(`${hours} ${hours === 1 ? "hr" : "hrs"}`);
-    if (minutes > 0 && parts.length < 3) parts.push(`${minutes} ${minutes === 1 ? "min" : "mins"}`);
-    return parts.join(" ");
-  }
-
-  if (hours > 0) {
-    const parts = [`${hours} ${hours === 1 ? "hr" : "hrs"}`];
-    if (minutes > 0) parts.push(`${minutes} ${minutes === 1 ? "min" : "mins"}`);
-    return parts.join(" ");
-  }
-
-  if (minutes > 0) {
-    const minuteLabel = `${minutes} ${minutes === 1 ? "min" : "minutes"}`;
-    if (remainingSeconds > 0) {
-      return `${minuteLabel} and ${remainingSeconds} ${remainingSeconds === 1 ? "second" : "seconds"}`;
-    }
-    return minuteLabel;
-  }
-
-  return `${totalSeconds} ${totalSeconds === 1 ? "second" : "seconds"}`;
 }
 
 function rateColor(percent) {
@@ -1741,6 +1694,10 @@ function formatRateLimitResetTime(rate) {
   } catch {
     return "";
   }
+}
+
+function rateResetLabel(resetTime) {
+  return resetTime ? `Resets at ${resetTime}` : "Reset time unavailable";
 }
 
 async function accountRequest(path, options = {}) {
