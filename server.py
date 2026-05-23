@@ -22,6 +22,7 @@ PROFANITY_BLOCK_MESSAGE = "You cant send Aether a message with profanity in it. 
 DEFAULT_RATE_LIMIT = 300
 DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60
 DEFAULT_RATE_LIMIT_TIMEZONE = "America/New_York"
+MAX_PROFILE_PICTURE_DATA_URL_LENGTH = 750000
 SESSION_COOKIE_NAME = "aether_session"
 SESSION_LIFETIME_DAYS = 30
 PASSWORD_HASH_ITERATIONS = 260000
@@ -314,6 +315,15 @@ def ensure_admin_db() -> None:
             ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
             """,
             """
+            CREATE TABLE IF NOT EXISTS account_profile_pictures (
+              account_id BIGINT PRIMARY KEY,
+              approved_data_url MEDIUMTEXT,
+              approved_at VARCHAR(40),
+              pending_data_url MEDIUMTEXT,
+              pending_at VARCHAR(40)
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+            """,
+            """
             CREATE TABLE IF NOT EXISTS rate_limit_buckets (
               bucket_key VARCHAR(160) PRIMARY KEY,
               count INT NOT NULL,
@@ -378,6 +388,15 @@ def ensure_admin_db() -> None:
               last_seen_at TEXT NOT NULL,
               ip_address TEXT,
               user_agent TEXT
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS account_profile_pictures (
+              account_id INTEGER PRIMARY KEY,
+              approved_data_url TEXT,
+              approved_at TEXT,
+              pending_data_url TEXT,
+              pending_at TEXT
             )
             """,
             """
@@ -723,12 +742,118 @@ def verify_password(password: object, stored_hash: object) -> bool:
 def account_public(row: dict | None) -> dict | None:
     if not row:
         return None
+    profile_picture = account_profile_picture(row.get("id"))
     return {
         "id": row.get("id"),
         "username": row.get("username") or "",
         "createdAt": row.get("created_at"),
         "lastLoginAt": row.get("last_login_at"),
+        "profilePictureUrl": profile_picture.get("approvedDataUrl") or "",
+        "profilePicturePending": bool(profile_picture.get("pendingDataUrl")),
     }
+
+
+def account_profile_picture(account_id: object) -> dict:
+    if account_id is None or str(account_id).strip() == "":
+        return {"approvedDataUrl": "", "pendingDataUrl": "", "pendingAt": None, "approvedAt": None}
+    placeholder = db_placeholder()
+    rows = db_query(
+        (
+            "SELECT approved_data_url, approved_at, pending_data_url, pending_at "
+            f"FROM account_profile_pictures WHERE account_id = {placeholder}"
+        ),
+        (account_id,),
+    )
+    if not rows:
+        return {"approvedDataUrl": "", "pendingDataUrl": "", "pendingAt": None, "approvedAt": None}
+    row = rows[0]
+    return {
+        "approvedDataUrl": row.get("approved_data_url") or "",
+        "approvedAt": row.get("approved_at"),
+        "pendingDataUrl": row.get("pending_data_url") or "",
+        "pendingAt": row.get("pending_at"),
+    }
+
+
+def validate_profile_picture_data_url(value: object) -> str:
+    data_url = str(value or "").strip()
+    if not data_url:
+        raise ValueError("Choose a profile picture first.")
+    if len(data_url) > MAX_PROFILE_PICTURE_DATA_URL_LENGTH:
+        raise ValueError("Profile picture is too large.")
+    if not re.fullmatch(r"data:image/(?:png|jpeg|jpg|webp);base64,[A-Za-z0-9+/=\s]+", data_url):
+        raise ValueError("Profile picture must be a PNG, JPG, or WebP image.")
+    return re.sub(r"\s+", "", data_url)
+
+
+def set_pending_profile_picture(account_id: object, data_url: object) -> None:
+    data_url = validate_profile_picture_data_url(data_url)
+    now = utc_iso()
+    if database_provider() == "mysql":
+        db_execute(
+            (
+                "INSERT INTO account_profile_pictures (account_id, pending_data_url, pending_at) VALUES (%s, %s, %s) "
+                "ON DUPLICATE KEY UPDATE pending_data_url = VALUES(pending_data_url), pending_at = VALUES(pending_at)"
+            ),
+            (account_id, data_url, now),
+        )
+    else:
+        db_execute(
+            (
+                "INSERT INTO account_profile_pictures (account_id, approved_data_url, approved_at, pending_data_url, pending_at) "
+                "VALUES (?, NULL, NULL, ?, ?) "
+                "ON CONFLICT(account_id) DO UPDATE SET pending_data_url = excluded.pending_data_url, pending_at = excluded.pending_at"
+            ),
+            (account_id, data_url, now),
+        )
+
+
+def delete_profile_picture(account_id: object) -> None:
+    placeholder = db_placeholder()
+    db_execute(f"DELETE FROM account_profile_pictures WHERE account_id = {placeholder}", (account_id,))
+
+
+def pending_profile_pictures() -> list[dict]:
+    rows = db_query(
+        (
+            "SELECT accounts.id, accounts.username, account_profile_pictures.pending_data_url, account_profile_pictures.pending_at "
+            "FROM account_profile_pictures JOIN accounts ON accounts.id = account_profile_pictures.account_id "
+            "WHERE account_profile_pictures.pending_data_url IS NOT NULL AND account_profile_pictures.pending_data_url <> '' "
+            "ORDER BY account_profile_pictures.pending_at ASC"
+        )
+    )
+    return [
+        {
+            "accountId": row.get("id"),
+            "username": row.get("username") or "",
+            "imageDataUrl": row.get("pending_data_url") or "",
+            "submittedAt": row.get("pending_at"),
+        }
+        for row in rows
+    ]
+
+
+def approve_profile_picture(account_id: object) -> None:
+    picture = account_profile_picture(account_id)
+    if not picture.get("pendingDataUrl"):
+        raise ValueError("No pending profile picture was found.")
+    placeholder = db_placeholder()
+    now = utc_iso()
+    db_execute(
+        (
+            f"UPDATE account_profile_pictures SET approved_data_url = {placeholder}, approved_at = {placeholder}, "
+            f"pending_data_url = NULL, pending_at = NULL WHERE account_id = {placeholder}"
+        ),
+        (picture["pendingDataUrl"], now, account_id),
+    )
+
+
+def decline_profile_picture(account_id: object) -> None:
+    placeholder = db_placeholder()
+    db_execute(
+        f"UPDATE account_profile_pictures SET pending_data_url = NULL, pending_at = NULL WHERE account_id = {placeholder}",
+        (account_id,),
+    )
 
 
 def find_account_by_username(username: str) -> dict | None:
@@ -794,6 +919,7 @@ def update_account_password(account_id: object, current_password: object, new_pa
 def delete_account(account_id: object) -> None:
     placeholder = db_placeholder()
     db_execute(f"DELETE FROM account_sessions WHERE account_id = {placeholder}", (account_id,))
+    db_execute(f"DELETE FROM account_profile_pictures WHERE account_id = {placeholder}", (account_id,))
     db_execute(f"DELETE FROM accounts WHERE id = {placeholder}", (account_id,))
 
 
@@ -957,6 +1083,7 @@ def admin_status(include_all_blocked: bool = False) -> dict:
         "bannedIps": banned_ips(),
         "blockedAttempts": blocked_attempts(include_all_blocked),
         "accounts": account_summaries(),
+        "pendingProfilePictures": pending_profile_pictures(),
         "database": database_summary(),
     }
 
@@ -1319,6 +1446,32 @@ def api_account_password():
         return jsonify({"error": str(exc)}), 400
 
 
+@app.post("/api/account/profile-picture")
+def api_account_profile_picture():
+    account = current_account()
+    if not account:
+        return jsonify({"error": "Sign in first."}), 401
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    try:
+        set_pending_profile_picture(account.get("id"), payload.get("imageDataUrl"))
+        account = find_account_by_id(account.get("id"))
+        return account_response(account, {"message": "Profile picture is waiting for admin approval."})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.delete("/api/account/profile-picture")
+def api_account_profile_picture_delete():
+    account = current_account()
+    if not account:
+        return jsonify({"error": "Sign in first."}), 401
+    delete_profile_picture(account.get("id"))
+    account = find_account_by_id(account.get("id"))
+    return account_response(account, {"message": "Profile picture removed."})
+
+
 @app.delete("/api/account")
 def api_account_delete():
     account = current_account()
@@ -1437,6 +1590,36 @@ def api_admin_delete_account():
         return jsonify({"error": "Account was not found."}), 404
     delete_account(account_id)
     return jsonify(admin_status())
+
+
+@app.post("/api/admin/profile-picture/approve")
+def api_admin_profile_picture_approve():
+    denied = require_admin()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    try:
+        approve_profile_picture(payload.get("accountId"))
+        return jsonify(admin_status())
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/admin/profile-picture/decline")
+def api_admin_profile_picture_decline():
+    denied = require_admin()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    try:
+        decline_profile_picture(payload.get("accountId"))
+        return jsonify(admin_status())
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
 
 @app.route("/api/admin/blocked-attempts", methods=["GET", "OPTIONS"])

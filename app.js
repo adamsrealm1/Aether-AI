@@ -64,6 +64,7 @@ const PROFANITY_BLOCK_MESSAGE = "You cant send Aether a message with profanity i
 const VOICE_AUTO_SEND_DELAY_MS = 1800;
 const ACCOUNT_SESSION_TOKEN_KEY = "aether.accountSessionToken";
 const MOBILE_SCROLL_FADE_QUERY = "(max-width: 860px), (pointer: coarse)";
+const MAX_PROFILE_PICTURE_FILE_SIZE = 560000;
 const PROFANITY_PATTERNS = [
   /\bass\b/i,
   /\basshole\b/i,
@@ -259,7 +260,7 @@ function renderAccountSidebarButton() {
   if (Aether.state.signedIn && Aether.state.account) {
     return `
       <button class="account-tab signed-in" data-action="account-tab">
-        <span class="account-avatar">${escapeHtml(accountInitials(Aether.state.account.username))}</span>
+        ${renderAccountAvatar(Aether.state.account)}
         <span class="account-tab-copy">
           <strong>${escapeHtml(Aether.state.account.username)}</strong>
           <small>Account</small>
@@ -268,6 +269,14 @@ function renderAccountSidebarButton() {
     `;
   }
   return `<button class="account-tab" data-action="signin-tab">Sign in</button>`;
+}
+
+function renderAccountAvatar(account, large = false) {
+  const largeClass = large ? " large" : "";
+  if (account?.profilePictureUrl) {
+    return `<img class="account-avatar${largeClass}" src="${escapeHtml(account.profilePictureUrl)}" alt="${escapeHtml(account.username || "Account")}">`;
+  }
+  return `<span class="account-avatar${largeClass}">${escapeHtml(accountInitials(account?.username || ""))}</span>`;
 }
 
 function renderChatPage(chat) {
@@ -315,6 +324,7 @@ function renderAdminPage() {
   const database = status.database || {};
   const rate = status.rateLimit || Aether.state.rateLimit || {};
   const accounts = status.accounts || [];
+  const pendingProfilePictures = status.pendingProfilePictures || [];
   const available = status.aetherAvailable !== false;
   const locked = !Aether.state.adminSecret;
 
@@ -381,6 +391,7 @@ function renderAdminPage() {
             ${renderBlockedAttemptsPanel(status.blockedAttempts || [])}
           </section>
           ${renderAdminAccountsPanel(accounts)}
+          ${renderProfilePictureReviewPanel(pendingProfilePictures)}
         `}
       </div>
     </main>
@@ -474,6 +485,32 @@ function renderAdminAccountsPanel(accounts) {
             <button class="danger-button" data-admin-delete-account="${escapeHtml(account.id || "")}"${Aether.state.adminLoading ? " disabled" : ""}>Delete</button>
           </div>
         `).join("") || `<div class="admin-empty">No accounts yet.</div>`}
+      </div>
+    </section>
+  `;
+}
+
+function renderProfilePictureReviewPanel(requests) {
+  return `
+    <section class="admin-panel pfp-review-panel">
+      <div class="admin-panel-head">
+        <h2>Profile pictures</h2>
+        <span>${requests.length}</span>
+      </div>
+      <div class="admin-list pfp-review-list">
+        ${requests.map((request) => `
+          <div class="admin-list-item pfp-review-item">
+            <img class="pfp-review-image" src="${escapeHtml(request.imageDataUrl || "")}" alt="${escapeHtml(request.username || "Pending profile picture")}">
+            <div>
+              <strong>${escapeHtml(request.username || "")}</strong>
+              <small>Submitted ${escapeHtml(formatAdminDate(request.submittedAt))}</small>
+            </div>
+            <div class="pfp-review-actions">
+              <button class="primary-button" data-admin-approve-pfp="${escapeHtml(request.accountId || "")}"${Aether.state.adminLoading ? " disabled" : ""}>Approve</button>
+              <button class="secondary-button" data-admin-decline-pfp="${escapeHtml(request.accountId || "")}"${Aether.state.adminLoading ? " disabled" : ""}>Decline</button>
+            </div>
+          </div>
+        `).join("") || `<div class="admin-empty">No profile pictures waiting for review.</div>`}
       </div>
     </section>
   `;
@@ -642,7 +679,7 @@ function renderAccountModal() {
       <div class="account-card">
         <button class="modal-close" type="button" data-action="close-account-modal" aria-label="Close">×</button>
         <div class="account-card-head">
-          <div class="account-avatar large">${escapeHtml(accountInitials(account.username))}</div>
+          ${renderAccountAvatar(account, true)}
           <div>
             <span class="auth-badge">Signed in</span>
             <h2 id="account-title">${escapeHtml(account.username)}</h2>
@@ -650,6 +687,17 @@ function renderAccountModal() {
           </div>
         </div>
         ${Aether.state.accountError ? `<div class="form-alert">${escapeHtml(Aether.state.accountError)}</div>` : ""}
+        <form class="account-form pfp-form" data-action="account-profile-picture">
+          <label>
+            <span>Profile picture</span>
+            <input name="profilePicture" type="file" accept="image/png,image/jpeg,image/webp" required>
+          </label>
+          <button class="secondary-button" type="submit"${Aether.state.accountLoading ? " disabled" : ""}>Submit for approval</button>
+        </form>
+        ${account.profilePicturePending ? `<div class="form-note">Your profile picture is waiting for admin approval.</div>` : ""}
+        ${(account.profilePictureUrl || account.profilePicturePending) ? `
+          <button class="secondary-button" type="button" data-action="account-profile-picture-delete"${Aether.state.accountLoading ? " disabled" : ""}>Delete profile picture</button>
+        ` : ""}
         <form class="account-form" data-action="account-username">
           <label>
             <span>Change username</span>
@@ -794,6 +842,8 @@ function bindAccountEvents(root) {
     });
   });
   root.querySelector("[data-action='auth-submit']")?.addEventListener("submit", submitAuthForm);
+  root.querySelector("[data-action='account-profile-picture']")?.addEventListener("submit", submitProfilePicture);
+  root.querySelector("[data-action='account-profile-picture-delete']")?.addEventListener("click", deleteProfilePicture);
   root.querySelector("[data-action='account-username']")?.addEventListener("submit", submitUsernameChange);
   root.querySelector("[data-action='account-password']")?.addEventListener("submit", submitPasswordChange);
   root.querySelector("[data-action='account-delete']")?.addEventListener("submit", submitAccountDelete);
@@ -823,6 +873,61 @@ async function submitAuthForm(event) {
     Aether.state.authError = error?.message || "Account request failed.";
   } finally {
     Aether.state.authLoading = false;
+    render();
+  }
+}
+
+async function submitProfilePicture(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const file = form.profilePicture?.files?.[0];
+  if (!file) {
+    Aether.state.accountError = "Choose a profile picture first.";
+    render();
+    return;
+  }
+  if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
+    Aether.state.accountError = "Profile picture must be a PNG, JPG, or WebP image.";
+    render();
+    return;
+  }
+  if (file.size > MAX_PROFILE_PICTURE_FILE_SIZE) {
+    Aether.state.accountError = "Profile picture is too large.";
+    render();
+    return;
+  }
+
+  Aether.state.accountLoading = true;
+  Aether.state.accountError = "";
+  render();
+  try {
+    const imageDataUrl = await readFileAsDataUrl(file);
+    const result = await accountRequest("/api/account/profile-picture", {
+      method: "POST",
+      body: JSON.stringify({ imageDataUrl }),
+    });
+    applyAccountStatus(result);
+    showToast(result.message || "Profile picture submitted.");
+  } catch (error) {
+    Aether.state.accountError = error?.message || "Profile picture could not be submitted.";
+  } finally {
+    Aether.state.accountLoading = false;
+    render();
+  }
+}
+
+async function deleteProfilePicture() {
+  Aether.state.accountLoading = true;
+  Aether.state.accountError = "";
+  render();
+  try {
+    const result = await accountRequest("/api/account/profile-picture", { method: "DELETE" });
+    applyAccountStatus(result);
+    showToast(result.message || "Profile picture removed.");
+  } catch (error) {
+    Aether.state.accountError = error?.message || "Profile picture could not be removed.";
+  } finally {
+    Aether.state.accountLoading = false;
     render();
   }
 }
@@ -1019,6 +1124,24 @@ function bindAdminEvents(root) {
         body: JSON.stringify({ accountId }),
       });
       if (deleted) showToast("Account deleted.");
+    });
+  });
+  root.querySelectorAll("[data-admin-approve-pfp]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const approved = await adminRequest("/api/admin/profile-picture/approve", {
+        method: "POST",
+        body: JSON.stringify({ accountId: button.dataset.adminApprovePfp || "" }),
+      });
+      if (approved) showToast("Profile picture approved.");
+    });
+  });
+  root.querySelectorAll("[data-admin-decline-pfp]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const declined = await adminRequest("/api/admin/profile-picture/decline", {
+        method: "POST",
+        body: JSON.stringify({ accountId: button.dataset.adminDeclinePfp || "" }),
+      });
+      if (declined) showToast("Profile picture declined.");
     });
   });
   root.querySelector("[data-action='admin-show-all']")?.addEventListener("click", () => {
@@ -2132,6 +2255,15 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => resolve(String(reader.result || "")));
+    reader.addEventListener("error", () => reject(new Error("Profile picture could not be read.")));
+    reader.readAsDataURL(file);
+  });
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -2369,6 +2501,10 @@ function injectStyles() {
       font-size: 12px;
       font-weight: 900;
       letter-spacing: 0;
+    }
+    img.account-avatar {
+      display: block;
+      object-fit: cover;
     }
     .account-avatar.large {
       width: 54px;
@@ -3260,6 +3396,15 @@ function injectStyles() {
       font-size: 13px;
       font-weight: 760;
     }
+    .form-note {
+      padding: 10px 12px;
+      border: 1px solid rgba(45, 212, 191, 0.24);
+      border-radius: 10px;
+      color: #bfdbfe;
+      background: rgba(13, 148, 136, 0.12);
+      font-size: 13px;
+      font-weight: 760;
+    }
     .account-form {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
@@ -3284,6 +3429,26 @@ function injectStyles() {
     }
     .account-admin-item .danger-button {
       align-self: center;
+    }
+    .pfp-review-panel {
+      margin-top: 14px;
+    }
+    .pfp-review-item {
+      grid-template-columns: auto minmax(0, 1fr) auto;
+    }
+    .pfp-review-image {
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      object-fit: cover;
+      border: 1px solid rgba(191, 219, 254, 0.24);
+      background: rgba(2, 6, 23, 0.58);
+    }
+    .pfp-review-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: flex-end;
     }
     .warning-overlay {
       position: fixed;
