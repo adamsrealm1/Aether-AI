@@ -1988,7 +1988,7 @@ def aether_system_prompt(speed_mode: str) -> str:
         "Never use markdown formatting like bolding or italics."
         "Keep responses as helpful and reasonable as possible."
     )
-s
+
 
 def groq_reply(message: str, chat: list[dict], speed_mode: str = "default") -> str:
     now = datetime.now().astimezone().strftime("%A, %B %d, %Y at %I:%M %p %Z")
