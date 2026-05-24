@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 import sqlite3
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -318,8 +319,51 @@ def database_summary() -> dict:
     return {"provider": database_provider(), "ready": DB_INITIALIZED}
 
 
+def default_rate_limit_status(account_id: object = None) -> dict:
+    try:
+        settings = request_rate_limit_settings(account_id)
+    except Exception:
+        settings = {
+            "limit": ANONYMOUS_DAILY_RATE_LIMIT if not str(account_id or "").strip() else DEFAULT_RATE_LIMIT,
+            "windowSeconds": ANONYMOUS_DAILY_RATE_LIMIT_WINDOW_SECONDS if not str(account_id or "").strip() else DEFAULT_RATE_LIMIT_WINDOW_SECONDS,
+        }
+    limit = int(settings["limit"])
+    window_seconds = int(settings["windowSeconds"])
+    reset_at = global_rate_limit_reset_at(utc_now(), window_seconds)
+    return {
+        "limit": limit,
+        "used": 0,
+        "remaining": limit,
+        "percentUsed": 0,
+        "resetAt": reset_at.isoformat(),
+        "resetInSeconds": max(0, int((reset_at - utc_now()).total_seconds())),
+        "windowSeconds": window_seconds,
+    }
+
+
 def db_placeholder() -> str:
     return "%s" if database_provider() == "mysql" else "?"
+
+
+def sqlite_database_path() -> Path:
+    configured = os.getenv("AETHER_SQLITE_PATH", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+
+    candidates = [
+        ROOT / "aether_admin.sqlite3",
+        Path(tempfile.gettempdir()) / "aether_admin.sqlite3",
+    ]
+    for path in candidates:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path.parent / ".aether_write_test", "w", encoding="utf-8") as handle:
+                handle.write("ok")
+            (path.parent / ".aether_write_test").unlink(missing_ok=True)
+            return path
+        except Exception:
+            continue
+    return Path(tempfile.gettempdir()) / "aether_admin.sqlite3"
 
 
 def db_connect():
@@ -337,7 +381,7 @@ def db_connect():
             charset="utf8mb4",
         )
 
-    connection = sqlite3.connect(ROOT / "aether_admin.sqlite3")
+    connection = sqlite3.connect(sqlite_database_path())
     connection.row_factory = sqlite3.Row
     return connection
 
@@ -1930,21 +1974,21 @@ def speed_mode_rate_limit_cost(speed_mode: str) -> int:
 def aether_system_prompt(speed_mode: str) -> str:
     if normalized_speed_mode(speed_mode) == "fast":
         return (
-            "You are Aether, a smart AI model. "
-            "Never mention providers, sources, tokens, API calls, "
+            "You are Aether, a friendly AI model on a website. "
+            "Never mention ChatGPT, OpenAI, AI, providers, sources, tokens, API calls, "
             "or implementation details. "
-            "Keep responses short."
-            "Never use markdown formatting like bold and italics."
+            "Use Markdown-style formatting like bold, italics, headers, lists, code, and emoji when it improves the answer. "
+            "Keep responses short and easy."
         )
     return (
         "You are Aether, a friendly AI model on a website. "
         "Be friendly. Respond as helpful as possible and be respectful. "
-        "Never mention providers, sources, tokens, API calls, "
+        "Never mention ChatGPT, OpenAI, AI, providers, sources, tokens, API calls, "
         "or implementation details. "
-        "Never use markdown formatting like bold and italics."
+        "Use Markdown-style formatting like bold, italics, headers, lists, code, and emoji when it improves the answer. "
         "Keep responses as helpful and reasonable as possible."
     )
-s
+
 
 def groq_reply(message: str, chat: list[dict], speed_mode: str = "default") -> str:
     now = datetime.now().astimezone().strftime("%A, %B %d, %Y at %I:%M %p %Z")
@@ -2198,17 +2242,32 @@ def request_entity_too_large(_exc):
 @app.get("/api/status")
 def api_status():
     ip_address = client_ip()
-    account = current_account()
-    public_account = account_public(account)
-    ban_record = request_ban_record(ip_address, account)
+    try:
+        account = current_account()
+        public_account = account_public(account)
+    except Exception:
+        account = None
+        public_account = None
+    try:
+        ban_record = request_ban_record(ip_address, account)
+    except Exception:
+        ban_record = None
+    try:
+        available = is_aether_available()
+    except Exception:
+        available = True
+    try:
+        rate_limit = rate_limit_status(ip_address, account.get("id") if account else None)
+    except Exception:
+        rate_limit = default_rate_limit_status(account.get("id") if account else None)
     return jsonify(
         {
-            "aetherAvailable": is_aether_available(),
+            "aetherAvailable": available,
             "banned": bool(ban_record),
             "ban": public_ban_details(ban_record) if ban_record else {"banned": False},
             "signedIn": bool(public_account),
             "account": public_account,
-            "rateLimit": rate_limit_status(ip_address, account.get("id") if account else None),
+            "rateLimit": rate_limit,
         }
     )
 
