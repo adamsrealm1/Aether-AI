@@ -1978,7 +1978,7 @@ def aether_system_prompt(speed_mode: str) -> str:
             "Never mention ChatGPT, OpenAI, AI, providers, sources, tokens, API calls, "
             "or implementation details. "
             "Never use markdown formatting like bolding or italics."
-            "Keep responses short."
+            "Keep responses as short as possible."
         )
     return (
         "You are Aether, a friendly AI model on a website. "
