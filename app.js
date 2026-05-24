@@ -1568,18 +1568,22 @@ function isAetherAvailable() {
 }
 
 function applyServerStatus(data) {
+  let accountChanged = false;
   if (Object.prototype.hasOwnProperty.call(data, "aetherAvailable")) {
     setAetherAvailability(data.aetherAvailable !== false);
   }
   if (Object.prototype.hasOwnProperty.call(data, "signedIn")) {
-    applyAccountStatus(data);
+    accountChanged = applyAccountStatus(data);
   }
   if (data.rateLimit) {
     updateRateLimit(data.rateLimit);
   }
+  return accountChanged;
 }
 
 function applyAccountStatus(data) {
+  const previousSignedIn = Aether.state.signedIn;
+  const previousAccountKey = accountRenderKey(Aether.state.account);
   if (data?.sessionToken) {
     setAccountSessionToken(data.sessionToken);
   } else if (data?.signedIn === false) {
@@ -1590,6 +1594,17 @@ function applyAccountStatus(data) {
   if (!Aether.state.signedIn) {
     Aether.state.accountModal = false;
   }
+  return previousSignedIn !== Aether.state.signedIn || previousAccountKey !== accountRenderKey(Aether.state.account);
+}
+
+function accountRenderKey(account) {
+  if (!account) return "";
+  return [
+    account.id ?? "",
+    account.username ?? "",
+    account.profilePictureUrl ?? "",
+    account.profilePicturePending ? "pending" : "",
+  ].join("|");
 }
 
 function accountSessionToken() {
@@ -1655,7 +1670,8 @@ async function pingServerStatus() {
     if (!response.ok) throw new Error(`Status failed with HTTP ${response.status}`);
     const data = await response.json();
     setServerOnline(true);
-    applyServerStatus(data);
+    const accountChanged = applyServerStatus(data);
+    if (accountChanged) render();
   } catch {
     setServerOnline(false);
   }
@@ -1792,9 +1808,10 @@ async function checkServerStatus() {
     if (!response.ok) throw new Error(`Status failed with HTTP ${response.status}`);
     const data = await response.json();
     setServerOnline(true);
-    applyServerStatus(data);
+    const accountChanged = applyServerStatus(data);
     storage.save();
     updateRateMeterDom();
+    if (accountChanged) render();
   } catch {
     setServerOnline(false);
   }
