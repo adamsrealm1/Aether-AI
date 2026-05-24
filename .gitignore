@@ -2,3 +2,4 @@
 __pycache__/
 *.pyc
 aether_admin.sqlite3*
+requirements.txt

@@ -1923,11 +1923,11 @@ function isUntouchedStarterChat(chat) {
   const messages = Array.isArray(chat?.messages) ? chat.messages : [];
   if (messages.length !== 1 || messages[0]?.role !== "assistant") return false;
   const content = String(messages[0]?.content || "");
-  return content === DEFAULT_ASSISTANT_GREETING || /^Hey! Welcome back, .+! What on your mind\?$/.test(content);
+  return content === DEFAULT_ASSISTANT_GREETING || /^Hey! Welcome back, .+! What's on your mind\?$/.test(content);
 }
 
 function welcomeBackGreeting(username) {
-  return `Hey! Welcome back, ${username}! What on your mind?`;
+  return `Hey! Welcome back, ${username}! What's on your mind?`;
 }
 
 function accountRenderKey(account) {
