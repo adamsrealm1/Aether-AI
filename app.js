@@ -67,6 +67,7 @@ const LOCATION_TIME_PERMISSION_MESSAGE = "Aether needs your permission to see yo
 const PROFANITY_BLOCK_MESSAGE = "You cant send Aether a message with profanity in it. You can try again without profanity in your message.";
 const SAFETY_LOCK_PLACEHOLDER = "Aether can not continue this conversation. Create a new conversation to keep using Aether.";
 const VOICE_AUTO_SEND_DELAY_MS = 1800;
+const VOICE_MESSAGE_TTL_MS = 25000;
 const SAFETY_LOCK_DELAY_MS = 3000;
 const ACCOUNT_SESSION_TOKEN_KEY = "aether.accountSessionToken";
 const MOBILE_SCROLL_FADE_QUERY = "(max-width: 860px), (pointer: coarse)";
@@ -100,6 +101,7 @@ const SAFETY_LOCK_PATTERNS = [
   { reason: "cyber-abuse", pattern: /\b(?:make|write|build|deploy|use)\s+(?:malware|ransomware|keylogger|token grabber|phishing kit|password stealer|ddos bot)\b/i },
   { reason: "hard-drugs", pattern: /\b(?:make|cook|synthesize|manufacture)\s+(?:meth|fentanyl|heroin|cocaine|mdma)\b/i },
 ];
+const VOICE_WAVE_BARS = [0.34, 0.55, 0.42, 0.72, 0.5, 0.86, 0.48, 0.64, 0.94, 0.56, 0.74, 0.46, 0.82, 0.58, 0.38, 0.7, 0.52, 0.9, 0.44, 0.62, 0.78, 0.4];
 
 const storage = {
   load() {
@@ -213,10 +215,13 @@ function normalizeChat(chat) {
     role: message?.role === "user" ? "user" : "assistant",
     content: String(message?.content || ""),
     createdAt: message?.createdAt || normalized.createdAt,
+    voice: Boolean(message?.voice),
+    voiceExpiresAt: message?.voiceExpiresAt || "",
   }));
   if (!normalized.messages.length) {
     normalized.messages = createChat(normalized.title).messages;
   }
+  normalized.messages.forEach(scheduleVoiceMessageExpiry);
   return normalized;
 }
 
@@ -628,6 +633,7 @@ function renderRateLimitMeter() {
 function renderMessage(message) {
   const roleClass = message.role === "user" ? "user" : "assistant";
   const typingClass = message.typing ? " typing" : "";
+  const voiceClass = message.voice ? " voice-message-row" : "";
   const messageId = message.id || "";
   const content = message.role === "assistant" ? sanitizeAssistantText(message.content) : message.content;
   const copyButton =
@@ -640,13 +646,30 @@ function renderMessage(message) {
       : "";
   const messageControls = copyButton || thoughtTime ? `<div class="message-controls">${copyButton}${thoughtTime}</div>` : "";
   return `
-    <div class="message-row ${roleClass}${typingClass}" data-message-id="${escapeHtml(messageId)}">
+    <div class="message-row ${roleClass}${typingClass}${voiceClass}" data-message-id="${escapeHtml(messageId)}">
       <div class="message-stack">
-        <div class="bubble">${escapeHtml(content)}</div>
+        ${message.voice ? renderVoiceBubble(message) : `<div class="bubble">${escapeHtml(content)}</div>`}
         ${messageControls}
       </div>
     </div>
   `;
+}
+
+function renderVoiceBubble(message) {
+  const duration = voiceMessageDuration(message.content);
+  const bars = VOICE_WAVE_BARS.map((height, index) => `<span style="--h:${height};--d:${index}"></span>`).join("");
+  return `
+    <div class="bubble voice-bubble" title="${escapeHtml(message.content || "Voice message")}">
+      <span class="voice-play" aria-hidden="true"></span>
+      <span class="voice-wave" aria-hidden="true">${bars}</span>
+      <span class="voice-time">${escapeHtml(duration)}</span>
+    </div>
+  `;
+}
+
+function voiceMessageDuration(text) {
+  const seconds = Math.max(2, Math.min(25, Math.round(String(text || "").split(/\s+/).filter(Boolean).length * 0.45)));
+  return `0:${String(seconds).padStart(2, "0")}`;
 }
 
 function renderThinking() {
@@ -1303,7 +1326,12 @@ async function sendMessage(event) {
 
   input.value = "";
   Aether.state.composerDraft = "";
-  await sendTextMessage(text);
+  const fromVoice = voiceAutoSending;
+  try {
+    await sendTextMessage(text, { voice: fromVoice });
+  } finally {
+    voiceAutoSending = false;
+  }
 }
 
 async function sendTextMessage(text, options = {}) {
@@ -1319,7 +1347,12 @@ async function sendTextMessage(text, options = {}) {
   if (handleLocalProfanity(text)) return;
 
   if (options.addUser !== false) {
-    chat.messages.push(createMessage("user", text));
+    const userMessage = createMessage("user", text, options.voice ? {
+      voice: true,
+      voiceExpiresAt: new Date(Date.now() + VOICE_MESSAGE_TTL_MS).toISOString(),
+    } : {});
+    chat.messages.push(userMessage);
+    scheduleVoiceMessageExpiry(userMessage);
   }
   if (["New conversation", "..."].includes(chat.title)) chat.title = text.slice(0, 48);
   touchChat(chat);
@@ -1846,13 +1879,47 @@ function accountChatsPayload() {
     safetyLocked: Boolean(chat.safetyLocked),
     safetyReason: chat.safetyReason || "",
     safetyLockedAt: chat.safetyLockedAt || "",
-    messages: chat.messages.map((message) => ({
-      id: message.id,
-      role: message.role,
-      content: message.content,
-      createdAt: message.createdAt,
-    })),
+    messages: chat.messages
+      .filter((message) => !isExpiredVoiceMessage(message))
+      .map((message) => ({
+        id: message.id,
+        role: message.role,
+        content: message.content,
+        createdAt: message.createdAt,
+        voice: Boolean(message.voice),
+        voiceExpiresAt: message.voiceExpiresAt || "",
+      })),
   }));
+}
+
+function isExpiredVoiceMessage(message) {
+  if (!message?.voice) return false;
+  const expiresAt = Date.parse(message.voiceExpiresAt || "");
+  return Number.isFinite(expiresAt) && expiresAt <= Date.now();
+}
+
+function scheduleVoiceMessageExpiry(message) {
+  if (!message?.voice || !message.voiceExpiresAt) return;
+  const expiresAt = Date.parse(message.voiceExpiresAt);
+  if (!Number.isFinite(expiresAt)) return;
+  const delay = Math.max(0, expiresAt - Date.now());
+  setTimeout(() => removeVoiceMessage(message.id), delay);
+}
+
+function removeVoiceMessage(messageId) {
+  if (!messageId) return;
+  let removed = false;
+  for (const chat of Aether.state.chats) {
+    const index = chat.messages.findIndex((message) => message.id === messageId && message.voice);
+    if (index === -1) continue;
+    chat.messages.splice(index, 1);
+    touchChat(chat);
+    removed = true;
+    break;
+  }
+  if (!removed) return;
+  storage.save();
+  render();
 }
 
 function setAetherAvailability(available) {

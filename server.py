@@ -28,6 +28,7 @@ MAX_REQUEST_BODY_BYTES = 2 * 1024 * 1024
 MAX_CHAT_MESSAGE_CONTENT_LENGTH = 24000
 MAX_CHAT_MESSAGES_PER_CHAT = 200
 MAX_ACCOUNT_CHATS = 100
+VOICE_MESSAGE_TTL_SECONDS = 25
 SESSION_COOKIE_NAME = "aether_session"
 SESSION_LIFETIME_DAYS = 30
 PASSWORD_HASH_ITERATIONS = 260000
@@ -1091,12 +1092,23 @@ def normalize_chat_message(value: object) -> dict | None:
     role = "user" if value.get("role") == "user" else "assistant"
     created_at = str(value.get("createdAt") or value.get("created_at") or utc_iso())[:40]
     message_id = str(value.get("id") or secrets.token_urlsafe(12))[:120]
-    return {
+    voice = bool(value.get("voice"))
+    voice_expires_at = str(value.get("voiceExpiresAt") or value.get("voice_expires_at") or "")[:40]
+    if voice:
+        expires_at = parse_utc(voice_expires_at) if voice_expires_at else utc_now() + timedelta(seconds=VOICE_MESSAGE_TTL_SECONDS)
+        if expires_at <= utc_now():
+            return None
+        voice_expires_at = expires_at.isoformat()
+    message = {
         "id": message_id,
         "role": role,
         "content": content[:MAX_CHAT_MESSAGE_CONTENT_LENGTH],
         "createdAt": created_at,
     }
+    if voice:
+        message["voice"] = True
+        message["voiceExpiresAt"] = voice_expires_at
+    return message
 
 
 def normalize_account_chat(value: object) -> dict | None:
@@ -1137,10 +1149,23 @@ def account_chat_state(account_id: object) -> dict:
     if not rows:
         return {"hasChats": False, "chats": [], "activeChatId": "", "updatedAt": None}
     row = rows[0]
+    raw_chats = []
     try:
-        chats = normalize_account_chats(json.loads(row.get("chats_json") or "[]"))
+        raw_chats = json.loads(row.get("chats_json") or "[]")
+        chats = normalize_account_chats(raw_chats)
     except Exception:
         chats = []
+    if chats != raw_chats:
+        now = utc_iso()
+        active_chat_id = row.get("active_chat_id") or ""
+        if active_chat_id and not any(str(chat.get("id")) == str(active_chat_id) for chat in chats):
+            active_chat_id = str(chats[0].get("id") or "") if chats else ""
+        db_execute(
+            f"UPDATE account_chats SET chats_json = {placeholder}, active_chat_id = {placeholder}, updated_at = {placeholder} WHERE account_id = {placeholder}",
+            (json.dumps(chats, separators=(",", ":")), active_chat_id, now, account_id),
+        )
+        row["active_chat_id"] = active_chat_id
+        row["updated_at"] = now
     return {
         "hasChats": True,
         "chats": chats,
