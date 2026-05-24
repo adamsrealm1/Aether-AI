@@ -1049,6 +1049,7 @@ def account_summaries() -> list[dict]:
             "createdAt": row.get("created_at"),
             "updatedAt": row.get("updated_at"),
             "lastLoginAt": row.get("last_login_at"),
+            "profilePictureUrl": account_profile_picture(row.get("id")).get("approvedDataUrl") or "",
             "isAdmin": is_admin_account(row),
             "isOwnerAdmin": is_owner_account(row),
         }

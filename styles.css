@@ -1172,6 +1172,13 @@ img.account-avatar {
 .account-admin-item .danger-button {
   align-self: center;
 }
+.account-admin-profile {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+}
 .admin-row-actions {
   display: flex;
   gap: 8px;

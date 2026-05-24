@@ -495,9 +495,12 @@ function renderAdminAccountsPanel(accounts, canManageAdmins) {
       <div class="admin-list account-admin-list">
         ${accounts.map((account) => `
           <div class="admin-list-item account-admin-item">
-            <div>
-              <strong>${escapeHtml(account.username || "")}</strong>
-              <small>Created ${escapeHtml(formatAdminDate(account.createdAt))} - Last login ${escapeHtml(formatAdminDate(account.lastLoginAt))}${account.isAdmin ? " - Admin" : ""}</small>
+            <div class="account-admin-profile">
+              ${renderAccountAvatar(account)}
+              <div>
+                <strong>${escapeHtml(account.username || "")}</strong>
+                <small>Created ${escapeHtml(formatAdminDate(account.createdAt))} - Last login ${escapeHtml(formatAdminDate(account.lastLoginAt))}${account.isAdmin ? " - Admin" : ""}</small>
+              </div>
             </div>
             <div class="admin-row-actions">
               ${canManageAdmins && !account.isAdmin ? `<button class="secondary-button" data-admin-grant="${escapeHtml(account.id || "")}"${Aether.state.adminLoading ? " disabled" : ""}>Give admin</button>` : ""}
