@@ -2,6 +2,7 @@
   config: {
     appName: "Aether",
     apiEndpoint: defaultApiEndpoint(),
+    speedMode: "default",
   },
   state: {
     chats: [],
@@ -46,6 +47,7 @@
     adminError: "",
     blockedAttemptsExpanded: false,
     banStatus: null,
+    speedMenuOpen: false,
   },
 };
 
@@ -75,6 +77,18 @@ const MOBILE_SCROLL_FADE_QUERY = "(max-width: 860px), (pointer: coarse)";
 const MAX_PROFILE_PICTURE_FILE_SIZE = 560000;
 const ACCOUNT_CHATS_SAVE_DELAY_MS = 700;
 const DEFAULT_ASSISTANT_GREETING = "Hi there! I'm Aether. What's on your mind?";
+const SPEED_MODES = {
+  default: {
+    label: "Default",
+    title: "Standard",
+    detail: "Default speed",
+  },
+  fast: {
+    label: "Fast",
+    title: "Fast",
+    detail: "1.5x speed, increased usage",
+  },
+};
 const PROFANITY_PATTERNS = [
   /\bass\b/i,
   /\basshole\b/i,
@@ -112,6 +126,7 @@ const storage = {
       Aether.config[key] = savedConfig[key];
     }
     Aether.config.apiEndpoint = defaultApiEndpoint();
+    Aether.config.speedMode = normalizedSpeedMode(Aether.config.speedMode);
     Aether.state.chats = readJson("aether.chats", []).map(normalizeChat);
     Aether.state.activeChatId = localStorage.getItem("aether.activeChatId");
 
@@ -336,6 +351,7 @@ function renderChatPage(chat) {
           <h1>${escapeHtml(chat.title)}</h1>
         </div>
         <div class="topbar-actions">
+          ${renderSpeedMenu(composerLocked)}
           <button class="secondary-button" data-action="rename-chat">Rename</button>
           <button class="secondary-button" data-action="regenerate-last"${composerLocked ? " disabled" : ""}>Resend last</button>
         </div>
@@ -356,6 +372,38 @@ function renderChatPage(chat) {
         <p class="composer-note">Aether can make mistakes. Double check important info.</p>
       </div>
     </main>
+  `;
+}
+
+function renderSpeedMenu(disabled = false) {
+  const mode = speedModeDetails();
+  const openClass = Aether.state.speedMenuOpen ? " open" : "";
+  return `
+    <div class="speed-picker${openClass}">
+      <button class="secondary-button speed-trigger" type="button" data-action="toggle-speed-menu" aria-haspopup="menu" aria-expanded="${Aether.state.speedMenuOpen ? "true" : "false"}"${disabled ? " disabled" : ""}>
+        <span>Speed</span>
+        <strong>${escapeHtml(mode.label)}</strong>
+        <i aria-hidden="true"></i>
+      </button>
+      ${Aether.state.speedMenuOpen ? `
+        <div class="speed-menu" role="menu" aria-label="Speed">
+          <span class="speed-menu-title">Speed</span>
+          ${Object.entries(SPEED_MODES).map(([key, item]) => {
+            const active = key === normalizedSpeedMode(Aether.config.speedMode);
+            return `
+              <button class="speed-option ${active ? "active" : ""}" type="button" role="menuitemradio" aria-checked="${active ? "true" : "false"}" data-speed-mode="${escapeHtml(key)}">
+                <span class="speed-icon" aria-hidden="true">${key === "fast" ? "⚡" : ""}</span>
+                <span>
+                  <strong>${escapeHtml(item.title)}</strong>
+                  <small>${escapeHtml(item.detail)}</small>
+                </span>
+                <b aria-hidden="true">${active ? "✓" : ""}</b>
+              </button>
+            `;
+          }).join("")}
+        </div>
+      ` : ""}
+    </div>
   `;
 }
 
@@ -670,7 +718,10 @@ function renderMessage(message) {
   const typingClass = message.typing ? " typing" : "";
   const voiceClass = message.voice ? " voice-message-row" : "";
   const messageId = message.id || "";
-  const content = message.role === "assistant" ? sanitizeAssistantText(message.content) : message.content;
+  const content = message.role === "assistant" ? normalizeAssistantText(message.content) : message.content;
+  const bubble = message.role === "assistant"
+    ? `<div class="bubble formatted">${renderAssistantMarkdown(content)}</div>`
+    : `<div class="bubble">${escapeHtml(content)}</div>`;
   const copyButton =
     message.role === "assistant" && !message.typing
       ? `<button class="copy-message" data-copy-message="${escapeHtml(messageId)}" aria-label="Copy this message" title="Copy this message">Copy</button>`
@@ -683,7 +734,7 @@ function renderMessage(message) {
   return `
     <div class="message-row ${roleClass}${typingClass}${voiceClass}" data-message-id="${escapeHtml(messageId)}">
       <div class="message-stack">
-        ${message.voice ? renderVoiceBubble(message) : `<div class="bubble">${escapeHtml(content)}</div>`}
+        ${message.voice ? renderVoiceBubble(message) : bubble}
         ${messageControls}
       </div>
     </div>
@@ -911,12 +962,23 @@ function bindEvents(root) {
   root.querySelector("[data-action='admin-tab']")?.addEventListener("click", () => {
     if (!isCurrentAdmin()) return;
     Aether.state.adminView = true;
+    Aether.state.speedMenuOpen = false;
     Aether.state.mobileSidebarOpen = false;
     render();
     loadAdminStatus();
   });
+  root.querySelector("[data-action='toggle-speed-menu']")?.addEventListener("click", () => {
+    Aether.state.speedMenuOpen = !Aether.state.speedMenuOpen;
+    render();
+  });
+  root.querySelectorAll("[data-speed-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      setSpeedMode(button.dataset.speedMode || "default");
+    });
+  });
   root.querySelector("[data-action='toggle-mobile-sidebar']")?.addEventListener("click", () => {
     Aether.state.mobileSidebarOpen = !Aether.state.mobileSidebarOpen;
+    Aether.state.speedMenuOpen = false;
     render();
   });
   root.querySelector("[data-action='close-mobile-sidebar']")?.addEventListener("click", () => {
@@ -1697,7 +1759,7 @@ async function fetchAssistantReply(text, location = null) {
         const response = await fetch(Aether.config.apiEndpoint, {
           method: "POST",
           headers,
-          body: JSON.stringify({ message: text, chat: activeChat().messages, location }),
+          body: JSON.stringify({ message: text, chat: activeChat().messages, location, speedMode: normalizedSpeedMode(Aether.config.speedMode) }),
         });
         if (!response.ok) {
           const data = await response.json().catch(() => ({}));
@@ -1803,6 +1865,21 @@ function isRateLimited() {
 
 function isAetherAvailable() {
   return Aether.state.aetherAvailable !== false && !isUserBanned();
+}
+
+function normalizedSpeedMode(value) {
+  return value === "fast" ? "fast" : "default";
+}
+
+function speedModeDetails() {
+  return SPEED_MODES[normalizedSpeedMode(Aether.config.speedMode)] || SPEED_MODES.default;
+}
+
+function setSpeedMode(value) {
+  Aether.config.speedMode = normalizedSpeedMode(value);
+  Aether.state.speedMenuOpen = false;
+  storage.save();
+  render();
 }
 
 function applyServerStatus(data) {
@@ -2500,7 +2577,7 @@ async function copyAssistantMessage(messageId, button) {
   const chat = activeChat();
   const message = chat?.messages.find((item) => item.id === messageId);
   if (!message?.content) return;
-  await writeClipboard(sanitizeAssistantText(message.content), button);
+  await writeClipboard(normalizeAssistantText(message.content), button);
 }
 
 async function writeClipboard(text, button = null) {
@@ -2580,10 +2657,13 @@ function focusComposer() {
 async function typeAssistantMessage(chat, message, fullText) {
   const row = document.querySelector(`[data-message-id="${CSS.escape(message.id)}"]`);
   const bubble = row?.querySelector(".bubble");
-  const cleanText = sanitizeAssistantText(fullText);
+  const cleanText = normalizeAssistantText(fullText);
 
   if (bubble) {
+    bubble.classList.remove("formatted");
     await revealAssistantText(bubble, cleanText);
+    bubble.classList.add("formatted");
+    bubble.innerHTML = renderAssistantMarkdown(cleanText);
     scrollChatToBottom();
   }
 
@@ -2657,16 +2737,159 @@ function wordRevealDelay(wordCount) {
   return 48;
 }
 
-function sanitizeAssistantText(text) {
-  return String(text)
-    .replace(/\*\*([^*]+)\*\*/g, "$1")
-    .replace(/__([^_]+)__/g, "$1")
-    .replace(/\*([^*\n]+)\*/g, "$1")
-    .replace(/_([^_\n]+)_/g, "$1")
-    .replace(/~~([^~]+)~~/g, "$1")
-    .replace(/`{1,3}/g, "")
-    .replace(/\*\*/g, "")
-    .replace(/__/g, "");
+function normalizeAssistantText(text) {
+  return String(text || "").replace(/\r\n?/g, "\n");
+}
+
+function renderAssistantMarkdown(text) {
+  const source = normalizeAssistantText(text).trimEnd();
+  if (!source) return "";
+
+  const lines = source.split("\n");
+  const html = [];
+  let paragraph = [];
+  let listType = "";
+
+  const closeParagraph = () => {
+    if (!paragraph.length) return;
+    html.push(`<p>${paragraph.map(formatAssistantInline).join("<br>")}</p>`);
+    paragraph = [];
+  };
+
+  const closeList = () => {
+    if (!listType) return;
+    html.push(`</${listType}>`);
+    listType = "";
+  };
+
+  const openList = (type) => {
+    closeParagraph();
+    if (listType === type) return;
+    closeList();
+    listType = type;
+    html.push(`<${type}>`);
+  };
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const trimmed = line.trim();
+    const fenceMatch = trimmed.match(/^```([a-z0-9_-]+)?\s*$/i);
+    if (fenceMatch) {
+      closeParagraph();
+      closeList();
+      const codeLines = [];
+      index += 1;
+      while (index < lines.length && !lines[index].trim().match(/^```\s*$/)) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+      const language = fenceMatch[1] ? ` data-language="${escapeHtml(fenceMatch[1])}"` : "";
+      html.push(`<pre${language}><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+      continue;
+    }
+
+    if (!trimmed) {
+      closeParagraph();
+      closeList();
+      continue;
+    }
+
+    const heading = trimmed.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      closeParagraph();
+      closeList();
+      const level = heading[1].length;
+      html.push(`<h${level}>${formatAssistantInline(heading[2])}</h${level}>`);
+      continue;
+    }
+
+    const quote = trimmed.match(/^>\s?(.+)$/);
+    if (quote) {
+      closeParagraph();
+      closeList();
+      html.push(`<blockquote>${formatAssistantInline(quote[1])}</blockquote>`);
+      continue;
+    }
+
+    const unordered = trimmed.match(/^[-*]\s+(.+)$/);
+    if (unordered) {
+      openList("ul");
+      html.push(`<li>${formatAssistantInline(unordered[1])}</li>`);
+      continue;
+    }
+
+    const ordered = trimmed.match(/^\d+[.)]\s+(.+)$/);
+    if (ordered) {
+      openList("ol");
+      html.push(`<li>${formatAssistantInline(ordered[1])}</li>`);
+      continue;
+    }
+
+    closeList();
+    paragraph.push(line);
+  }
+
+  closeParagraph();
+  closeList();
+  return html.join("");
+}
+
+function formatAssistantInline(text) {
+  const source = String(text || "");
+  const html = [];
+  const codePattern = /(`+)([\s\S]*?)\1/g;
+  let lastIndex = 0;
+  let match;
+
+  while ((match = codePattern.exec(source))) {
+    html.push(formatAssistantTextWithLinks(source.slice(lastIndex, match.index)));
+    html.push(`<code>${escapeHtml(match[2])}</code>`);
+    lastIndex = match.index + match[0].length;
+  }
+
+  html.push(formatAssistantTextWithLinks(source.slice(lastIndex)));
+  return html.join("");
+}
+
+function formatAssistantTextWithLinks(text) {
+  const source = String(text || "");
+  const html = [];
+  const linkPattern = /\[([^\]\n]{1,180})\]\((https?:\/\/[^\s)]+)\)/gi;
+  let lastIndex = 0;
+  let match;
+
+  while ((match = linkPattern.exec(source))) {
+    html.push(formatAssistantTextOnly(source.slice(lastIndex, match.index)));
+    const href = safeMarkdownUrl(match[2]);
+    if (href) {
+      html.push(`<a href="${href}" target="_blank" rel="noopener noreferrer">${formatAssistantTextOnly(match[1])}</a>`);
+    } else {
+      html.push(formatAssistantTextOnly(match[0]));
+    }
+    lastIndex = match.index + match[0].length;
+  }
+
+  html.push(formatAssistantTextOnly(source.slice(lastIndex)));
+  return html.join("");
+}
+
+function formatAssistantTextOnly(text) {
+  return escapeHtml(text)
+    .replace(/~~([^~]+)~~/g, "<del>$1</del>")
+    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/__([^_\n]+)__/g, "<strong>$1</strong>")
+    .replace(/(^|[\s([])\*([^*\n]+)\*(?=$|[\s.,!?):;\]])/g, "$1<em>$2</em>")
+    .replace(/(^|[\s([])_([^_\n]+)_(?=$|[\s.,!?):;\]])/g, "$1<em>$2</em>");
+}
+
+function safeMarkdownUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    if (!["http:", "https:"].includes(url.protocol)) return "";
+    return escapeHtml(url.href);
+  } catch {
+    return "";
+  }
 }
 
 function scrollChatToBottom() {

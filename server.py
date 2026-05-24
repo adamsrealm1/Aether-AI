@@ -25,6 +25,7 @@ DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 86400
 DEFAULT_RATE_LIMIT_TIMEZONE = "America/New_York"
 ANONYMOUS_DAILY_RATE_LIMIT = 10
 ANONYMOUS_DAILY_RATE_LIMIT_WINDOW_SECONDS = 24 * 60 * 60
+FAST_MODE_RATE_LIMIT_COST = 2
 MAX_PROFILE_PICTURE_DATA_URL_LENGTH = 750000
 MAX_REQUEST_BODY_BYTES = 2 * 1024 * 1024
 MAX_CHAT_MESSAGE_CONTENT_LENGTH = 24000
@@ -189,13 +190,14 @@ def rate_limit_status(ip_address: str | None = None, account_id: object = None) 
     }
 
 
-def consume_rate_limit(ip_address: str, account_id: object = None) -> dict:
+def consume_rate_limit(ip_address: str, account_id: object = None, cost: int = 1) -> dict:
+    cost = max(1, int(cost or 1))
     status = rate_limit_status(ip_address, account_id)
-    if status["remaining"] <= 0:
+    if status["remaining"] < cost:
         return {"allowed": False, "rateLimit": status}
 
     key = rate_limit_key(ip_address, account_id)
-    used = int(status["used"]) + 1
+    used = int(status["used"]) + cost
     save_rate_limit_bucket(key, used, parse_utc(status["resetAt"]), int(status["windowSeconds"]))
     return {"allowed": True, "rateLimit": rate_limit_status(ip_address, account_id)}
 
@@ -1917,19 +1919,38 @@ def classify_message_safety(message: str, chat: list[dict]) -> dict:
     return {"lock": False, "reason": "", "confidence": 0.0, "source": "fallback"}
 
 
-def groq_reply(message: str, chat: list[dict]) -> str:
+def normalized_speed_mode(value: object) -> str:
+    return "fast" if str(value or "").strip().lower() == "fast" else "default"
+
+
+def speed_mode_rate_limit_cost(speed_mode: str) -> int:
+    return FAST_MODE_RATE_LIMIT_COST if normalized_speed_mode(speed_mode) == "fast" else 1
+
+
+def aether_system_prompt(speed_mode: str) -> str:
+    if normalized_speed_mode(speed_mode) == "fast":
+        return (
+            "You are Aether, a friendly AI model on a website. "
+            "Never mention providers, sources, tokens, API calls, "
+            "or implementation details. "
+            "Keep responses short and easy."
+        )
+    return (
+        "You are Aether, a friendly AI model on a website. "
+        "Be friendly. Respond as helpful as possible and be respectful. "
+        "Never mention providers, sources, tokens, API calls, "
+        "or implementation details. "
+        "Use Markdown-style formatting like bold, italics, headers, lists, code, and emoji when it improves the answer. "
+        "Keep responses as helpful and reasonable as possible."
+    )
+
+
+def groq_reply(message: str, chat: list[dict], speed_mode: str = "default") -> str:
     now = datetime.now().astimezone().strftime("%A, %B %d, %Y at %I:%M %p %Z")
     messages = [
         {
             "role": "system",
-            "content": (
-                "You are Aether, a friendly AI model on a website. "
-                "Be friendly. Respond as helpful as possible and be respectful. "
-                "Never mention ChatGPT, OpenAI, AI, providers, sources, tokens, API calls, "
-                "or implementation details."
-                "Keep responses as short as possible."
-                "Use plain text, never use formatting like bolding, italics, headers, or emojis."
-            ),
+            "content": aether_system_prompt(speed_mode),
         }
     ]
     for item in chat[-20:]:
@@ -2046,6 +2067,8 @@ def chat_response(payload: dict, ip_address: str, account: dict | None = None) -
     chat = payload.get("chat") if isinstance(payload.get("chat"), list) else []
     chat = chat[:MAX_CHAT_MESSAGES_PER_CHAT]
     location = payload.get("location")
+    speed_mode = normalized_speed_mode(payload.get("speedMode"))
+    rate_limit_cost = speed_mode_rate_limit_cost(speed_mode)
     if not message:
         return {"reply": "Send a message first."}
     if not is_aether_available():
@@ -2081,7 +2104,7 @@ def chat_response(payload: dict, ip_address: str, account: dict | None = None) -
         }
     if looks_like_location_time_request(message) and not location:
         return {"reply": "Aether needs your permission to see your location to give your location."}
-    rate = consume_rate_limit(ip_address, account_id)
+    rate = consume_rate_limit(ip_address, account_id, rate_limit_cost)
     if not rate["allowed"]:
         return {
             "reply": "Your rate limit has been reached, try again later.",
@@ -2096,7 +2119,7 @@ def chat_response(payload: dict, ip_address: str, account: dict | None = None) -
         latitude, longitude = coordinates_from_location(location)
         reply = weather_reply(latitude, longitude)
         return {"reply": reply, "rateLimit": rate["rateLimit"]}
-    reply = groq_reply(message, chat)
+    reply = groq_reply(message, chat, speed_mode)
     return {"reply": reply, "rateLimit": rate["rateLimit"]}
 
 
