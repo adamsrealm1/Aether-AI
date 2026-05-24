@@ -69,7 +69,6 @@ const PROFANITY_BLOCK_MESSAGE = "You cant send Aether a message with profanity i
 const SAFETY_LOCK_PLACEHOLDER = "Aether can not continue this conversation. Create a new conversation to keep using Aether.";
 const BAN_POPUP_BODY = "You can not use Aether AI because you were banned by an admin.";
 const VOICE_AUTO_SEND_DELAY_MS = 1800;
-const VOICE_MESSAGE_TTL_MS = 25000;
 const SAFETY_LOCK_DELAY_MS = 3000;
 const ACCOUNT_SESSION_TOKEN_KEY = "aether.accountSessionToken";
 const MOBILE_SCROLL_FADE_QUERY = "(max-width: 860px), (pointer: coarse)";
@@ -218,12 +217,10 @@ function normalizeChat(chat) {
     content: String(message?.content || ""),
     createdAt: message?.createdAt || normalized.createdAt,
     voice: Boolean(message?.voice),
-    voiceExpiresAt: message?.voiceExpiresAt || "",
   }));
   if (!normalized.messages.length) {
     normalized.messages = createChat(normalized.title).messages;
   }
-  normalized.messages.forEach(scheduleVoiceMessageExpiry);
   return normalized;
 }
 
@@ -1465,14 +1462,10 @@ async function sendTextMessage(text, options = {}) {
   if (handleLocalProfanity(text)) return;
 
   if (options.addUser !== false) {
-    const userMessage = createMessage("user", text, options.voice ? {
-      voice: true,
-      voiceExpiresAt: new Date(Date.now() + VOICE_MESSAGE_TTL_MS).toISOString(),
-    } : {});
+    const userMessage = createMessage("user", text, options.voice ? { voice: true } : {});
     chat.messages.push(userMessage);
-    scheduleVoiceMessageExpiry(userMessage);
   }
-  if (["New conversation", "..."].includes(chat.title)) chat.title = text.slice(0, 48);
+  if (!options.voice && ["New conversation", "..."].includes(chat.title)) chat.title = text.slice(0, 48);
   touchChat(chat);
   const safetyReason = Aether.config.apiEndpoint ? "" : safetyLockReason(text);
   if (safetyReason) {
@@ -2073,46 +2066,14 @@ function accountChatsPayload() {
     safetyReason: chat.safetyReason || "",
     safetyLockedAt: chat.safetyLockedAt || "",
     messages: chat.messages
-      .filter((message) => !isExpiredVoiceMessage(message))
       .map((message) => ({
         id: message.id,
         role: message.role,
         content: message.content,
         createdAt: message.createdAt,
         voice: Boolean(message.voice),
-        voiceExpiresAt: message.voiceExpiresAt || "",
       })),
   }));
-}
-
-function isExpiredVoiceMessage(message) {
-  if (!message?.voice) return false;
-  const expiresAt = Date.parse(message.voiceExpiresAt || "");
-  return Number.isFinite(expiresAt) && expiresAt <= Date.now();
-}
-
-function scheduleVoiceMessageExpiry(message) {
-  if (!message?.voice || !message.voiceExpiresAt) return;
-  const expiresAt = Date.parse(message.voiceExpiresAt);
-  if (!Number.isFinite(expiresAt)) return;
-  const delay = Math.max(0, expiresAt - Date.now());
-  setTimeout(() => removeVoiceMessage(message.id), delay);
-}
-
-function removeVoiceMessage(messageId) {
-  if (!messageId) return;
-  let removed = false;
-  for (const chat of Aether.state.chats) {
-    const index = chat.messages.findIndex((message) => message.id === messageId && message.voice);
-    if (index === -1) continue;
-    chat.messages.splice(index, 1);
-    touchChat(chat);
-    removed = true;
-    break;
-  }
-  if (!removed) return;
-  storage.save();
-  render();
 }
 
 function setAetherAvailability(available) {

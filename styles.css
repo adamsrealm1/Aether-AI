@@ -1555,6 +1555,11 @@ img.account-avatar {
   .chat-list {
     overflow-y: auto;
   }
+  .delete-chat {
+    opacity: 1;
+    transform: scale(1);
+    background: rgba(219, 234, 254, 0.1);
+  }
   .rate-card {
     margin-top: 0;
     padding: 12px;
