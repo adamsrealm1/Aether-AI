@@ -476,7 +476,6 @@ img.account-avatar {
   letter-spacing: 0;
 }
 .admin-hero h2,
-.admin-login h2,
 .admin-panel h2 {
   margin: 0;
   letter-spacing: 0;
@@ -484,8 +483,7 @@ img.account-avatar {
 .admin-hero h2 {
   font-size: 26px;
 }
-.admin-hero p,
-.admin-login p {
+.admin-hero p {
   margin: 8px 0 0;
   max-width: 620px;
   color: #bfdbfe;
@@ -544,18 +542,13 @@ img.account-avatar {
   gap: 14px;
   align-items: start;
 }
-.admin-panel,
-.admin-login {
+.admin-panel {
   display: grid;
   gap: 14px;
   padding: 20px;
   border: 1px solid rgba(191, 219, 254, 0.16);
   border-radius: 8px;
   background: rgba(5, 10, 20, 0.62);
-}
-.admin-login {
-  width: min(520px, 100%);
-  margin: 48px auto 0;
 }
 .admin-panel-head {
   display: flex;
@@ -588,7 +581,6 @@ img.account-avatar {
   font-size: 12px;
   font-weight: 780;
 }
-.admin-login input,
 .admin-ban-form input,
 .admin-rate-form input,
 .auth-card input,
@@ -602,7 +594,6 @@ img.account-avatar {
   outline: none;
   padding: 0 12px;
 }
-.admin-login input:focus,
 .admin-ban-form input:focus,
 .admin-rate-form input:focus,
 .auth-card input:focus,
@@ -1143,6 +1134,10 @@ img.account-avatar {
 .pfp-form {
   align-items: center;
 }
+.pfp-form .secondary-button {
+  align-self: center;
+  height: 38px;
+}
 .pfp-form label {
   gap: 8px;
 }
@@ -1176,6 +1171,13 @@ img.account-avatar {
 }
 .account-admin-item .danger-button {
   align-self: center;
+}
+.admin-row-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  align-items: center;
+  flex-wrap: wrap;
 }
 .pfp-review-panel {
   margin-top: 14px;
@@ -1392,6 +1394,9 @@ img.account-avatar {
   .account-danger {
     grid-template-columns: 1fr;
   }
+  .pfp-form .secondary-button {
+    justify-self: center;
+  }
   .admin-hero {
     display: grid;
     padding: 16px;
@@ -1405,12 +1410,8 @@ img.account-avatar {
   .admin-two-column {
     gap: 12px;
   }
-  .admin-panel,
-  .admin-login {
+  .admin-panel {
     padding: 16px;
-  }
-  .admin-login {
-    margin-top: 20px;
   }
   .admin-list {
     max-height: none;
@@ -1418,6 +1419,9 @@ img.account-avatar {
   .blocked-attempt-head,
   .admin-list-item {
     grid-template-columns: 1fr;
+  }
+  .admin-row-actions {
+    justify-content: flex-start;
   }
   .blocked-attempt-head {
     display: grid;

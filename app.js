@@ -39,7 +39,6 @@
     accountLoading: false,
     accountError: "",
     adminView: false,
-    adminSecret: "",
     adminStatus: null,
     adminLoading: false,
     adminError: "",
@@ -96,7 +95,6 @@ const storage = {
     Aether.config.apiEndpoint = defaultApiEndpoint();
     Aether.state.chats = readJson("aether.chats", []).map(normalizeChat);
     Aether.state.activeChatId = localStorage.getItem("aether.activeChatId");
-    Aether.state.adminSecret = localStorage.getItem("aether.adminSecret") || "";
 
     if (!Aether.state.chats.length) {
       const chat = createChat("New conversation");
@@ -220,6 +218,7 @@ function render() {
   const root = document.getElementById("app");
   const chat = activeChat();
   const mobileSidebarClass = Aether.state.mobileSidebarOpen ? " mobile-sidebar-open" : "";
+  const showAdminView = Aether.state.adminView && isCurrentAdmin();
 
   root.innerHTML = `
     <div class="app-shell${mobileSidebarClass}">
@@ -234,7 +233,7 @@ function render() {
         </button>
         <button class="new-chat" data-action="new-chat">+ New conversation</button>
         ${renderAccountSidebarButton()}
-        <button class="admin-tab ${Aether.state.adminView ? "active" : ""}" data-action="admin-tab">Admin</button>
+        ${renderAdminSidebarButton()}
         <input class="sidebar-search" data-action="sidebar-search" autocomplete="off" placeholder="Search conversations" value="${escapeHtml(Aether.state.sidebarSearch)}">
         <div class="chat-list">
           ${filteredChats().map(chatListItem).join("") || `<div class="sidebar-empty">No conversations found.</div>`}
@@ -242,7 +241,7 @@ function render() {
         ${renderRateLimitMeter()}
       </aside>
 
-      ${Aether.state.adminView ? renderAdminPage() : renderChatPage(chat)}
+      ${showAdminView ? renderAdminPage() : renderChatPage(chat)}
       ${renderProfanityPopup()}
       ${renderRateLimitPopup()}
       ${renderAuthModal()}
@@ -254,6 +253,15 @@ function render() {
   bindEvents(root);
   observeMessageVisibility();
   scrollChatToBottom();
+}
+
+function renderAdminSidebarButton() {
+  if (!isCurrentAdmin()) return "";
+  return `<button class="admin-tab ${Aether.state.adminView ? "active" : ""}" data-action="admin-tab">Admin Portal</button>`;
+}
+
+function isCurrentAdmin() {
+  return Boolean(Aether.state.signedIn && Aether.state.account?.isAdmin);
 }
 
 function renderAccountSidebarButton() {
@@ -324,9 +332,10 @@ function renderAdminPage() {
   const database = status.database || {};
   const rate = status.rateLimit || Aether.state.rateLimit || {};
   const accounts = status.accounts || [];
+  const admins = status.admins || [];
   const pendingProfilePictures = status.pendingProfilePictures || [];
   const available = status.aetherAvailable !== false;
-  const locked = !Aether.state.adminSecret;
+  const canManageAdmins = Boolean(status.canManageAdmins || Aether.state.account?.isOwnerAdmin);
 
   return `
     <main class="chat-page admin-page">
@@ -340,73 +349,59 @@ function renderAdminPage() {
           <h1>Admin</h1>
         </div>
         <div class="topbar-actions">
-          <button class="secondary-button" data-action="admin-refresh"${locked ? " disabled" : ""}>Refresh</button>
-          <button class="secondary-button" data-action="admin-lock"${locked ? " disabled" : ""}>Lock Admin Portal</button>
+          <button class="secondary-button" data-action="admin-refresh">Refresh</button>
         </div>
       </header>
       <div class="admin-scroll">
-        ${locked ? renderAdminLogin() : `
-          ${Aether.state.adminError ? `<div class="admin-alert">${escapeHtml(Aether.state.adminError)}</div>` : ""}
-          <section class="admin-hero">
-            <div>
-              <span class="admin-kicker">${escapeHtml(database.provider || "database")} </span>
-              <h2>${available ? "Aether is available" : "Aether is unavailable"}</h2>
-              <p>You can disable or enable Aether globally, and rate-limit settings apply to each user separately.</p>
-            </div>
-            <label class="admin-switch">
-              <input type="checkbox" data-action="admin-availability" ${available ? "checked" : ""}${Aether.state.adminLoading ? " disabled" : ""}>
-              <span>${available ? "Available" : "Unavailable"}</span>
+        ${Aether.state.adminError ? `<div class="admin-alert">${escapeHtml(Aether.state.adminError)}</div>` : ""}
+        <section class="admin-hero">
+          <div>
+            <span class="admin-kicker">${escapeHtml(database.provider || "database")} </span>
+            <h2>${available ? "Aether is available" : "Aether is unavailable"}</h2>
+            <p>You can disable or enable Aether globally, and rate-limit settings apply to each user separately.</p>
+          </div>
+          <label class="admin-switch">
+            <input type="checkbox" data-action="admin-availability" ${available ? "checked" : ""}${Aether.state.adminLoading ? " disabled" : ""}>
+            <span>${available ? "Available" : "Unavailable"}</span>
+          </label>
+        </section>
+        <section class="admin-grid">
+          <div class="admin-metric">
+            <span>Last minute</span>
+            <strong>${Number(counts.minute || 0)}</strong>
+          </div>
+          <div class="admin-metric">
+            <span>Last hour</span>
+            <strong>${Number(counts.hour || 0)}</strong>
+          </div>
+          <div class="admin-metric">
+            <span>Last day</span>
+            <strong>${Number(counts.day || 0)}</strong>
+          </div>
+        </section>
+        <section class="admin-actions">
+          <form class="admin-rate-form" data-action="admin-rate-limit">
+            <label>
+              <span>Messages</span>
+              <input name="limit" type="number" min="1" max="100000" step="1" value="${escapeHtml(rate.limit || 300)}">
             </label>
-          </section>
-          <section class="admin-grid">
-            <div class="admin-metric">
-              <span>Last minute</span>
-              <strong>${Number(counts.minute || 0)}</strong>
-            </div>
-            <div class="admin-metric">
-              <span>Last hour</span>
-              <strong>${Number(counts.hour || 0)}</strong>
-            </div>
-            <div class="admin-metric">
-              <span>Last day</span>
-              <strong>${Number(counts.day || 0)}</strong>
-            </div>
-          </section>
-          <section class="admin-actions">
-            <form class="admin-rate-form" data-action="admin-rate-limit">
-              <label>
-                <span>Messages</span>
-                <input name="limit" type="number" min="1" max="100000" step="1" value="${escapeHtml(rate.limit || 300)}">
-              </label>
-              <label>
-                <span>Seconds</span>
-                <input name="windowSeconds" type="number" min="1" max="86400" step="1" value="${escapeHtml(rate.windowSeconds || 60)}">
-              </label>
-              <button class="primary-button" type="submit"${Aether.state.adminLoading ? " disabled" : ""}>Save rate limit</button>
-            </form>
-            <button class="danger-button" data-action="admin-reset-rate"${Aether.state.adminLoading ? " disabled" : ""}>Reset all user limits</button>
-          </section>
-          <section class="admin-two-column">
-            ${renderBanIpPanel(status.bannedIps || [])}
-            ${renderBlockedAttemptsPanel(status.blockedAttempts || [])}
-          </section>
-          ${renderAdminAccountsPanel(accounts)}
-          ${renderProfilePictureReviewPanel(pendingProfilePictures)}
-        `}
+            <label>
+              <span>Seconds</span>
+              <input name="windowSeconds" type="number" min="1" max="86400" step="1" value="${escapeHtml(rate.windowSeconds || 60)}">
+            </label>
+            <button class="primary-button" type="submit"${Aether.state.adminLoading ? " disabled" : ""}>Save rate limit</button>
+          </form>
+          <button class="danger-button" data-action="admin-reset-rate"${Aether.state.adminLoading ? " disabled" : ""}>Reset all user limits</button>
+        </section>
+        <section class="admin-two-column">
+          ${renderBanIpPanel(status.bannedIps || [])}
+          ${renderBlockedAttemptsPanel(status.blockedAttempts || [])}
+        </section>
+        ${renderAdminsPanel(admins, canManageAdmins)}
+        ${renderAdminAccountsPanel(accounts, canManageAdmins)}
+        ${renderProfilePictureReviewPanel(pendingProfilePictures)}
       </div>
     </main>
-  `;
-}
-
-function renderAdminLogin() {
-  return `
-    <form class="admin-login" data-action="admin-login">
-      <h2>Admin login</h2>
-      <p>Please enter your password.</p>
-      ${Aether.state.adminError ? `<div class="admin-alert">${escapeHtml(Aether.state.adminError)}</div>` : ""}
-      <input name="adminSecret" autocomplete="current-password" type="password" placeholder="Enter your password here.">
-      <button class="primary-button" type="submit"${Aether.state.adminLoading ? " disabled" : ""}>Unlock</button>
-    </form>
   `;
 }
 
@@ -468,7 +463,29 @@ function renderBlockedAttemptsPanel(attempts) {
   `;
 }
 
-function renderAdminAccountsPanel(accounts) {
+function renderAdminsPanel(admins, canManageAdmins) {
+  return `
+    <section class="admin-panel account-admin-panel">
+      <div class="admin-panel-head">
+        <h2>Admins</h2>
+        <span>${admins.length}</span>
+      </div>
+      <div class="admin-list account-admin-list">
+        ${admins.map((admin) => `
+          <div class="admin-list-item account-admin-item">
+            <div>
+              <strong>${escapeHtml(admin.username || "")}${admin.isOwnerAdmin ? " (owner)" : ""}</strong>
+              <small>Admin since ${escapeHtml(formatAdminDate(admin.adminSince || admin.createdAt))}</small>
+            </div>
+            ${canManageAdmins && !admin.isOwnerAdmin ? `<button class="secondary-button" data-admin-revoke="${escapeHtml(admin.id || "")}"${Aether.state.adminLoading ? " disabled" : ""}>Remove admin</button>` : ""}
+          </div>
+        `).join("") || `<div class="admin-empty">No admins yet.</div>`}
+      </div>
+    </section>
+  `;
+}
+
+function renderAdminAccountsPanel(accounts, canManageAdmins) {
   return `
     <section class="admin-panel account-admin-panel">
       <div class="admin-panel-head">
@@ -480,9 +497,12 @@ function renderAdminAccountsPanel(accounts) {
           <div class="admin-list-item account-admin-item">
             <div>
               <strong>${escapeHtml(account.username || "")}</strong>
-              <small>Created ${escapeHtml(formatAdminDate(account.createdAt))} - Last login ${escapeHtml(formatAdminDate(account.lastLoginAt))}</small>
+              <small>Created ${escapeHtml(formatAdminDate(account.createdAt))} - Last login ${escapeHtml(formatAdminDate(account.lastLoginAt))}${account.isAdmin ? " - Admin" : ""}</small>
             </div>
-            <button class="danger-button" data-admin-delete-account="${escapeHtml(account.id || "")}"${Aether.state.adminLoading ? " disabled" : ""}>Delete</button>
+            <div class="admin-row-actions">
+              ${canManageAdmins && !account.isAdmin ? `<button class="secondary-button" data-admin-grant="${escapeHtml(account.id || "")}"${Aether.state.adminLoading ? " disabled" : ""}>Give admin</button>` : ""}
+              <button class="danger-button" data-admin-delete-account="${escapeHtml(account.id || "")}"${Aether.state.adminLoading || account.isOwnerAdmin ? " disabled" : ""}>Delete</button>
+            </div>
           </div>
         `).join("") || `<div class="admin-empty">No accounts yet.</div>`}
       </div>
@@ -757,6 +777,7 @@ function bindEvents(root) {
     render();
   });
   root.querySelector("[data-action='admin-tab']")?.addEventListener("click", () => {
+    if (!isCurrentAdmin()) return;
     Aether.state.adminView = true;
     Aether.state.mobileSidebarOpen = false;
     render();
@@ -1037,28 +1058,7 @@ function bindChatListEvents(root) {
 }
 
 function bindAdminEvents(root) {
-  root.querySelector("[data-action='admin-login']")?.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const secret = String(new FormData(form).get("adminSecret") || "").trim();
-    if (!secret) {
-      Aether.state.adminError = "Enter the admin secret first.";
-      render();
-      return;
-    }
-    Aether.state.adminSecret = secret;
-    localStorage.setItem("aether.adminSecret", secret);
-    await loadAdminStatus();
-  });
-
   root.querySelector("[data-action='admin-refresh']")?.addEventListener("click", () => loadAdminStatus());
-  root.querySelector("[data-action='admin-lock']")?.addEventListener("click", () => {
-    Aether.state.adminSecret = "";
-    Aether.state.adminStatus = null;
-    Aether.state.adminError = "";
-    localStorage.removeItem("aether.adminSecret");
-    render();
-  });
   root.querySelector("[data-action='admin-availability']")?.addEventListener("change", async (event) => {
     await adminRequest("/api/admin/availability", {
       method: "POST",
@@ -1124,6 +1124,24 @@ function bindAdminEvents(root) {
         body: JSON.stringify({ accountId }),
       });
       if (deleted) showToast("Account deleted.");
+    });
+  });
+  root.querySelectorAll("[data-admin-grant]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const granted = await adminRequest("/api/admin/grant-admin", {
+        method: "POST",
+        body: JSON.stringify({ accountId: button.dataset.adminGrant || "" }),
+      });
+      if (granted) showToast("Admin access granted.");
+    });
+  });
+  root.querySelectorAll("[data-admin-revoke]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const revoked = await adminRequest("/api/admin/revoke-admin", {
+        method: "POST",
+        body: JSON.stringify({ accountId: button.dataset.adminRevoke || "" }),
+      });
+      if (revoked) showToast("Admin access removed.");
     });
   });
   root.querySelectorAll("[data-admin-approve-pfp]").forEach((button) => {
@@ -1595,8 +1613,14 @@ function applyAccountStatus(data) {
   let starterGreetingChanged = false;
   if (!Aether.state.signedIn) {
     Aether.state.accountModal = false;
+    Aether.state.adminView = false;
+    Aether.state.adminStatus = null;
   } else {
     starterGreetingChanged = updateStarterGreetingForAccount(Aether.state.account);
+    if (!Aether.state.account?.isAdmin) {
+      Aether.state.adminView = false;
+      Aether.state.adminStatus = null;
+    }
   }
   return (
     starterGreetingChanged ||
@@ -1638,6 +1662,8 @@ function accountRenderKey(account) {
     account.username ?? "",
     account.profilePictureUrl ?? "",
     account.profilePicturePending ? "pending" : "",
+    account.isAdmin ? "admin" : "",
+    account.isOwnerAdmin ? "owner" : "",
   ].join("|");
 }
 
@@ -1890,14 +1916,11 @@ async function accountRequest(path, options = {}) {
 }
 
 async function adminHeaders(base = {}) {
-  return {
-    ...base,
-    "X-Aether-Admin-Secret": Aether.state.adminSecret || "",
-  };
+  return authHeaders(base);
 }
 
 async function loadAdminStatus(options = {}) {
-  if (!Aether.state.adminSecret) return;
+  if (!isCurrentAdmin()) return;
   Aether.state.adminLoading = true;
   Aether.state.adminError = "";
   if (Aether.state.adminView) render();
@@ -1912,6 +1935,9 @@ async function loadAdminStatus(options = {}) {
       throw new Error(data.error || `Admin request failed with HTTP ${response.status}`);
     }
     Aether.state.adminStatus = data;
+    if (data.currentAdmin) {
+      applyAccountStatus({ signedIn: true, account: data.currentAdmin });
+    }
     if (Object.prototype.hasOwnProperty.call(data, "aetherAvailable")) {
       setAetherAvailability(data.aetherAvailable !== false);
     }
@@ -1926,8 +1952,8 @@ async function loadAdminStatus(options = {}) {
 }
 
 async function adminRequest(path, options = {}) {
-  if (!Aether.state.adminSecret) {
-    Aether.state.adminError = "Enter the admin secret first.";
+  if (!isCurrentAdmin()) {
+    Aether.state.adminError = "Sign in with an admin account first.";
     render();
     return null;
   }
@@ -1945,6 +1971,9 @@ async function adminRequest(path, options = {}) {
       throw new Error(data.error || `Admin request failed with HTTP ${response.status}`);
     }
     Aether.state.adminStatus = data;
+    if (data.currentAdmin) {
+      applyAccountStatus({ signedIn: true, account: data.currentAdmin });
+    }
     if (Object.prototype.hasOwnProperty.call(data, "aetherAvailable")) {
       setAetherAvailability(data.aetherAvailable !== false);
     }

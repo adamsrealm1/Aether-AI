@@ -26,6 +26,7 @@ MAX_PROFILE_PICTURE_DATA_URL_LENGTH = 750000
 SESSION_COOKIE_NAME = "aether_session"
 SESSION_LIFETIME_DAYS = 30
 PASSWORD_HASH_ITERATIONS = 260000
+OWNER_ADMIN_USERNAME = os.getenv("AETHER_OWNER_USERNAME", "adamsrealm1").strip().lower() or "adamsrealm1"
 RATE_LIMITS: dict[str, dict] = {}
 DB_INITIALIZED = False
 app = Flask(__name__, static_folder=str(ROOT), static_url_path="")
@@ -324,6 +325,13 @@ def ensure_admin_db() -> None:
             ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
             """,
             """
+            CREATE TABLE IF NOT EXISTS account_admins (
+              account_id BIGINT PRIMARY KEY,
+              granted_by BIGINT,
+              created_at VARCHAR(40) NOT NULL
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+            """,
+            """
             CREATE TABLE IF NOT EXISTS rate_limit_buckets (
               bucket_key VARCHAR(160) PRIMARY KEY,
               count INT NOT NULL,
@@ -397,6 +405,13 @@ def ensure_admin_db() -> None:
               approved_at TEXT,
               pending_data_url TEXT,
               pending_at TEXT
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS account_admins (
+              account_id INTEGER PRIMARY KEY,
+              granted_by INTEGER,
+              created_at TEXT NOT NULL
             )
             """,
             """
@@ -743,6 +758,7 @@ def account_public(row: dict | None) -> dict | None:
     if not row:
         return None
     profile_picture = account_profile_picture(row.get("id"))
+    is_owner = is_owner_account(row)
     return {
         "id": row.get("id"),
         "username": row.get("username") or "",
@@ -750,7 +766,107 @@ def account_public(row: dict | None) -> dict | None:
         "lastLoginAt": row.get("last_login_at"),
         "profilePictureUrl": profile_picture.get("approvedDataUrl") or "",
         "profilePicturePending": bool(profile_picture.get("pendingDataUrl")),
+        "isAdmin": is_owner or has_admin_access(row.get("id")),
+        "isOwnerAdmin": is_owner,
     }
+
+
+def is_owner_account(row: dict | None) -> bool:
+    if not row:
+        return False
+    username_lc = str(row.get("username_lc") or row.get("username") or "").strip().lower()
+    return username_lc == OWNER_ADMIN_USERNAME
+
+
+def has_admin_access(account_id: object) -> bool:
+    if account_id is None or str(account_id).strip() == "":
+        return False
+    placeholder = db_placeholder()
+    rows = db_query(f"SELECT account_id FROM account_admins WHERE account_id = {placeholder}", (account_id,))
+    return bool(rows)
+
+
+def is_admin_account(row: dict | None) -> bool:
+    return bool(row and (is_owner_account(row) or has_admin_access(row.get("id"))))
+
+
+def grant_admin_access(account_id: object, granted_by: object) -> None:
+    account = find_account_by_id(account_id)
+    if not account:
+        raise ValueError("Account was not found.")
+    if is_owner_account(account) or has_admin_access(account_id):
+        return
+    now = utc_iso()
+    placeholder = db_placeholder()
+    if database_provider() == "mysql":
+        db_execute(
+            (
+                "INSERT INTO account_admins (account_id, granted_by, created_at) VALUES (%s, %s, %s) "
+                "ON DUPLICATE KEY UPDATE granted_by = VALUES(granted_by), created_at = VALUES(created_at)"
+            ),
+            (account_id, granted_by, now),
+        )
+    else:
+        db_execute(
+            (
+                f"INSERT INTO account_admins (account_id, granted_by, created_at) VALUES ({placeholder}, {placeholder}, {placeholder}) "
+                "ON CONFLICT(account_id) DO UPDATE SET granted_by = excluded.granted_by, created_at = excluded.created_at"
+            ),
+            (account_id, granted_by, now),
+        )
+
+
+def revoke_admin_access(account_id: object) -> None:
+    account = find_account_by_id(account_id)
+    if not account:
+        raise ValueError("Account was not found.")
+    if is_owner_account(account):
+        raise ValueError("The owner admin cannot be removed.")
+    placeholder = db_placeholder()
+    db_execute(f"DELETE FROM account_admins WHERE account_id = {placeholder}", (account_id,))
+
+
+def admin_summaries() -> list[dict]:
+    owner = find_account_by_username(OWNER_ADMIN_USERNAME)
+    rows = db_query(
+        (
+            "SELECT accounts.id, accounts.username, accounts.username_lc, accounts.created_at, accounts.updated_at, accounts.last_login_at, "
+            "account_admins.created_at AS admin_created_at "
+            "FROM account_admins JOIN accounts ON accounts.id = account_admins.account_id ORDER BY account_admins.created_at DESC"
+        )
+    )
+    admins = []
+    seen = set()
+    if owner:
+        admins.append(
+            {
+                "id": owner.get("id"),
+                "username": owner.get("username") or "",
+                "createdAt": owner.get("created_at"),
+                "updatedAt": owner.get("updated_at"),
+                "lastLoginAt": owner.get("last_login_at"),
+                "adminSince": owner.get("created_at"),
+                "isOwnerAdmin": True,
+                "isAdmin": True,
+            }
+        )
+        seen.add(str(owner.get("id")))
+    for row in rows:
+        if str(row.get("id")) in seen:
+            continue
+        admins.append(
+            {
+                "id": row.get("id"),
+                "username": row.get("username") or "",
+                "createdAt": row.get("created_at"),
+                "updatedAt": row.get("updated_at"),
+                "lastLoginAt": row.get("last_login_at"),
+                "adminSince": row.get("admin_created_at"),
+                "isOwnerAdmin": is_owner_account(row),
+                "isAdmin": True,
+            }
+        )
+    return admins
 
 
 def account_profile_picture(account_id: object) -> dict:
@@ -920,6 +1036,7 @@ def delete_account(account_id: object) -> None:
     placeholder = db_placeholder()
     db_execute(f"DELETE FROM account_sessions WHERE account_id = {placeholder}", (account_id,))
     db_execute(f"DELETE FROM account_profile_pictures WHERE account_id = {placeholder}", (account_id,))
+    db_execute(f"DELETE FROM account_admins WHERE account_id = {placeholder}", (account_id,))
     db_execute(f"DELETE FROM accounts WHERE id = {placeholder}", (account_id,))
 
 
@@ -932,6 +1049,8 @@ def account_summaries() -> list[dict]:
             "createdAt": row.get("created_at"),
             "updatedAt": row.get("updated_at"),
             "lastLoginAt": row.get("last_login_at"),
+            "isAdmin": is_admin_account(row),
+            "isOwnerAdmin": is_owner_account(row),
         }
         for row in rows
     ]
@@ -942,12 +1061,12 @@ def session_token_hash(token: str) -> str:
 
 
 def request_session_token() -> str:
-    cookie_token = request.cookies.get(SESSION_COOKIE_NAME, "").strip()
-    if cookie_token:
-        return cookie_token
     authorization = request.headers.get("Authorization", "").strip()
     if authorization.lower().startswith("bearer "):
         return authorization[7:].strip()
+    cookie_token = request.cookies.get(SESSION_COOKIE_NAME, "").strip()
+    if cookie_token:
+        return cookie_token
     return ""
 
 
@@ -1047,42 +1166,38 @@ def account_response(account: dict | None = None, extra: dict | None = None):
     return jsonify(payload)
 
 
-def admin_secret() -> str:
-    return os.getenv("AETHER_ADMIN_SECRET", "").strip()
-
-
-def request_admin_secret() -> str:
-    header_secret = request.headers.get("X-Aether-Admin-Secret", "").strip()
-    if header_secret:
-        return header_secret
-    query_secret = request.args.get("adminSecret", "").strip()
-    if query_secret:
-        return query_secret
-    payload = request.get_json(silent=True) if request.is_json else None
-    if isinstance(payload, dict):
-        return str(payload.get("adminSecret", "")).strip()
-    return ""
-
-
 def require_admin():
-    secret = admin_secret()
-    if not secret:
-        return jsonify({"error": "Admin is not configured. Set AETHER_ADMIN_SECRET in Wasmer."}), 403
-    if request_admin_secret() != secret:
+    account = current_account()
+    if not account:
+        return jsonify({"error": "Sign in with an admin account first."}), 401
+    if not is_admin_account(account):
         return jsonify({"error": "Admin access denied."}), 403
+    return None
+
+
+def require_owner_admin():
+    account = current_account()
+    if not account:
+        return jsonify({"error": "Sign in with the owner admin account first."}), 401
+    if not is_owner_account(account):
+        return jsonify({"error": "Only the owner admin can manage admins."}), 403
     return None
 
 
 def admin_status(include_all_blocked: bool = False) -> dict:
     ensure_admin_db()
+    account = current_account()
     return {
         "admin": True,
+        "currentAdmin": account_public(account),
+        "canManageAdmins": is_owner_account(account),
         "aetherAvailable": is_aether_available(),
-        "rateLimit": rate_limit_status(client_ip()),
+        "rateLimit": rate_limit_status(client_ip(), account.get("id") if account else None),
         "requestCounts": request_counts(),
         "bannedIps": banned_ips(),
         "blockedAttempts": blocked_attempts(include_all_blocked),
         "accounts": account_summaries(),
+        "admins": admin_summaries(),
         "pendingProfilePictures": pending_profile_pictures(),
         "database": database_summary(),
     }
@@ -1344,7 +1459,7 @@ def chat_response(payload: dict, ip_address: str, account_id: object = None) -> 
 def add_cors_headers(response):
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Aether-Admin-Secret, Authorization"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
     return response
 
 
@@ -1586,10 +1701,46 @@ def api_admin_delete_account():
     if not isinstance(payload, dict):
         payload = {}
     account_id = payload.get("accountId")
-    if not find_account_by_id(account_id):
+    target = find_account_by_id(account_id)
+    if not target:
         return jsonify({"error": "Account was not found."}), 404
+    actor = current_account()
+    if is_owner_account(target):
+        return jsonify({"error": "The owner admin account cannot be deleted from the admin panel."}), 403
+    if is_admin_account(target) and not is_owner_account(actor):
+        return jsonify({"error": "Only the owner admin can delete admin accounts."}), 403
     delete_account(account_id)
     return jsonify(admin_status())
+
+
+@app.post("/api/admin/grant-admin")
+def api_admin_grant_admin():
+    denied = require_owner_admin()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    try:
+        grant_admin_access(payload.get("accountId"), current_account().get("id"))
+        return jsonify(admin_status())
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/admin/revoke-admin")
+def api_admin_revoke_admin():
+    denied = require_owner_admin()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    try:
+        revoke_admin_access(payload.get("accountId"))
+        return jsonify(admin_status())
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
 
 @app.post("/api/admin/profile-picture/approve")
