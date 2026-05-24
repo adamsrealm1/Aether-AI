@@ -362,6 +362,23 @@ def db_execute_raw(sql: str, params: tuple = (), fetch: bool = False) -> list[di
         connection.close()
 
 
+def db_table_columns(table_name: str) -> set[str]:
+    if database_provider() == "mysql":
+        rows = db_execute_raw(f"SHOW COLUMNS FROM {table_name}", fetch=True)
+        return {str(row.get("Field") or "").lower() for row in rows}
+    rows = db_execute_raw(f"PRAGMA table_info({table_name})", fetch=True)
+    return {str(row.get("name") or "").lower() for row in rows}
+
+
+def ensure_banned_ip_columns() -> None:
+    columns = db_table_columns("banned_ips")
+    if "username" not in columns:
+        definition = "VARCHAR(32)" if database_provider() == "mysql" else "TEXT"
+        db_execute_raw(f"ALTER TABLE banned_ips ADD COLUMN username {definition}")
+    if "source_message" not in columns:
+        db_execute_raw("ALTER TABLE banned_ips ADD COLUMN source_message TEXT")
+
+
 def ensure_admin_db() -> None:
     global DB_INITIALIZED
     if DB_INITIALIZED:
@@ -386,7 +403,9 @@ def ensure_admin_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS banned_ips (
               ip_address VARCHAR(80) PRIMARY KEY,
+              username VARCHAR(32),
               reason TEXT,
+              source_message TEXT,
               created_at VARCHAR(40) NOT NULL
             ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
             """,
@@ -477,7 +496,9 @@ def ensure_admin_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS banned_ips (
               ip_address TEXT PRIMARY KEY,
+              username TEXT,
               reason TEXT,
+              source_message TEXT,
               created_at TEXT NOT NULL
             )
             """,
@@ -557,6 +578,7 @@ def ensure_admin_db() -> None:
             if "CREATE INDEX" not in statement:
                 raise
 
+    ensure_banned_ip_columns()
     DB_INITIALIZED = True
     if get_admin_setting("aether_available") is None:
         set_admin_setting("aether_available", "1")
@@ -722,38 +744,76 @@ def request_counts() -> dict:
     return counts
 
 
+def public_ban_details(row: dict | None) -> dict:
+    if not row:
+        return {"banned": False}
+    return {
+        "banned": True,
+        "ipAddress": row.get("ip_address") or "",
+        "username": row.get("username") or "",
+        "reason": row.get("reason") or "",
+        "sourceMessage": row.get("source_message") or "",
+        "createdAt": row.get("created_at"),
+    }
+
+
 def banned_ips() -> list[dict]:
-    rows = db_query("SELECT ip_address, reason, created_at FROM banned_ips ORDER BY created_at DESC")
+    rows = db_query("SELECT ip_address, username, reason, source_message, created_at FROM banned_ips ORDER BY created_at DESC")
     return [
         {
             "ipAddress": row.get("ip_address"),
+            "username": row.get("username") or "",
             "reason": row.get("reason") or "",
+            "sourceMessage": row.get("source_message") or "",
             "createdAt": row.get("created_at"),
         }
         for row in rows
     ]
 
 
-def is_ip_banned(ip_address: str) -> bool:
+def banned_ip_record(ip_address: str) -> dict | None:
     placeholder = db_placeholder()
-    rows = db_query(f"SELECT ip_address FROM banned_ips WHERE ip_address = {placeholder}", (ip_address[:80],))
-    return bool(rows)
+    rows = db_query(
+        f"SELECT ip_address, username, reason, source_message, created_at FROM banned_ips WHERE ip_address = {placeholder}",
+        (str(ip_address or "")[:80],),
+    )
+    return rows[0] if rows else None
 
 
-def ban_ip(ip_address: str, reason: str = "") -> None:
+def banned_api_response(row: dict):
+    return jsonify(
+        {
+            "error": "You are banned from Aether AI.",
+            "banned": True,
+            "ban": public_ban_details(row),
+        }
+    ), 403
+
+
+def is_ip_banned(ip_address: str) -> bool:
+    return bool(banned_ip_record(ip_address))
+
+
+def ban_ip(ip_address: str, reason: str = "", username: str = "", source_message: str = "") -> None:
     ip_address = ip_address.strip()[:80]
     if not ip_address:
         raise ValueError("IP address is required.")
     reason = reason.strip()[:500]
+    username = normalize_username(username)[:32]
+    source_message = str(source_message or "").strip()[:2000]
     if database_provider() == "mysql":
         db_execute(
-            "INSERT INTO banned_ips (ip_address, reason, created_at) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE reason = VALUES(reason)",
-            (ip_address, reason, utc_iso()),
+            (
+                "INSERT INTO banned_ips (ip_address, username, reason, source_message, created_at) "
+                "VALUES (%s, %s, %s, %s, %s) ON DUPLICATE KEY UPDATE "
+                "username = VALUES(username), reason = VALUES(reason), source_message = VALUES(source_message)"
+            ),
+            (ip_address, username, reason, source_message, utc_iso()),
         )
     else:
         db_execute(
-            "INSERT OR REPLACE INTO banned_ips (ip_address, reason, created_at) VALUES (?, ?, ?)",
-            (ip_address, reason, utc_iso()),
+            "INSERT OR REPLACE INTO banned_ips (ip_address, username, reason, source_message, created_at) VALUES (?, ?, ?, ?, ?)",
+            (ip_address, username, reason, source_message, utc_iso()),
         )
 
 
@@ -1876,8 +1936,13 @@ def chat_response(payload: dict, ip_address: str, account: dict | None = None) -
             "aetherAvailable": False,
             "rateLimit": rate_limit_status(ip_address, account_id),
         }
-    if is_ip_banned(ip_address):
-        return {"reply": "You can not use Aether because you are currently IP banned, you can try again later and see if you are unbanned. Thank you.", "ipBanned": True}
+    ban_record = banned_ip_record(ip_address)
+    if ban_record:
+        return {
+            "reply": "You can not use Aether AI because you were banned by an admin.",
+            "banned": True,
+            "ban": public_ban_details(ban_record),
+        }
     if contains_profanity(message):
         safe_record_blocked_attempt(ip_address, message, chat, account)
         return {"reply": PROFANITY_BLOCK_MESSAGE, "profanityBlocked": True}
@@ -1942,6 +2007,10 @@ def enforce_request_security():
         origin = request.headers.get("Origin", "").strip()
         if origin and not is_allowed_origin(origin):
             return jsonify({"error": "Request origin is not allowed."}), 403
+    if request.path.startswith("/api/") and request.path != "/api/status":
+        ban_record = banned_ip_record(client_ip())
+        if ban_record:
+            return banned_api_response(ban_record)
     return None
 
 
@@ -1986,14 +2055,18 @@ def request_entity_too_large(_exc):
 
 @app.get("/api/status")
 def api_status():
+    ip_address = client_ip()
     account = current_account()
     public_account = account_public(account)
+    ban_record = banned_ip_record(ip_address)
     return jsonify(
         {
             "aetherAvailable": is_aether_available(),
+            "banned": bool(ban_record),
+            "ban": public_ban_details(ban_record) if ban_record else {"banned": False},
             "signedIn": bool(public_account),
             "account": public_account,
-            "rateLimit": rate_limit_status(client_ip(), account.get("id") if account else None),
+            "rateLimit": rate_limit_status(ip_address, account.get("id") if account else None),
         }
     )
 
@@ -2224,7 +2297,7 @@ def api_admin_ban_user():
     try:
         ip_address, username = latest_account_ip(payload.get("username"))
         reason = str(payload.get("reason", "")).strip() or f"User ban: {username}"
-        ban_ip(ip_address, reason)
+        ban_ip(ip_address, reason, username=username)
         status = admin_status()
         status["message"] = f"Banned {username} at {ip_address}."
         return jsonify(status)
@@ -2260,7 +2333,7 @@ def api_admin_blocked_attempt_ban():
         return jsonify({"error": "Blocked attempt does not have an IP address."}), 400
     username = str(attempt.get("username") or "").strip()
     reason = f"Blocked attempt by {username}" if username else "Blocked attempt"
-    ban_ip(ip_address, reason)
+    ban_ip(ip_address, reason, username=username, source_message=str(attempt.get("message") or ""))
     delete_blocked_attempt(attempt.get("id"))
     status = admin_status()
     status["message"] = f"Banned {username or ip_address}."

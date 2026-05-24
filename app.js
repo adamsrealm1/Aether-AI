@@ -45,6 +45,7 @@
     adminLoading: false,
     adminError: "",
     blockedAttemptsExpanded: false,
+    banStatus: null,
   },
 };
 
@@ -66,6 +67,7 @@ const thoughtTimerTimeouts = new Map();
 const LOCATION_TIME_PERMISSION_MESSAGE = "Aether needs your permission to see your location to give your location.";
 const PROFANITY_BLOCK_MESSAGE = "You cant send Aether a message with profanity in it. You can try again without profanity in your message.";
 const SAFETY_LOCK_PLACEHOLDER = "Aether can not continue this conversation. Create a new conversation to keep using Aether.";
+const BAN_POPUP_BODY = "You can not use Aether AI because you were banned by an admin.";
 const VOICE_AUTO_SEND_DELAY_MS = 1800;
 const VOICE_MESSAGE_TTL_MS = 25000;
 const SAFETY_LOCK_DELAY_MS = 3000;
@@ -244,34 +246,39 @@ function render() {
   const chat = activeChat();
   const mobileSidebarClass = Aether.state.mobileSidebarOpen ? " mobile-sidebar-open" : "";
   const showAdminView = Aether.state.adminView && isCurrentAdmin();
+  const banLocked = isUserBanned();
+  const lockableAttrs = banLocked ? ` inert aria-hidden="true"` : "";
 
   root.innerHTML = `
-    <div class="app-shell${mobileSidebarClass}">
-      <button class="mobile-sidebar-scrim" type="button" data-action="close-mobile-sidebar" aria-label="Close sidebar"></button>
-      <aside class="sidebar">
-        <button class="brand" data-action="home" aria-label="Aether home">
-          <img src="assets/Aether.png" alt="Aether" width="60" height="60">
-          <span class="brand-copy">
-            <span class="brand-name">Aether</span>
-            ${renderServerStatus()}
-          </span>
-        </button>
-        <button class="new-chat" data-action="new-chat">+ New conversation</button>
-        ${renderAccountSidebarButton()}
-        ${renderAdminSidebarButton()}
-        <input class="sidebar-search" data-action="sidebar-search" autocomplete="off" placeholder="Search conversations" value="${escapeHtml(Aether.state.sidebarSearch)}">
-        <div class="chat-list">
-          ${filteredChats().map(chatListItem).join("") || `<div class="sidebar-empty">No conversations found.</div>`}
-        </div>
-        ${renderRateLimitMeter()}
-      </aside>
+    <div class="app-shell${mobileSidebarClass}${banLocked ? " ban-locked-shell" : ""}">
+      <div class="app-content"${lockableAttrs}>
+        <button class="mobile-sidebar-scrim" type="button" data-action="close-mobile-sidebar" aria-label="Close sidebar"></button>
+        <aside class="sidebar">
+          <button class="brand" data-action="home" aria-label="Aether home">
+            <img src="assets/Aether.png" alt="Aether" width="60" height="60">
+            <span class="brand-copy">
+              <span class="brand-name">Aether</span>
+              ${renderServerStatus()}
+            </span>
+          </button>
+          <button class="new-chat" data-action="new-chat">+ New conversation</button>
+          ${renderAccountSidebarButton()}
+          ${renderAdminSidebarButton()}
+          <input class="sidebar-search" data-action="sidebar-search" autocomplete="off" placeholder="Search conversations" value="${escapeHtml(Aether.state.sidebarSearch)}">
+          <div class="chat-list">
+            ${filteredChats().map(chatListItem).join("") || `<div class="sidebar-empty">No conversations found.</div>`}
+          </div>
+          ${renderRateLimitMeter()}
+        </aside>
 
-      ${showAdminView ? renderAdminPage() : renderChatPage(chat)}
-      ${renderProfanityPopup()}
-      ${renderRateLimitPopup()}
-      ${renderAuthModal()}
-      ${renderAccountModal()}
-      ${renderToast()}
+        ${showAdminView ? renderAdminPage() : renderChatPage(chat)}
+        ${renderProfanityPopup()}
+        ${renderRateLimitPopup()}
+        ${renderAuthModal()}
+        ${renderAccountModal()}
+        ${renderToast()}
+      </div>
+      ${renderBanOverlay()}
     </div>
   `;
 
@@ -451,15 +458,20 @@ function renderBanIpPanel(bannedIps) {
         <button class="primary-button" type="submit"${Aether.state.adminLoading ? " disabled" : ""}>Ban user</button>
       </form>
       <div class="admin-list">
-        ${bannedIps.map((item) => `
-          <div class="admin-list-item">
-            <div>
-              <strong>${escapeHtml(item.ipAddress || "")}</strong>
-              <small>${escapeHtml(item.reason || "No reason")} - ${escapeHtml(formatAdminDate(item.createdAt))}</small>
+        ${bannedIps.map((item) => {
+          const username = String(item.username || "").trim();
+          const sourceMessage = String(item.sourceMessage || "").trim();
+          return `
+            <div class="admin-list-item banned-user-item">
+              <div>
+                <strong>${escapeHtml(username || item.ipAddress || "")}</strong>
+                <small>${username ? `IP ${escapeHtml(item.ipAddress || "")} - ` : ""}${escapeHtml(item.reason || "No reason")} - ${escapeHtml(formatAdminDate(item.createdAt))}</small>
+                ${sourceMessage ? `<p>${escapeHtml(sourceMessage)}</p>` : ""}
+              </div>
+              <button class="secondary-button" data-unban-ip="${escapeHtml(item.ipAddress || "")}">Unban</button>
             </div>
-            <button class="secondary-button" data-unban-ip="${escapeHtml(item.ipAddress || "")}">Unban</button>
-          </div>
-        `).join("") || `<div class="admin-empty">No banned users/IPs.</div>`}
+          `;
+        }).join("") || `<div class="admin-empty">No banned users/IPs.</div>`}
       </div>
     </section>
   `;
@@ -724,6 +736,49 @@ function renderRateLimitPopup() {
   `;
 }
 
+function renderBanOverlay() {
+  if (!isUserBanned()) return "";
+  const ban = Aether.state.banStatus || {};
+  const reason = String(ban.reason || "").trim() || "No reason was provided.";
+  const username = String(ban.username || "").trim();
+  const sourceMessage = String(ban.sourceMessage || "").trim();
+  const bannedAt = ban.createdAt ? formatAdminDate(ban.createdAt) : "";
+  return `
+    <div class="ban-lock-overlay" role="dialog" aria-modal="true" aria-labelledby="ban-title" aria-describedby="ban-body">
+      <section class="ban-lock-card" tabindex="-1">
+        <div class="ban-lock-icon" aria-hidden="true">!</div>
+        <span class="ban-lock-eyebrow">Access blocked</span>
+        <h2 id="ban-title">You are banned from Aether AI</h2>
+        <p id="ban-body">${escapeHtml(BAN_POPUP_BODY)}</p>
+        <div class="ban-lock-details">
+          <div class="ban-detail">
+            <span>Reason</span>
+            <strong>${escapeHtml(reason)}</strong>
+          </div>
+          ${username ? `
+            <div class="ban-detail">
+              <span>User</span>
+              <strong>${escapeHtml(username)}</strong>
+            </div>
+          ` : ""}
+          ${bannedAt ? `
+            <div class="ban-detail">
+              <span>Banned</span>
+              <strong>${escapeHtml(bannedAt)}</strong>
+            </div>
+          ` : ""}
+        </div>
+        ${sourceMessage ? `
+          <div class="ban-evidence">
+            <span>What you said</span>
+            <p>${escapeHtml(sourceMessage)}</p>
+          </div>
+        ` : ""}
+      </section>
+    </div>
+  `;
+}
+
 function renderAuthModal() {
   if (!Aether.state.authModal) return "";
   const creating = Aether.state.authMode === "create";
@@ -815,6 +870,11 @@ function renderAccountModal() {
 }
 
 function bindEvents(root) {
+  if (isUserBanned()) {
+    focusBanOverlay(root);
+    return;
+  }
+
   root.querySelector("[data-action='home']")?.addEventListener("click", () => {
     Aether.state.adminView = false;
     Aether.state.mobileSidebarOpen = false;
@@ -899,6 +959,12 @@ function bindEvents(root) {
   });
   bindAccountEvents(root);
   bindAdminEvents(root);
+}
+
+function focusBanOverlay(root = document) {
+  requestAnimationFrame(() => {
+    root.querySelector(".ban-lock-card")?.focus({ preventScroll: true });
+  });
 }
 
 function bindAccountEvents(root) {
@@ -1366,6 +1432,7 @@ async function sendMessage(event) {
 }
 
 async function sendTextMessage(text, options = {}) {
+  if (isUserBanned()) return;
   if (Aether.state.thinking) return;
   if (!isAetherAvailable()) return;
   const chat = activeChat();
@@ -1441,6 +1508,7 @@ function speechRecognitionConstructor() {
 }
 
 function toggleVoiceInput() {
+  if (isUserBanned()) return;
   if (Aether.state.thinking) return;
   if (!isAetherAvailable()) return;
   if (activeChat()?.safetyLocked) return;
@@ -1619,6 +1687,12 @@ async function fetchAssistantReply(text, location = null) {
           body: JSON.stringify({ message: text, chat: activeChat().messages, location }),
         });
         if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          if (data.banned || data.ban) {
+            applyServerStatus(data);
+            render();
+            return "";
+          }
           if (isRetryableStatus(response.status)) {
             await wait(retryDelayMs);
             retryDelayMs = nextRetryDelay(retryDelayMs);
@@ -1628,6 +1702,10 @@ async function fetchAssistantReply(text, location = null) {
         }
         const data = await response.json();
         applyServerStatus(data);
+        if (data.banned || data.ban) {
+          render();
+          return "";
+        }
         if (data.retryable) {
           await wait(Number(data.retryAfterSeconds || 4) * 1000);
           retryDelayMs = nextRetryDelay(retryDelayMs);
@@ -1711,21 +1789,70 @@ function isRateLimited() {
 }
 
 function isAetherAvailable() {
-  return Aether.state.aetherAvailable !== false;
+  return Aether.state.aetherAvailable !== false && !isUserBanned();
 }
 
 function applyServerStatus(data) {
-  let accountChanged = false;
+  let changed = false;
   if (Object.prototype.hasOwnProperty.call(data, "aetherAvailable")) {
     setAetherAvailability(data.aetherAvailable !== false);
   }
+  if (Object.prototype.hasOwnProperty.call(data, "banned") || Object.prototype.hasOwnProperty.call(data || {}, "ban")) {
+    changed = applyBanStatus(data) || changed;
+  }
   if (Object.prototype.hasOwnProperty.call(data, "signedIn")) {
-    accountChanged = applyAccountStatus(data);
+    changed = applyAccountStatus(data) || changed;
   }
   if (data.rateLimit) {
     updateRateLimit(data.rateLimit);
   }
-  return accountChanged;
+  return changed;
+}
+
+function isUserBanned() {
+  return Boolean(Aether.state.banStatus?.banned);
+}
+
+function applyBanStatus(data) {
+  const wasBanned = banStatusKey(Aether.state.banStatus);
+  const nextStatus = normalizeBanStatus(data);
+  Aether.state.banStatus = nextStatus;
+  document.body.classList.toggle("ban-locked", Boolean(nextStatus?.banned));
+  if (nextStatus?.banned) {
+    Aether.state.thinking = false;
+    Aether.state.authModal = false;
+    Aether.state.accountModal = false;
+    Aether.state.profanityPopup = false;
+    Aether.state.rateLimitPopup = false;
+    Aether.state.adminView = false;
+    Aether.state.mobileSidebarOpen = false;
+    stopVoiceInput({ keepDraft: true, silent: true });
+  }
+  return wasBanned !== banStatusKey(nextStatus);
+}
+
+function normalizeBanStatus(data) {
+  const rawBan = data?.ban && typeof data.ban === "object" ? data.ban : data;
+  if (!data?.banned && !rawBan?.banned) return null;
+  return {
+    banned: true,
+    ipAddress: String(rawBan.ipAddress || ""),
+    username: String(rawBan.username || ""),
+    reason: String(rawBan.reason || ""),
+    sourceMessage: String(rawBan.sourceMessage || ""),
+    createdAt: String(rawBan.createdAt || ""),
+  };
+}
+
+function banStatusKey(status) {
+  if (!status?.banned) return "";
+  return [
+    status.ipAddress || "",
+    status.username || "",
+    status.reason || "",
+    status.sourceMessage || "",
+    status.createdAt || "",
+  ].join("|");
 }
 
 function applyAccountStatus(data) {
@@ -1828,6 +1955,11 @@ async function syncAccountChatsForCurrentAccount() {
       cache: "no-store",
     });
     const data = await response.json().catch(() => ({}));
+    if (data.banned || data.ban) {
+      applyServerStatus(data);
+      render();
+      return;
+    }
     if (!response.ok) throw new Error(data.error || `Chat sync failed with HTTP ${response.status}`);
     if (String(Aether.state.account?.id || "") !== accountId) return;
     Aether.state.accountChatsSyncedFor = accountId;
@@ -1856,6 +1988,7 @@ function applyRemoteAccountChats(data) {
 }
 
 function queueAccountChatsSave(options = {}) {
+  if (isUserBanned()) return;
   if (!Aether.state.signedIn || !Aether.state.account?.id) return;
   if (accountChatsSaveTimer) clearTimeout(accountChatsSaveTimer);
   const delay = options.immediate ? 0 : ACCOUNT_CHATS_SAVE_DELAY_MS;
@@ -1885,6 +2018,11 @@ async function saveAccountChatsNow() {
     });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
+      if (data.banned || data.ban) {
+        applyServerStatus(data);
+        render();
+        return;
+      }
       throw new Error(data.error || `Chat save failed with HTTP ${response.status}`);
     }
     if (String(Aether.state.account?.id || "") === accountId) {
@@ -2175,6 +2313,10 @@ async function accountRequest(path, options = {}) {
     cache: "no-store",
   });
   const data = await response.json().catch(() => ({}));
+  if (data.banned || data.ban) {
+    applyServerStatus(data);
+    render();
+  }
   if (!response.ok) {
     throw new Error(data.error || `Account request failed with HTTP ${response.status}`);
   }
@@ -2197,6 +2339,10 @@ async function loadAdminStatus(options = {}) {
       cache: "no-store",
     });
     const data = await response.json().catch(() => ({}));
+    if (data.banned || data.ban) {
+      applyServerStatus(data);
+      render();
+    }
     if (!response.ok) {
       throw new Error(data.error || `Admin request failed with HTTP ${response.status}`);
     }
@@ -2233,6 +2379,10 @@ async function adminRequest(path, options = {}) {
       cache: "no-store",
     });
     const data = await response.json().catch(() => ({}));
+    if (data.banned || data.ban) {
+      applyServerStatus(data);
+      render();
+    }
     if (!response.ok) {
       throw new Error(data.error || `Admin request failed with HTTP ${response.status}`);
     }
