@@ -658,6 +658,16 @@ img.account-avatar {
   overflow-wrap: anywhere;
   margin-top: 4px;
 }
+.blocked-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+.blocked-actions button {
+  min-width: 92px;
+}
 .admin-empty {
   padding: 12px;
   color: #bfdbfe;
@@ -800,34 +810,17 @@ img.account-avatar {
 }
 .message-row.user .voice-bubble {
   display: grid;
-  grid-template-columns: 38px minmax(120px, 1fr) auto;
+  grid-template-columns: minmax(150px, 1fr) auto;
   align-items: center;
-  gap: 12px;
-  width: min(300px, 74vw);
-  min-height: 58px;
+  gap: 11px;
+  width: min(260px, 74vw);
+  min-height: 52px;
   border: 0;
   border-radius: 11px;
   color: #fff;
   background: linear-gradient(135deg, #38bdf8, #258ee7);
   box-shadow: 0 14px 34px rgba(37, 142, 231, 0.28);
   white-space: normal;
-}
-.voice-play {
-  display: grid;
-  place-items: center;
-  width: 38px;
-  height: 38px;
-  border-radius: 50%;
-  background: #fff;
-}
-.voice-play::before {
-  content: "";
-  width: 0;
-  height: 0;
-  margin-left: 3px;
-  border-top: 8px solid transparent;
-  border-bottom: 8px solid transparent;
-  border-left: 12px solid #38a8f3;
 }
 .voice-wave {
   display: grid;
@@ -1563,15 +1556,11 @@ img.account-avatar {
     align-items: flex-end;
   }
   .message-row.user .voice-bubble {
-    grid-template-columns: 34px minmax(96px, 1fr) auto;
-    gap: 9px;
-    width: min(284px, 82vw);
-    min-height: 54px;
+    grid-template-columns: minmax(110px, 1fr) auto;
+    gap: 8px;
+    width: min(238px, 82vw);
+    min-height: 50px;
     padding: 9px 12px;
-  }
-  .voice-play {
-    width: 34px;
-    height: 34px;
   }
   .bubble {
     border-radius: 18px;

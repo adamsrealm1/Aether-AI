@@ -473,18 +473,32 @@ function renderBlockedAttemptsPanel(attempts) {
         <span>${attempts.length}${Aether.state.blockedAttemptsExpanded ? " shown" : " recent"}</span>
       </div>
       <div class="admin-list blocked-list">
-        ${attempts.map((attempt) => `
-          <div class="blocked-attempt">
-            <div class="blocked-attempt-head">
-              <strong>${escapeHtml(attempt.ipAddress || "")}</strong>
-              <small>${escapeHtml(formatAdminDate(attempt.createdAt))}</small>
+        ${attempts.map((attempt) => {
+          const username = String(attempt.username || "").trim();
+          const ipAddress = String(attempt.ipAddress || "").trim();
+          const attemptId = escapeHtml(attempt.id || "");
+          const primaryLabel = username || ipAddress;
+          const detailLabel = username ? `User ${escapeHtml(username)} - IP ${escapeHtml(ipAddress)}` : `IP ${escapeHtml(ipAddress)}`;
+          return `
+            <div class="blocked-attempt">
+              <div class="blocked-attempt-head">
+                <div>
+                  <strong>${escapeHtml(primaryLabel)}</strong>
+                  <small>${detailLabel}</small>
+                </div>
+                <small>${escapeHtml(formatAdminDate(attempt.createdAt))}</small>
+              </div>
+              <p>${escapeHtml(attempt.message || "")}</p>
+              <ol>
+                ${(attempt.context || []).map((message) => `<li>${escapeHtml(message)}</li>`).join("")}
+              </ol>
+              <div class="blocked-actions">
+                <button class="danger-button" data-blocked-ban="${attemptId}"${Aether.state.adminLoading ? " disabled" : ""}>${username ? "Ban User" : "Ban IP"}</button>
+                <button class="secondary-button" data-blocked-ignore="${attemptId}"${Aether.state.adminLoading ? " disabled" : ""}>Ignore</button>
+              </div>
             </div>
-            <p>${escapeHtml(attempt.message || "")}</p>
-            <ol>
-              ${(attempt.context || []).map((message) => `<li>${escapeHtml(message)}</li>`).join("")}
-            </ol>
-          </div>
-        `).join("") || `<div class="admin-empty">No blocked attempts.</div>`}
+          `;
+        }).join("") || `<div class="admin-empty">No blocked attempts.</div>`}
       </div>
       <button class="secondary-button show-all-button" data-action="admin-show-all"${Aether.state.blockedAttemptsExpanded ? " disabled" : ""}>Show all</button>
     </section>
@@ -660,7 +674,6 @@ function renderVoiceBubble(message) {
   const bars = VOICE_WAVE_BARS.map((height, index) => `<span style="--h:${height};--d:${index}"></span>`).join("");
   return `
     <div class="bubble voice-bubble" title="${escapeHtml(message.content || "Voice message")}">
-      <span class="voice-play" aria-hidden="true"></span>
       <span class="voice-wave" aria-hidden="true">${bars}</span>
       <span class="voice-time">${escapeHtml(duration)}</span>
     </div>
@@ -1163,6 +1176,24 @@ function bindAdminEvents(root) {
         method: "POST",
         body: JSON.stringify({ ipAddress: button.dataset.unbanIp || "" }),
       });
+    });
+  });
+  root.querySelectorAll("[data-blocked-ban]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const banned = await adminRequest("/api/admin/blocked-attempt/ban", {
+        method: "POST",
+        body: JSON.stringify({ attemptId: button.dataset.blockedBan || "" }),
+      });
+      if (banned) showToast("Blocked attempt banned.");
+    });
+  });
+  root.querySelectorAll("[data-blocked-ignore]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const ignored = await adminRequest("/api/admin/blocked-attempt/ignore", {
+        method: "POST",
+        body: JSON.stringify({ attemptId: button.dataset.blockedIgnore || "" }),
+      });
+      if (ignored) showToast("Blocked attempt ignored.");
     });
   });
   root.querySelectorAll("[data-admin-delete-account]").forEach((button) => {

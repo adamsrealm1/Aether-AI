@@ -23,6 +23,8 @@ PROFANITY_BLOCK_MESSAGE = "You cant send Aether a message with profanity in it. 
 DEFAULT_RATE_LIMIT = 300
 DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60
 DEFAULT_RATE_LIMIT_TIMEZONE = "America/New_York"
+ANONYMOUS_DAILY_RATE_LIMIT = 20
+ANONYMOUS_DAILY_RATE_LIMIT_WINDOW_SECONDS = 24 * 60 * 60
 MAX_PROFILE_PICTURE_DATA_URL_LENGTH = 750000
 MAX_REQUEST_BODY_BYTES = 2 * 1024 * 1024
 MAX_CHAT_MESSAGE_CONTENT_LENGTH = 24000
@@ -105,7 +107,7 @@ def rate_limit_key(ip_address: str | None = None, account_id: object = None) -> 
     if account_value:
         return f"account:{account_value[:120]}"
     cleaned = str(ip_address or "unknown").strip() or "unknown"
-    return f"ip:{cleaned[:120]}"
+    return f"anonymous:{cleaned[:120]}"
 
 
 def rate_limit_for_request() -> int:
@@ -114,6 +116,15 @@ def rate_limit_for_request() -> int:
 
 def rate_limit_window_seconds() -> int:
     return rate_limit_settings()["windowSeconds"]
+
+
+def request_rate_limit_settings(account_id: object = None) -> dict:
+    if str(account_id or "").strip():
+        return rate_limit_settings()
+    return {
+        "limit": ANONYMOUS_DAILY_RATE_LIMIT,
+        "windowSeconds": ANONYMOUS_DAILY_RATE_LIMIT_WINDOW_SECONDS,
+    }
 
 
 def global_rate_limit_reset_at(now: datetime, window_seconds: int) -> datetime:
@@ -158,8 +169,9 @@ def eastern_dst_transition_utc(year: int, month: int, occurrence: int, offset_be
 
 
 def rate_limit_status(ip_address: str | None = None, account_id: object = None) -> dict:
-    limit = rate_limit_for_request()
-    window_seconds = rate_limit_window_seconds()
+    settings = request_rate_limit_settings(account_id)
+    limit = int(settings["limit"])
+    window_seconds = int(settings["windowSeconds"])
     now = utc_now()
     reset_at = global_rate_limit_reset_at(now, window_seconds)
     key = rate_limit_key(ip_address, account_id)
@@ -784,8 +796,14 @@ def last_user_messages(chat: list[dict], current_message: str) -> list[str]:
     return messages[-5:]
 
 
-def record_blocked_attempt(ip_address: str, message: str, chat: list[dict]) -> None:
-    context = last_user_messages(chat, message)
+def record_blocked_attempt(ip_address: str, message: str, chat: list[dict], account: dict | None = None) -> None:
+    context = {
+        "messages": last_user_messages(chat, message),
+        "account": {
+            "id": account.get("id") if account else None,
+            "username": account.get("username") if account else "",
+        },
+    }
     placeholder = db_placeholder()
     db_execute(
         f"INSERT INTO blocked_attempts (created_at, ip_address, message, context_json) VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder})",
@@ -793,9 +811,9 @@ def record_blocked_attempt(ip_address: str, message: str, chat: list[dict]) -> N
     )
 
 
-def safe_record_blocked_attempt(ip_address: str, message: str, chat: list[dict]) -> None:
+def safe_record_blocked_attempt(ip_address: str, message: str, chat: list[dict], account: dict | None = None) -> None:
     try:
-        record_blocked_attempt(ip_address, message, chat)
+        record_blocked_attempt(ip_address, message, chat, account)
     except Exception:
         pass
 
@@ -808,9 +826,15 @@ def blocked_attempts(include_all: bool = False) -> list[dict]:
     attempts = []
     for row in rows:
         try:
-            context = json.loads(row.get("context_json") or "[]")
+            raw_context = json.loads(row.get("context_json") or "[]")
         except Exception:
-            context = []
+            raw_context = []
+        if isinstance(raw_context, dict):
+            context = raw_context.get("messages") if isinstance(raw_context.get("messages"), list) else []
+            account = raw_context.get("account") if isinstance(raw_context.get("account"), dict) else {}
+        else:
+            context = raw_context if isinstance(raw_context, list) else []
+            account = {}
         attempts.append(
             {
                 "id": row.get("id"),
@@ -818,9 +842,29 @@ def blocked_attempts(include_all: bool = False) -> list[dict]:
                 "ipAddress": row.get("ip_address"),
                 "message": row.get("message") or "",
                 "context": context[-5:],
+                "accountId": account.get("id"),
+                "username": account.get("username") or "",
             }
         )
     return attempts
+
+
+def blocked_attempt_by_id(attempt_id: object) -> dict | None:
+    placeholder = db_placeholder()
+    rows = db_query(f"SELECT id, created_at, ip_address, message, context_json FROM blocked_attempts WHERE id = {placeholder}", (attempt_id,))
+    if not rows:
+        return None
+    row = rows[0]
+    attempts = blocked_attempts(True)
+    for attempt in attempts:
+        if str(attempt.get("id")) == str(row.get("id")):
+            return attempt
+    return None
+
+
+def delete_blocked_attempt(attempt_id: object) -> None:
+    placeholder = db_placeholder()
+    db_execute(f"DELETE FROM blocked_attempts WHERE id = {placeholder}", (attempt_id,))
 
 
 def normalize_username(username: object) -> str:
@@ -1818,7 +1862,8 @@ def client_ip() -> str:
     return value[:80] or "127.0.0.1"
 
 
-def chat_response(payload: dict, ip_address: str, account_id: object = None) -> dict:
+def chat_response(payload: dict, ip_address: str, account: dict | None = None) -> dict:
+    account_id = account.get("id") if account else None
     message = str(payload.get("message", "")).strip()[:MAX_CHAT_MESSAGE_CONTENT_LENGTH]
     chat = payload.get("chat") if isinstance(payload.get("chat"), list) else []
     chat = chat[:MAX_CHAT_MESSAGES_PER_CHAT]
@@ -1834,7 +1879,7 @@ def chat_response(payload: dict, ip_address: str, account_id: object = None) -> 
     if is_ip_banned(ip_address):
         return {"reply": "You can not use Aether because you are currently IP banned, you can try again later and see if you are unbanned. Thank you.", "ipBanned": True}
     if contains_profanity(message):
-        safe_record_blocked_attempt(ip_address, message, chat)
+        safe_record_blocked_attempt(ip_address, message, chat, account)
         return {"reply": PROFANITY_BLOCK_MESSAGE, "profanityBlocked": True}
     scan_limit = consume_safety_scan_rate_limit(ip_address, account_id)
     if not scan_limit["allowed"]:
@@ -1845,7 +1890,7 @@ def chat_response(payload: dict, ip_address: str, account_id: object = None) -> 
         }
     safety = classify_message_safety(message, chat)
     if safety.get("lock"):
-        safe_record_blocked_attempt(ip_address, message, chat)
+        safe_record_blocked_attempt(ip_address, message, chat, account)
         return {
             "safetyLocked": True,
             "safetyReason": safety.get("reason") or "safety",
@@ -2199,6 +2244,44 @@ def api_admin_unban_ip():
     return jsonify(admin_status())
 
 
+@app.post("/api/admin/blocked-attempt/ban")
+def api_admin_blocked_attempt_ban():
+    denied = require_admin()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    attempt = blocked_attempt_by_id(payload.get("attemptId"))
+    if not attempt:
+        return jsonify({"error": "Blocked attempt was not found."}), 404
+    ip_address = str(attempt.get("ipAddress") or "").strip()
+    if not ip_address:
+        return jsonify({"error": "Blocked attempt does not have an IP address."}), 400
+    username = str(attempt.get("username") or "").strip()
+    reason = f"Blocked attempt by {username}" if username else "Blocked attempt"
+    ban_ip(ip_address, reason)
+    delete_blocked_attempt(attempt.get("id"))
+    status = admin_status()
+    status["message"] = f"Banned {username or ip_address}."
+    return jsonify(status)
+
+
+@app.post("/api/admin/blocked-attempt/ignore")
+def api_admin_blocked_attempt_ignore():
+    denied = require_admin()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    attempt_id = payload.get("attemptId")
+    if not blocked_attempt_by_id(attempt_id):
+        return jsonify({"error": "Blocked attempt was not found."}), 404
+    delete_blocked_attempt(attempt_id)
+    return jsonify(admin_status())
+
+
 @app.post("/api/admin/delete-account")
 def api_admin_delete_account():
     denied = require_admin()
@@ -2306,7 +2389,7 @@ def api_chat():
         if not isinstance(payload, dict):
             payload = {}
         safe_record_request_event(ip_address)
-        return jsonify(chat_response(payload, ip_address, account_id))
+        return jsonify(chat_response(payload, ip_address, account))
     except APIStatusError as exc:
         return jsonify({"reply": groq_error_message(exc)})
     except (APIConnectionError, APITimeoutError):
