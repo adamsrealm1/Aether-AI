@@ -38,6 +38,8 @@
     accountModal: false,
     accountLoading: false,
     accountError: "",
+    accountChatsSyncedFor: "",
+    accountChatsLoading: false,
     adminView: false,
     adminStatus: null,
     adminLoading: false,
@@ -50,6 +52,9 @@ let messageVisibilityObserver = null;
 let rateMeterTimer = null;
 let rateLimitCountdownTimer = null;
 let serverStatusTimer = null;
+let accountChatsSaveTimer = null;
+let accountChatsSaving = false;
+let accountChatsSaveQueued = false;
 let voiceRecognition = null;
 let voiceSilenceTimer = null;
 let voiceBaseDraft = "";
@@ -64,6 +69,7 @@ const VOICE_AUTO_SEND_DELAY_MS = 1800;
 const ACCOUNT_SESSION_TOKEN_KEY = "aether.accountSessionToken";
 const MOBILE_SCROLL_FADE_QUERY = "(max-width: 860px), (pointer: coarse)";
 const MAX_PROFILE_PICTURE_FILE_SIZE = 560000;
+const ACCOUNT_CHATS_SAVE_DELAY_MS = 700;
 const DEFAULT_ASSISTANT_GREETING = "Hi there! I'm Aether. What's on your mind?";
 const PROFANITY_PATTERNS = [
   /\bass\b/i,
@@ -111,6 +117,7 @@ const storage = {
     localStorage.setItem("aether.config", JSON.stringify(Aether.config));
     localStorage.setItem("aether.chats", JSON.stringify(Aether.state.chats));
     localStorage.setItem("aether.activeChatId", Aether.state.activeChatId || "");
+    queueAccountChatsSave();
   },
 };
 
@@ -358,7 +365,6 @@ function renderAdminPage() {
           <div>
             <span class="admin-kicker">${escapeHtml(database.provider || "database")} </span>
             <h2>${available ? "Aether is available" : "Aether is unavailable"}</h2>
-            <p>You can disable or enable Aether globally, and rate-limit settings apply to each user separately.</p>
           </div>
           <label class="admin-switch">
             <input type="checkbox" data-action="admin-availability" ${available ? "checked" : ""}${Aether.state.adminLoading ? " disabled" : ""}>
@@ -1616,10 +1622,13 @@ function applyAccountStatus(data) {
   let starterGreetingChanged = false;
   if (!Aether.state.signedIn) {
     Aether.state.accountModal = false;
+    Aether.state.accountChatsSyncedFor = "";
+    Aether.state.accountChatsLoading = false;
     Aether.state.adminView = false;
     Aether.state.adminStatus = null;
   } else {
     starterGreetingChanged = updateStarterGreetingForAccount(Aether.state.account);
+    syncAccountChatsForCurrentAccount();
     if (!Aether.state.account?.isAdmin) {
       Aether.state.adminView = false;
       Aether.state.adminStatus = null;
@@ -1688,6 +1697,104 @@ function setAccountSessionToken(token) {
   } catch {
     // Browsers can block localStorage in hardened modes; cookies still work for same-origin installs.
   }
+}
+
+async function syncAccountChatsForCurrentAccount() {
+  const accountId = String(Aether.state.account?.id || "");
+  if (!accountId || Aether.state.accountChatsSyncedFor === accountId || Aether.state.accountChatsLoading) return;
+  Aether.state.accountChatsLoading = true;
+  try {
+    const response = await fetch(apiUrl("/api/account/chats"), {
+      headers: await authHeaders(),
+      cache: "no-store",
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `Chat sync failed with HTTP ${response.status}`);
+    if (String(Aether.state.account?.id || "") !== accountId) return;
+    Aether.state.accountChatsSyncedFor = accountId;
+    if (data.hasChats) {
+      applyRemoteAccountChats(data);
+    } else {
+      queueAccountChatsSave({ immediate: true });
+    }
+  } catch (error) {
+    Aether.state.accountError = error?.message || "Chat sync failed.";
+  } finally {
+    Aether.state.accountChatsLoading = false;
+  }
+}
+
+function applyRemoteAccountChats(data) {
+  const remoteChats = Array.isArray(data?.chats) ? data.chats.map(normalizeChat) : [];
+  if (!remoteChats.length) return;
+  Aether.state.chats = remoteChats;
+  Aether.state.activeChatId = remoteChats.some((chat) => chat.id === data.activeChatId)
+    ? data.activeChatId
+    : remoteChats[0].id;
+  localStorage.setItem("aether.chats", JSON.stringify(Aether.state.chats));
+  localStorage.setItem("aether.activeChatId", Aether.state.activeChatId || "");
+  render();
+}
+
+function queueAccountChatsSave(options = {}) {
+  if (!Aether.state.signedIn || !Aether.state.account?.id) return;
+  if (accountChatsSaveTimer) clearTimeout(accountChatsSaveTimer);
+  const delay = options.immediate ? 0 : ACCOUNT_CHATS_SAVE_DELAY_MS;
+  accountChatsSaveTimer = setTimeout(() => {
+    accountChatsSaveTimer = null;
+    saveAccountChatsNow();
+  }, delay);
+}
+
+async function saveAccountChatsNow() {
+  if (!Aether.state.signedIn || !Aether.state.account?.id) return;
+  if (accountChatsSaving) {
+    accountChatsSaveQueued = true;
+    return;
+  }
+  accountChatsSaving = true;
+  const accountId = String(Aether.state.account.id);
+  try {
+    const response = await fetch(apiUrl("/api/account/chats"), {
+      method: "PUT",
+      headers: await authHeaders({ "Content-Type": "application/json;charset=UTF-8" }),
+      cache: "no-store",
+      body: JSON.stringify({
+        chats: accountChatsPayload(),
+        activeChatId: Aether.state.activeChatId || "",
+      }),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || `Chat save failed with HTTP ${response.status}`);
+    }
+    if (String(Aether.state.account?.id || "") === accountId) {
+      Aether.state.accountChatsSyncedFor = accountId;
+    }
+  } catch (error) {
+    Aether.state.accountError = error?.message || "Chat save failed.";
+  } finally {
+    accountChatsSaving = false;
+    if (accountChatsSaveQueued) {
+      accountChatsSaveQueued = false;
+      queueAccountChatsSave({ immediate: true });
+    }
+  }
+}
+
+function accountChatsPayload() {
+  return Aether.state.chats.map((chat) => ({
+    id: chat.id,
+    title: chat.title,
+    createdAt: chat.createdAt,
+    updatedAt: chat.updatedAt,
+    messages: chat.messages.map((message) => ({
+      id: message.id,
+      role: message.role,
+      content: message.content,
+      createdAt: message.createdAt,
+    })),
+  }));
 }
 
 function setAetherAvailability(available) {

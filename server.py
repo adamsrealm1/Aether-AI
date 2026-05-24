@@ -325,6 +325,14 @@ def ensure_admin_db() -> None:
             ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
             """,
             """
+            CREATE TABLE IF NOT EXISTS account_chats (
+              account_id BIGINT PRIMARY KEY,
+              chats_json LONGTEXT NOT NULL,
+              active_chat_id VARCHAR(120),
+              updated_at VARCHAR(40) NOT NULL
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+            """,
+            """
             CREATE TABLE IF NOT EXISTS account_admins (
               account_id BIGINT PRIMARY KEY,
               granted_by BIGINT,
@@ -405,6 +413,14 @@ def ensure_admin_db() -> None:
               approved_at TEXT,
               pending_data_url TEXT,
               pending_at TEXT
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS account_chats (
+              account_id INTEGER PRIMARY KEY,
+              chats_json TEXT NOT NULL,
+              active_chat_id TEXT,
+              updated_at TEXT NOT NULL
             )
             """,
             """
@@ -972,6 +988,99 @@ def decline_profile_picture(account_id: object) -> None:
     )
 
 
+def normalize_chat_message(value: object) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    content = str(value.get("content") or "")
+    if not content:
+        return None
+    role = "user" if value.get("role") == "user" else "assistant"
+    created_at = str(value.get("createdAt") or value.get("created_at") or utc_iso())[:40]
+    message_id = str(value.get("id") or secrets.token_urlsafe(12))[:120]
+    return {
+        "id": message_id,
+        "role": role,
+        "content": content[:24000],
+        "createdAt": created_at,
+    }
+
+
+def normalize_account_chat(value: object) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    messages = [message for message in (normalize_chat_message(item) for item in value.get("messages", [])) if message]
+    if not messages:
+        return None
+    now = utc_iso()
+    title = str(value.get("title") or "New conversation").strip()[:80] or "New conversation"
+    chat_id = str(value.get("id") or secrets.token_urlsafe(12))[:120]
+    return {
+        "id": chat_id,
+        "title": title,
+        "createdAt": str(value.get("createdAt") or value.get("created_at") or now)[:40],
+        "updatedAt": str(value.get("updatedAt") or value.get("updated_at") or now)[:40],
+        "messages": messages[:200],
+    }
+
+
+def normalize_account_chats(chats: object) -> list[dict]:
+    if not isinstance(chats, list):
+        return []
+    normalized = [chat for chat in (normalize_account_chat(item) for item in chats[:100]) if chat]
+    normalized.sort(key=lambda item: item.get("updatedAt") or "", reverse=True)
+    return normalized
+
+
+def account_chat_state(account_id: object) -> dict:
+    placeholder = db_placeholder()
+    rows = db_query(
+        f"SELECT chats_json, active_chat_id, updated_at FROM account_chats WHERE account_id = {placeholder}",
+        (account_id,),
+    )
+    if not rows:
+        return {"hasChats": False, "chats": [], "activeChatId": "", "updatedAt": None}
+    row = rows[0]
+    try:
+        chats = normalize_account_chats(json.loads(row.get("chats_json") or "[]"))
+    except Exception:
+        chats = []
+    return {
+        "hasChats": True,
+        "chats": chats,
+        "activeChatId": row.get("active_chat_id") or "",
+        "updatedAt": row.get("updated_at"),
+    }
+
+
+def save_account_chat_state(account_id: object, chats: object, active_chat_id: object) -> dict:
+    normalized = normalize_account_chats(chats)
+    active_chat_id = str(active_chat_id or "")[:120]
+    if active_chat_id and not any(str(chat.get("id")) == active_chat_id for chat in normalized):
+        active_chat_id = ""
+    if not active_chat_id and normalized:
+        active_chat_id = str(normalized[0].get("id") or "")
+    now = utc_iso()
+    chats_json = json.dumps(normalized, separators=(",", ":"))
+    placeholder = db_placeholder()
+    if database_provider() == "mysql":
+        db_execute(
+            (
+                "INSERT INTO account_chats (account_id, chats_json, active_chat_id, updated_at) VALUES (%s, %s, %s, %s) "
+                "ON DUPLICATE KEY UPDATE chats_json = VALUES(chats_json), active_chat_id = VALUES(active_chat_id), updated_at = VALUES(updated_at)"
+            ),
+            (account_id, chats_json, active_chat_id, now),
+        )
+    else:
+        db_execute(
+            (
+                f"INSERT INTO account_chats (account_id, chats_json, active_chat_id, updated_at) VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}) "
+                "ON CONFLICT(account_id) DO UPDATE SET chats_json = excluded.chats_json, active_chat_id = excluded.active_chat_id, updated_at = excluded.updated_at"
+            ),
+            (account_id, chats_json, active_chat_id, now),
+        )
+    return account_chat_state(account_id)
+
+
 def find_account_by_username(username: str) -> dict | None:
     placeholder = db_placeholder()
     rows = db_query(f"SELECT id, username, username_lc, password_hash, created_at, updated_at, last_login_at FROM accounts WHERE username_lc = {placeholder}", (username.lower(),))
@@ -1036,6 +1145,7 @@ def delete_account(account_id: object) -> None:
     placeholder = db_placeholder()
     db_execute(f"DELETE FROM account_sessions WHERE account_id = {placeholder}", (account_id,))
     db_execute(f"DELETE FROM account_profile_pictures WHERE account_id = {placeholder}", (account_id,))
+    db_execute(f"DELETE FROM account_chats WHERE account_id = {placeholder}", (account_id,))
     db_execute(f"DELETE FROM account_admins WHERE account_id = {placeholder}", (account_id,))
     db_execute(f"DELETE FROM accounts WHERE id = {placeholder}", (account_id,))
 
@@ -1459,7 +1569,7 @@ def chat_response(payload: dict, ip_address: str, account_id: object = None) -> 
 @app.after_request
 def add_cors_headers(response):
     response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
     return response
 
@@ -1586,6 +1696,25 @@ def api_account_profile_picture_delete():
     delete_profile_picture(account.get("id"))
     account = find_account_by_id(account.get("id"))
     return account_response(account, {"message": "Profile picture removed."})
+
+
+@app.get("/api/account/chats")
+def api_account_chats_get():
+    account = current_account()
+    if not account:
+        return jsonify({"error": "Sign in first."}), 401
+    return jsonify(account_chat_state(account.get("id")))
+
+
+@app.put("/api/account/chats")
+def api_account_chats_put():
+    account = current_account()
+    if not account:
+        return jsonify({"error": "Sign in first."}), 401
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    return jsonify(save_account_chat_state(account.get("id"), payload.get("chats"), payload.get("activeChatId")))
 
 
 @app.delete("/api/account")
