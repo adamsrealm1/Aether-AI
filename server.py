@@ -379,6 +379,57 @@ def ensure_banned_ip_columns() -> None:
         db_execute_raw("ALTER TABLE banned_ips ADD COLUMN source_message TEXT")
 
 
+def migrate_username_ip_bans_to_account_bans() -> None:
+    placeholder = db_placeholder()
+    rows = db_execute_raw(
+        "SELECT ip_address, username, reason, source_message, created_at FROM banned_ips",
+        fetch=True,
+    )
+    for row in rows:
+        raw_username = str(row.get("username") or "").strip()
+        if not raw_username:
+            reason_match = re.match(r"\s*(?:User ban:\s*|Blocked attempt by\s+)([A-Za-z0-9_.-]{3,24})\b", str(row.get("reason") or ""))
+            raw_username = reason_match.group(1) if reason_match else ""
+        username_lc = normalize_username(raw_username).lower()
+        if not username_lc:
+            continue
+        accounts = db_execute_raw(
+            f"SELECT id, username FROM accounts WHERE username_lc = {placeholder}",
+            (username_lc,),
+            fetch=True,
+        )
+        if not accounts:
+            continue
+        account = accounts[0]
+        if database_provider() == "mysql":
+            db_execute_raw(
+                (
+                    "INSERT INTO banned_accounts (account_id, username, reason, source_message, created_at) "
+                    "VALUES (%s, %s, %s, %s, %s) ON DUPLICATE KEY UPDATE "
+                    "username = VALUES(username), reason = VALUES(reason), source_message = VALUES(source_message)"
+                ),
+                (
+                    account.get("id"),
+                    account.get("username") or raw_username,
+                    row.get("reason") or "",
+                    row.get("source_message") or "",
+                    row.get("created_at") or utc_iso(),
+                ),
+            )
+        else:
+            db_execute_raw(
+                "INSERT OR REPLACE INTO banned_accounts (account_id, username, reason, source_message, created_at) VALUES (?, ?, ?, ?, ?)",
+                (
+                    account.get("id"),
+                    account.get("username") or raw_username,
+                    row.get("reason") or "",
+                    row.get("source_message") or "",
+                    row.get("created_at") or utc_iso(),
+                ),
+            )
+        db_execute_raw(f"DELETE FROM banned_ips WHERE ip_address = {placeholder}", (row.get("ip_address"),))
+
+
 def ensure_admin_db() -> None:
     global DB_INITIALIZED
     if DB_INITIALIZED:
@@ -403,6 +454,15 @@ def ensure_admin_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS banned_ips (
               ip_address VARCHAR(80) PRIMARY KEY,
+              username VARCHAR(32),
+              reason TEXT,
+              source_message TEXT,
+              created_at VARCHAR(40) NOT NULL
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS banned_accounts (
+              account_id BIGINT PRIMARY KEY,
               username VARCHAR(32),
               reason TEXT,
               source_message TEXT,
@@ -503,6 +563,15 @@ def ensure_admin_db() -> None:
             )
             """,
             """
+            CREATE TABLE IF NOT EXISTS banned_accounts (
+              account_id INTEGER PRIMARY KEY,
+              username TEXT,
+              reason TEXT,
+              source_message TEXT,
+              created_at TEXT NOT NULL
+            )
+            """,
+            """
             CREATE TABLE IF NOT EXISTS blocked_attempts (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               created_at TEXT NOT NULL,
@@ -579,6 +648,7 @@ def ensure_admin_db() -> None:
                 raise
 
     ensure_banned_ip_columns()
+    migrate_username_ip_bans_to_account_bans()
     DB_INITIALIZED = True
     if get_admin_setting("aether_available") is None:
         set_admin_setting("aether_available", "1")
@@ -747,8 +817,11 @@ def request_counts() -> dict:
 def public_ban_details(row: dict | None) -> dict:
     if not row:
         return {"banned": False}
+    ban_type = row.get("ban_type") or ("account" if row.get("account_id") is not None else "ip")
     return {
         "banned": True,
+        "banType": ban_type,
+        "accountId": row.get("account_id"),
         "ipAddress": row.get("ip_address") or "",
         "username": row.get("username") or "",
         "reason": row.get("reason") or "",
@@ -761,7 +834,23 @@ def banned_ips() -> list[dict]:
     rows = db_query("SELECT ip_address, username, reason, source_message, created_at FROM banned_ips ORDER BY created_at DESC")
     return [
         {
+            "banType": "ip",
             "ipAddress": row.get("ip_address"),
+            "username": row.get("username") or "",
+            "reason": row.get("reason") or "",
+            "sourceMessage": row.get("source_message") or "",
+            "createdAt": row.get("created_at"),
+        }
+        for row in rows
+    ]
+
+
+def banned_accounts() -> list[dict]:
+    rows = db_query("SELECT account_id, username, reason, source_message, created_at FROM banned_accounts ORDER BY created_at DESC")
+    return [
+        {
+            "banType": "account",
+            "accountId": row.get("account_id"),
             "username": row.get("username") or "",
             "reason": row.get("reason") or "",
             "sourceMessage": row.get("source_message") or "",
@@ -774,10 +863,30 @@ def banned_ips() -> list[dict]:
 def banned_ip_record(ip_address: str) -> dict | None:
     placeholder = db_placeholder()
     rows = db_query(
-        f"SELECT ip_address, username, reason, source_message, created_at FROM banned_ips WHERE ip_address = {placeholder}",
+        f"SELECT 'ip' AS ban_type, ip_address, username, reason, source_message, created_at FROM banned_ips WHERE ip_address = {placeholder}",
         (str(ip_address or "")[:80],),
     )
     return rows[0] if rows else None
+
+
+def banned_account_record(account_id: object) -> dict | None:
+    account_id_value = str(account_id or "").strip()
+    if not account_id_value:
+        return None
+    placeholder = db_placeholder()
+    rows = db_query(
+        f"SELECT 'account' AS ban_type, account_id, username, reason, source_message, created_at FROM banned_accounts WHERE account_id = {placeholder}",
+        (account_id,),
+    )
+    return rows[0] if rows else None
+
+
+def request_ban_record(ip_address: str, account: dict | None = None) -> dict | None:
+    if account:
+        account_ban = banned_account_record(account.get("id"))
+        if account_ban:
+            return account_ban
+    return banned_ip_record(ip_address)
 
 
 def banned_api_response(row: dict):
@@ -792,6 +901,10 @@ def banned_api_response(row: dict):
 
 def is_ip_banned(ip_address: str) -> bool:
     return bool(banned_ip_record(ip_address))
+
+
+def is_account_banned(account_id: object) -> bool:
+    return bool(banned_account_record(account_id))
 
 
 def ban_ip(ip_address: str, reason: str = "", username: str = "", source_message: str = "") -> None:
@@ -815,6 +928,50 @@ def ban_ip(ip_address: str, reason: str = "", username: str = "", source_message
             "INSERT OR REPLACE INTO banned_ips (ip_address, username, reason, source_message, created_at) VALUES (?, ?, ?, ?, ?)",
             (ip_address, username, reason, source_message, utc_iso()),
         )
+
+
+def ban_account(account_id: object, username: str = "", reason: str = "", source_message: str = "") -> None:
+    account_id_value = str(account_id or "").strip()
+    if not account_id_value:
+        raise ValueError("Account is required.")
+    account = find_account_by_id(account_id)
+    if not account:
+        raise ValueError("Account was not found.")
+    if is_owner_account(account):
+        raise ValueError("The owner admin account cannot be banned.")
+    username = normalize_username(username or account.get("username"))[:32]
+    reason = str(reason or "").strip()[:500]
+    source_message = str(source_message or "").strip()[:2000]
+    if database_provider() == "mysql":
+        db_execute(
+            (
+                "INSERT INTO banned_accounts (account_id, username, reason, source_message, created_at) "
+                "VALUES (%s, %s, %s, %s, %s) ON DUPLICATE KEY UPDATE "
+                "username = VALUES(username), reason = VALUES(reason), source_message = VALUES(source_message)"
+            ),
+            (account.get("id"), username, reason, source_message, utc_iso()),
+        )
+    else:
+        db_execute(
+            "INSERT OR REPLACE INTO banned_accounts (account_id, username, reason, source_message, created_at) VALUES (?, ?, ?, ?, ?)",
+            (account.get("id"), username, reason, source_message, utc_iso()),
+        )
+
+
+def ban_account_by_username(username: object, reason: str = "", source_message: str = "") -> tuple[object, str]:
+    username_lc = normalize_username(username)
+    if not username_lc:
+        raise ValueError("Username is required.")
+    account = find_account_by_username(username_lc)
+    if not account:
+        raise ValueError("Account was not found.")
+    ban_account(account.get("id"), account.get("username") or username_lc, reason, source_message)
+    return account.get("id"), str(account.get("username") or username_lc)
+
+
+def unban_account(account_id: object) -> None:
+    placeholder = db_placeholder()
+    db_execute(f"DELETE FROM banned_accounts WHERE account_id = {placeholder}", (account_id,))
 
 
 def unban_ip(ip_address: str) -> None:
@@ -1373,6 +1530,7 @@ def delete_account(account_id: object) -> None:
     db_execute(f"DELETE FROM account_profile_pictures WHERE account_id = {placeholder}", (account_id,))
     db_execute(f"DELETE FROM account_chats WHERE account_id = {placeholder}", (account_id,))
     db_execute(f"DELETE FROM account_admins WHERE account_id = {placeholder}", (account_id,))
+    db_execute(f"DELETE FROM banned_accounts WHERE account_id = {placeholder}", (account_id,))
     db_execute(f"DELETE FROM accounts WHERE id = {placeholder}", (account_id,))
 
 
@@ -1388,6 +1546,7 @@ def account_summaries() -> list[dict]:
             "profilePictureUrl": account_profile_picture(row.get("id")).get("approvedDataUrl") or "",
             "isAdmin": is_admin_account(row),
             "isOwnerAdmin": is_owner_account(row),
+            "isBanned": is_account_banned(row.get("id")),
         }
         for row in rows
     ]
@@ -1532,6 +1691,7 @@ def admin_status(include_all_blocked: bool = False) -> dict:
         "rateLimit": rate_limit_status(client_ip(), account.get("id") if account else None),
         "requestCounts": request_counts(),
         "bannedIps": banned_ips(),
+        "bannedAccounts": banned_accounts(),
         "blockedAttempts": blocked_attempts(include_all_blocked),
         "accounts": account_summaries(),
         "admins": admin_summaries(),
@@ -1936,7 +2096,7 @@ def chat_response(payload: dict, ip_address: str, account: dict | None = None) -
             "aetherAvailable": False,
             "rateLimit": rate_limit_status(ip_address, account_id),
         }
-    ban_record = banned_ip_record(ip_address)
+    ban_record = request_ban_record(ip_address, account)
     if ban_record:
         return {
             "reply": "You can not use Aether AI because you were banned by an admin.",
@@ -2008,7 +2168,7 @@ def enforce_request_security():
         if origin and not is_allowed_origin(origin):
             return jsonify({"error": "Request origin is not allowed."}), 403
     if request.path.startswith("/api/") and request.path != "/api/status":
-        ban_record = banned_ip_record(client_ip())
+        ban_record = request_ban_record(client_ip(), current_account())
         if ban_record:
             return banned_api_response(ban_record)
     return None
@@ -2058,7 +2218,7 @@ def api_status():
     ip_address = client_ip()
     account = current_account()
     public_account = account_public(account)
-    ban_record = banned_ip_record(ip_address)
+    ban_record = request_ban_record(ip_address, account)
     return jsonify(
         {
             "aetherAvailable": is_aether_available(),
@@ -2108,6 +2268,10 @@ def api_account_signin():
     account = find_account_by_username(username) if username else None
     if not account or not verify_password(password, account.get("password_hash")):
         return jsonify({"error": "Username or password is incorrect."}), 401
+
+    ban_record = banned_account_record(account.get("id"))
+    if ban_record:
+        return banned_api_response(ban_record)
 
     bind_anonymous_rate_limit_to_account(client_ip(), account.get("id"))
     token = create_account_session(account.get("id"), client_ip(), request.headers.get("User-Agent", ""))
@@ -2295,14 +2459,26 @@ def api_admin_ban_user():
     if not isinstance(payload, dict):
         payload = {}
     try:
-        ip_address, username = latest_account_ip(payload.get("username"))
-        reason = str(payload.get("reason", "")).strip() or f"User ban: {username}"
-        ban_ip(ip_address, reason, username=username)
+        username_input = payload.get("username")
+        reason = str(payload.get("reason", "")).strip()
+        _account_id, username = ban_account_by_username(username_input, reason or f"User ban: {normalize_username(username_input)}")
         status = admin_status()
-        status["message"] = f"Banned {username} at {ip_address}."
+        status["message"] = f"Banned {username}."
         return jsonify(status)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/admin/unban-user")
+def api_admin_unban_user():
+    denied = require_admin()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    unban_account(payload.get("accountId"))
+    return jsonify(admin_status())
 
 
 @app.post("/api/admin/unban-ip")
@@ -2333,10 +2509,19 @@ def api_admin_blocked_attempt_ban():
         return jsonify({"error": "Blocked attempt does not have an IP address."}), 400
     username = str(attempt.get("username") or "").strip()
     reason = f"Blocked attempt by {username}" if username else "Blocked attempt"
-    ban_ip(ip_address, reason, username=username, source_message=str(attempt.get("message") or ""))
+    if username:
+        try:
+            _account_id, display_name = ban_account_by_username(username, reason, str(attempt.get("message") or ""))
+            ban_label = display_name
+        except ValueError:
+            ban_ip(ip_address, reason, source_message=str(attempt.get("message") or ""))
+            ban_label = ip_address
+    else:
+        ban_ip(ip_address, reason, source_message=str(attempt.get("message") or ""))
+        ban_label = ip_address
     delete_blocked_attempt(attempt.get("id"))
     status = admin_status()
-    status["message"] = f"Banned {username or ip_address}."
+    status["message"] = f"Banned {ban_label}."
     return jsonify(status)
 
 

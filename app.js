@@ -429,7 +429,7 @@ function renderAdminPage() {
           <button class="danger-button" data-action="admin-reset-rate"${Aether.state.adminLoading ? " disabled" : ""}>Reset all user limits</button>
         </section>
         <section class="admin-two-column">
-          ${renderBanIpPanel(status.bannedIps || [])}
+          ${renderBanIpPanel(status.bannedIps || [], status.bannedAccounts || [])}
           ${renderBlockedAttemptsPanel(status.blockedAttempts || [])}
         </section>
         ${renderAdminsPanel(admins, canManageAdmins)}
@@ -440,12 +440,13 @@ function renderAdminPage() {
   `;
 }
 
-function renderBanIpPanel(bannedIps) {
+function renderBanIpPanel(bannedIps, bannedAccounts = []) {
+  const totalBans = bannedIps.length + bannedAccounts.length;
   return `
     <section class="admin-panel">
       <div class="admin-panel-head">
-        <h2>Ban a user</h2>
-        <span>${bannedIps.length}</span>
+        <h2>Bans</h2>
+        <span>${totalBans}</span>
       </div>
       <form class="admin-ban-form" data-action="admin-ban-ip">
         <input name="ipAddress" autocomplete="off" placeholder="IP address">
@@ -458,20 +459,31 @@ function renderBanIpPanel(bannedIps) {
         <button class="primary-button" type="submit"${Aether.state.adminLoading ? " disabled" : ""}>Ban user</button>
       </form>
       <div class="admin-list">
+        ${bannedAccounts.map((item) => `
+          <div class="admin-list-item banned-user-item">
+            <div>
+              <strong>${escapeHtml(item.username || "")}</strong>
+              <small>User ban - ${escapeHtml(item.reason || "No reason")} - ${escapeHtml(formatAdminDate(item.createdAt))}</small>
+              ${item.sourceMessage ? `<p>${escapeHtml(item.sourceMessage)}</p>` : ""}
+            </div>
+            <button class="secondary-button" data-unban-user="${escapeHtml(item.accountId || "")}">Unban user</button>
+          </div>
+        `).join("")}
         ${bannedIps.map((item) => {
           const username = String(item.username || "").trim();
           const sourceMessage = String(item.sourceMessage || "").trim();
           return `
             <div class="admin-list-item banned-user-item">
               <div>
-                <strong>${escapeHtml(username || item.ipAddress || "")}</strong>
-                <small>${username ? `IP ${escapeHtml(item.ipAddress || "")} - ` : ""}${escapeHtml(item.reason || "No reason")} - ${escapeHtml(formatAdminDate(item.createdAt))}</small>
+                <strong>${escapeHtml(item.ipAddress || "")}</strong>
+                <small>IP ban${username ? ` for ${escapeHtml(username)}` : ""} - ${escapeHtml(item.reason || "No reason")} - ${escapeHtml(formatAdminDate(item.createdAt))}</small>
                 ${sourceMessage ? `<p>${escapeHtml(sourceMessage)}</p>` : ""}
               </div>
-              <button class="secondary-button" data-unban-ip="${escapeHtml(item.ipAddress || "")}">Unban</button>
+              <button class="secondary-button" data-unban-ip="${escapeHtml(item.ipAddress || "")}">Unban IP</button>
             </div>
           `;
-        }).join("") || `<div class="admin-empty">No banned users/IPs.</div>`}
+        }).join("")}
+        ${totalBans ? "" : `<div class="admin-empty">No banned users/IPs.</div>`}
       </div>
     </section>
   `;
@@ -553,7 +565,7 @@ function renderAdminAccountsPanel(accounts, canManageAdmins) {
               ${renderAccountAvatar(account)}
               <div>
                 <strong>${escapeHtml(account.username || "")}</strong>
-                <small>Created ${escapeHtml(formatAdminDate(account.createdAt))} - Last login ${escapeHtml(formatAdminDate(account.lastLoginAt))}${account.isAdmin ? " - Admin" : ""}</small>
+                <small>Created ${escapeHtml(formatAdminDate(account.createdAt))} - Last login ${escapeHtml(formatAdminDate(account.lastLoginAt))}${account.isAdmin ? " - Admin" : ""}${account.isBanned ? " - Banned" : ""}</small>
               </div>
             </div>
             <div class="admin-row-actions">
@@ -1244,6 +1256,14 @@ function bindAdminEvents(root) {
       });
     });
   });
+  root.querySelectorAll("[data-unban-user]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await adminRequest("/api/admin/unban-user", {
+        method: "POST",
+        body: JSON.stringify({ accountId: button.dataset.unbanUser || "" }),
+      });
+    });
+  });
   root.querySelectorAll("[data-blocked-ban]").forEach((button) => {
     button.addEventListener("click", async () => {
       const banned = await adminRequest("/api/admin/blocked-attempt/ban", {
@@ -1836,6 +1856,8 @@ function normalizeBanStatus(data) {
   if (!data?.banned && !rawBan?.banned) return null;
   return {
     banned: true,
+    banType: String(rawBan.banType || ""),
+    accountId: String(rawBan.accountId || ""),
     ipAddress: String(rawBan.ipAddress || ""),
     username: String(rawBan.username || ""),
     reason: String(rawBan.reason || ""),
@@ -1847,6 +1869,8 @@ function normalizeBanStatus(data) {
 function banStatusKey(status) {
   if (!status?.banned) return "";
   return [
+    status.banType || "",
+    status.accountId || "",
     status.ipAddress || "",
     status.username || "",
     status.reason || "",
