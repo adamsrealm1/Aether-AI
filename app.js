@@ -65,6 +65,7 @@ const VOICE_AUTO_SEND_DELAY_MS = 1800;
 const ACCOUNT_SESSION_TOKEN_KEY = "aether.accountSessionToken";
 const MOBILE_SCROLL_FADE_QUERY = "(max-width: 860px), (pointer: coarse)";
 const MAX_PROFILE_PICTURE_FILE_SIZE = 560000;
+const DEFAULT_ASSISTANT_GREETING = "Hi there! I'm Aether. What's on your mind?";
 const PROFANITY_PATTERNS = [
   /\bass\b/i,
   /\basshole\b/i,
@@ -172,7 +173,7 @@ function createChat(title) {
       {
         id: createId(),
         role: "assistant",
-        content: "Hi there! I'm Aether. What's on your mind?",
+        content: DEFAULT_ASSISTANT_GREETING,
         createdAt: now,
       },
     ],
@@ -1591,10 +1592,43 @@ function applyAccountStatus(data) {
   }
   Aether.state.signedIn = Boolean(data?.signedIn && data?.account);
   Aether.state.account = Aether.state.signedIn ? data.account : null;
+  let starterGreetingChanged = false;
   if (!Aether.state.signedIn) {
     Aether.state.accountModal = false;
+  } else {
+    starterGreetingChanged = updateStarterGreetingForAccount(Aether.state.account);
   }
-  return previousSignedIn !== Aether.state.signedIn || previousAccountKey !== accountRenderKey(Aether.state.account);
+  return (
+    starterGreetingChanged ||
+    previousSignedIn !== Aether.state.signedIn ||
+    previousAccountKey !== accountRenderKey(Aether.state.account)
+  );
+}
+
+function updateStarterGreetingForAccount(account) {
+  const username = String(account?.username || "").trim();
+  if (!username) return false;
+  const greeting = welcomeBackGreeting(username);
+  let changed = false;
+  for (const chat of Aether.state.chats) {
+    if (!isUntouchedStarterChat(chat)) continue;
+    if (chat.messages[0].content === greeting) continue;
+    chat.messages[0].content = greeting;
+    chat.updatedAt = new Date().toISOString();
+    changed = true;
+  }
+  return changed;
+}
+
+function isUntouchedStarterChat(chat) {
+  const messages = Array.isArray(chat?.messages) ? chat.messages : [];
+  if (messages.length !== 1 || messages[0]?.role !== "assistant") return false;
+  const content = String(messages[0]?.content || "");
+  return content === DEFAULT_ASSISTANT_GREETING || /^Hey! Welcome back, .+! What on your mind\?$/.test(content);
+}
+
+function welcomeBackGreeting(username) {
+  return `Hey! Welcome back, ${username}! What on your mind?`;
 }
 
 function accountRenderKey(account) {
