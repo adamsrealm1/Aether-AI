@@ -65,6 +65,8 @@ let voiceAutoSending = false;
 const thoughtTimerTimeouts = new Map();
 const LOCATION_TIME_PERMISSION_MESSAGE = "Aether needs your permission to see your location to give your location.";
 const PROFANITY_BLOCK_MESSAGE = "You cant send Aether a message with profanity in it. You can try again without profanity in your message.";
+const SAFETY_LOCK_MESSAGE = "Aether can not continue this conversation. Please create a new conversation to keep using Aether.";
+const SAFETY_LOCK_PLACEHOLDER = "Aether can not continue this conversation. Create a new conversation to keep using Aether.";
 const VOICE_AUTO_SEND_DELAY_MS = 1800;
 const ACCOUNT_SESSION_TOKEN_KEY = "aether.accountSessionToken";
 const MOBILE_SCROLL_FADE_QUERY = "(max-width: 860px), (pointer: coarse)";
@@ -89,6 +91,14 @@ const PROFANITY_PATTERNS = [
   /\bdick\b/i,
   /\bcock\b/i,
   /\bpussy\b/i,
+];
+const SAFETY_LOCK_PATTERNS = [
+  { reason: "self-harm", pattern: /\b(?:kill myself|end my life|suicide|suicidal|self[-\s]?harm|hurt myself|cut myself|overdose on purpose)\b/i },
+  { reason: "harm", pattern: /\b(?:how (?:do i|to) (?:kill|murder|hurt) (?:someone|a person)|commit murder|school shooting|mass shooting)\b/i },
+  { reason: "weapons", pattern: /\b(?:build|make|assemble|detonate|plant)\s+(?:a\s+)?(?:bomb|explosive|pipe bomb|molotov|grenade)\b/i },
+  { reason: "child-safety", pattern: /\b(?:child sexual|sexualize (?:a )?minor|minor porn|cp\b|csam)\b/i },
+  { reason: "cyber-abuse", pattern: /\b(?:make|write|build|deploy|use)\s+(?:malware|ransomware|keylogger|token grabber|phishing kit|password stealer|ddos bot)\b/i },
+  { reason: "hard-drugs", pattern: /\b(?:make|cook|synthesize|manufacture)\s+(?:meth|fentanyl|heroin|cocaine|mdma)\b/i },
 ];
 
 const storage = {
@@ -192,6 +202,9 @@ function normalizeChat(chat) {
     title: String(chat?.title || "New conversation"),
     createdAt: chat?.createdAt || now,
     updatedAt: chat?.updatedAt || chat?.createdAt || now,
+    safetyLocked: Boolean(chat?.safetyLocked),
+    safetyReason: String(chat?.safetyReason || ""),
+    safetyLockedAt: chat?.safetyLockedAt || "",
     messages: Array.isArray(chat?.messages) ? chat.messages : [],
   };
   normalized.messages = normalized.messages.map((message) => ({
@@ -296,8 +309,12 @@ function renderAccountAvatar(account, large = false) {
 
 function renderChatPage(chat) {
   const unavailable = Aether.state.aetherAvailable === false;
-  const composerPlaceholder = unavailable ? "Aether AI is currently unavailable" : "Send a message here.";
-  const composerDisabled = unavailable || Aether.state.thinking;
+  const safetyLocked = Boolean(chat?.safetyLocked);
+  const composerPlaceholder = safetyLocked
+    ? SAFETY_LOCK_PLACEHOLDER
+    : unavailable ? "Aether AI is currently unavailable" : "Send a message here.";
+  const composerDisabled = unavailable || safetyLocked || Aether.state.thinking;
+  const composerLocked = unavailable || safetyLocked;
   return `
     <main class="chat-page">
       <div class="animated-bg" aria-hidden="true"></div>
@@ -311,7 +328,7 @@ function renderChatPage(chat) {
         </div>
         <div class="topbar-actions">
           <button class="secondary-button" data-action="rename-chat">Rename</button>
-          <button class="secondary-button" data-action="regenerate-last"${unavailable ? " disabled" : ""}>Resend last</button>
+          <button class="secondary-button" data-action="regenerate-last"${composerLocked ? " disabled" : ""}>Resend last</button>
         </div>
       </header>
       <div class="messages" id="messages">
@@ -319,10 +336,10 @@ function renderChatPage(chat) {
         ${Aether.state.thinking ? renderThinking() : ""}
       </div>
       <div class="composer-area">
-        <form class="composer${unavailable ? " unavailable" : ""}" data-action="send-message">
+        <form class="composer${composerLocked ? " unavailable" : ""}" data-action="send-message">
           <div class="composer-input-wrap">
             <div class="composer-highlights" aria-hidden="true">${renderHighlightedComposerText(Aether.state.composerDraft)}</div>
-            <textarea name="message" autocomplete="off" rows="1" placeholder="${escapeHtml(composerPlaceholder)}" spellcheck="true"${unavailable ? " disabled" : ""}>${escapeHtml(Aether.state.composerDraft)}</textarea>
+            <textarea name="message" autocomplete="off" rows="1" placeholder="${escapeHtml(composerPlaceholder)}" spellcheck="true"${composerLocked ? " disabled" : ""}>${escapeHtml(Aether.state.composerDraft)}</textarea>
           </div>
           <button class="voice-button ${Aether.state.voiceListening ? "listening" : ""}" type="button" data-action="voice-input" aria-label="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}" aria-pressed="${Aether.state.voiceListening ? "true" : "false"}" title="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}"${composerDisabled ? " disabled" : ""}>🎙️</button>
           <button type="submit"${composerDisabled ? " disabled" : ""}>Send</button>
@@ -582,6 +599,7 @@ function filteredChats() {
 }
 
 function chatPreview(chat) {
+  if (chat?.safetyLocked) return "Conversation locked";
   const last = [...chat.messages].reverse().find((message) => message.content && message.role === "user") || chat.messages.at(-1);
   return last?.content ? last.content.slice(0, 72) : "Fresh conversation";
 }
@@ -1291,6 +1309,8 @@ async function sendMessage(event) {
 async function sendTextMessage(text, options = {}) {
   if (Aether.state.thinking) return;
   if (!isAetherAvailable()) return;
+  const chat = activeChat();
+  if (!chat || chat.safetyLocked) return;
   if (isRateLimited()) {
     Aether.state.rateLimitPopup = true;
     render();
@@ -1298,12 +1318,18 @@ async function sendTextMessage(text, options = {}) {
   }
   if (handleLocalProfanity(text)) return;
 
-  const chat = activeChat();
   if (options.addUser !== false) {
     chat.messages.push(createMessage("user", text));
   }
   if (["New conversation", "..."].includes(chat.title)) chat.title = text.slice(0, 48);
   touchChat(chat);
+  const safetyReason = safetyLockReason(text);
+  if (safetyReason) {
+    lockChatForSafety(chat, safetyReason);
+    storage.save();
+    render();
+    return;
+  }
 
   Aether.state.thinking = true;
   storage.save();
@@ -1352,6 +1378,7 @@ function speechRecognitionConstructor() {
 function toggleVoiceInput() {
   if (Aether.state.thinking) return;
   if (!isAetherAvailable()) return;
+  if (activeChat()?.safetyLocked) return;
   if (Aether.state.voiceListening) {
     stopVoiceInput({ keepDraft: true });
     return;
@@ -1551,6 +1578,12 @@ async function fetchAssistantReply(text, location = null) {
           render();
           return "";
         }
+        if (data.safetyLocked) {
+          lockChatForSafety(activeChat(), data.safetyReason || "safety");
+          storage.save();
+          render();
+          return "";
+        }
         if (data.aetherUnavailable) {
           applyServerStatus({ ...data, aetherAvailable: false });
           return "";
@@ -1583,6 +1616,23 @@ function handleLocalProfanity(text) {
 
 function containsProfanity(text) {
   return PROFANITY_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function safetyLockReason(text) {
+  const match = SAFETY_LOCK_PATTERNS.find((item) => item.pattern.test(text));
+  return match?.reason || "";
+}
+
+function lockChatForSafety(chat, reason = "safety") {
+  if (!chat || chat.safetyLocked) return;
+  const now = new Date().toISOString();
+  chat.safetyLocked = true;
+  chat.safetyReason = reason;
+  chat.safetyLockedAt = now;
+  chat.messages.push(createMessage("assistant", SAFETY_LOCK_MESSAGE));
+  touchChat(chat);
+  Aether.state.thinking = false;
+  stopVoiceInput({ keepDraft: true, silent: true });
 }
 
 function isRateLimited() {
@@ -1788,6 +1838,9 @@ function accountChatsPayload() {
     title: chat.title,
     createdAt: chat.createdAt,
     updatedAt: chat.updatedAt,
+    safetyLocked: Boolean(chat.safetyLocked),
+    safetyReason: chat.safetyReason || "",
+    safetyLockedAt: chat.safetyLockedAt || "",
     messages: chat.messages.map((message) => ({
       id: message.id,
       role: message.role,
@@ -2183,6 +2236,7 @@ function accountInitials(username) {
 
 function addAssistantMessage(text) {
   const chat = activeChat();
+  if (!chat || chat.safetyLocked) return;
   chat.messages.push(createMessage("assistant", text));
   touchChat(chat);
   storage.save();
@@ -2229,7 +2283,7 @@ async function writeClipboard(text, button = null) {
 
 function regenerateLastAssistantMessage() {
   const chat = activeChat();
-  if (!chat || Aether.state.thinking) return;
+  if (!chat || chat.safetyLocked || Aether.state.thinking) return;
   const lastAssistantIndex = findLastMessageIndex(chat, "assistant");
   if (lastAssistantIndex <= 0) return;
   const previousUser = [...chat.messages.slice(0, lastAssistantIndex)].reverse().find((message) => message.role === "user");

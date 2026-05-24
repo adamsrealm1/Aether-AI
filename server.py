@@ -10,6 +10,7 @@ import sqlite3
 import urllib.error
 import urllib.parse
 import urllib.request
+from werkzeug.exceptions import RequestEntityTooLarge
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -19,17 +20,25 @@ from groq import APIConnectionError, APIStatusError, APITimeoutError, Groq
 
 ROOT = Path(__file__).resolve().parent
 PROFANITY_BLOCK_MESSAGE = "You cant send Aether a message with profanity in it. You can try again without profanity in your message."
+SAFETY_LOCK_MESSAGE = "Aether can not continue this conversation. Please create a new conversation to keep using Aether."
 DEFAULT_RATE_LIMIT = 300
 DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60
 DEFAULT_RATE_LIMIT_TIMEZONE = "America/New_York"
 MAX_PROFILE_PICTURE_DATA_URL_LENGTH = 750000
+MAX_REQUEST_BODY_BYTES = 2 * 1024 * 1024
+MAX_CHAT_MESSAGE_CONTENT_LENGTH = 24000
+MAX_CHAT_MESSAGES_PER_CHAT = 200
+MAX_ACCOUNT_CHATS = 100
 SESSION_COOKIE_NAME = "aether_session"
 SESSION_LIFETIME_DAYS = 30
 PASSWORD_HASH_ITERATIONS = 260000
 OWNER_ADMIN_USERNAME = os.getenv("AETHER_OWNER_USERNAME", "adamsrealm1").strip().lower() or "adamsrealm1"
+AUTH_RATE_LIMIT = 40
+AUTH_RATE_LIMIT_WINDOW_SECONDS = 15 * 60
 RATE_LIMITS: dict[str, dict] = {}
 DB_INITIALIZED = False
 app = Flask(__name__, static_folder=str(ROOT), static_url_path="")
+app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BODY_BYTES
 PROFANITY_PATTERNS = [
     re.compile(pattern, re.I)
     for pattern in [
@@ -44,6 +53,14 @@ PROFANITY_PATTERNS = [
         r"\bslut\b",
         r"\bwhore\b",
     ]
+]
+SAFETY_LOCK_PATTERNS = [
+    ("self-harm", re.compile(r"\b(?:kill myself|end my life|suicide|suicidal|self[-\s]?harm|hurt myself|cut myself|overdose on purpose)\b", re.I)),
+    ("harm", re.compile(r"\b(?:how (?:do i|to) (?:kill|murder|hurt) (?:someone|a person)|commit murder|school shooting|mass shooting)\b", re.I)),
+    ("weapons", re.compile(r"\b(?:build|make|assemble|detonate|plant)\s+(?:a\s+)?(?:bomb|explosive|pipe bomb|molotov|grenade)\b", re.I)),
+    ("child-safety", re.compile(r"\b(?:child sexual|sexualize (?:a )?minor|minor porn|cp\b|csam)\b", re.I)),
+    ("cyber-abuse", re.compile(r"\b(?:make|write|build|deploy|use)\s+(?:malware|ransomware|keylogger|token grabber|phishing kit|password stealer|ddos bot)\b", re.I)),
+    ("hard-drugs", re.compile(r"\b(?:make|cook|synthesize|manufacture)\s+(?:meth|fentanyl|heroin|cocaine|mdma)\b", re.I)),
 ]
 WEATHER_CODES = {
     0: "clear sky",
@@ -72,6 +89,13 @@ WEATHER_CODES = {
 
 def contains_profanity(message: str) -> bool:
     return any(pattern.search(message) for pattern in PROFANITY_PATTERNS)
+
+
+def safety_lock_reason(message: str) -> str:
+    for reason, pattern in SAFETY_LOCK_PATTERNS:
+        if pattern.search(message or ""):
+            return reason
+    return ""
 
 def rate_limit_key(ip_address: str | None = None, account_id: object = None) -> str:
     account_value = str(account_id or "").strip()
@@ -176,6 +200,60 @@ def refund_rate_limit(ip_address: str, account_id: object = None) -> None:
     if not bucket:
         return
     save_rate_limit_bucket(key, max(0, int(bucket.get("count", 0)) - 1), bucket["resetAt"], int(bucket["windowSeconds"]))
+
+
+def bucket_status(key: str, limit: int, window_seconds: int) -> dict:
+    limit = max(1, int(limit))
+    window_seconds = max(1, int(window_seconds))
+    now = utc_now()
+    reset_at = global_rate_limit_reset_at(now, window_seconds)
+    bucket = load_rate_limit_bucket(key)
+    if not bucket or bucket["resetAt"] <= now or int(bucket.get("windowSeconds", 0)) != window_seconds or bucket["resetAt"] != reset_at:
+        bucket = {"count": 0, "resetAt": reset_at, "windowSeconds": window_seconds}
+        save_rate_limit_bucket(key, 0, reset_at, window_seconds)
+    used = int(bucket["count"])
+    return {
+        "limit": limit,
+        "used": used,
+        "remaining": max(0, limit - used),
+        "resetAt": bucket["resetAt"].isoformat(),
+        "windowSeconds": window_seconds,
+    }
+
+
+def consume_bucket_limit(key: str, limit: int, window_seconds: int) -> dict:
+    status = bucket_status(key, limit, window_seconds)
+    if status["remaining"] <= 0:
+        return {"allowed": False, "rateLimit": status}
+    used = int(status["used"]) + 1
+    save_rate_limit_bucket(key, used, parse_utc(status["resetAt"]), int(status["windowSeconds"]))
+    return {"allowed": True, "rateLimit": bucket_status(key, limit, window_seconds)}
+
+
+def consume_auth_rate_limit(ip_address: str) -> dict:
+    return consume_bucket_limit(f"security:auth:{str(ip_address or 'unknown')[:120]}", AUTH_RATE_LIMIT, AUTH_RATE_LIMIT_WINDOW_SECONDS)
+
+
+def bind_rate_limit_buckets(source_key: str, target_key: str) -> None:
+    if not source_key or not target_key or source_key == target_key:
+        return
+    source = load_rate_limit_bucket(source_key)
+    if not source:
+        return
+    target = load_rate_limit_bucket(target_key)
+    if target and target["resetAt"] == source["resetAt"] and int(target["windowSeconds"]) == int(source["windowSeconds"]):
+        next_count = max(int(target.get("count", 0)), int(source.get("count", 0)))
+    else:
+        next_count = int(source.get("count", 0))
+    save_rate_limit_bucket(target_key, next_count, source["resetAt"], int(source["windowSeconds"]))
+
+
+def bind_anonymous_rate_limit_to_account(ip_address: str, account_id: object) -> None:
+    bind_rate_limit_buckets(rate_limit_key(ip_address), rate_limit_key(ip_address, account_id))
+
+
+def bind_account_rate_limit_to_ip(ip_address: str, account_id: object) -> None:
+    bind_rate_limit_buckets(rate_limit_key(ip_address, account_id), rate_limit_key(ip_address))
 
 
 def load_dotenv() -> None:
@@ -1000,7 +1078,7 @@ def normalize_chat_message(value: object) -> dict | None:
     return {
         "id": message_id,
         "role": role,
-        "content": content[:24000],
+        "content": content[:MAX_CHAT_MESSAGE_CONTENT_LENGTH],
         "createdAt": created_at,
     }
 
@@ -1019,14 +1097,17 @@ def normalize_account_chat(value: object) -> dict | None:
         "title": title,
         "createdAt": str(value.get("createdAt") or value.get("created_at") or now)[:40],
         "updatedAt": str(value.get("updatedAt") or value.get("updated_at") or now)[:40],
-        "messages": messages[:200],
+        "safetyLocked": bool(value.get("safetyLocked") or value.get("safety_locked")),
+        "safetyReason": str(value.get("safetyReason") or value.get("safety_reason") or "")[:80],
+        "safetyLockedAt": str(value.get("safetyLockedAt") or value.get("safety_locked_at") or "")[:40],
+        "messages": messages[:MAX_CHAT_MESSAGES_PER_CHAT],
     }
 
 
 def normalize_account_chats(chats: object) -> list[dict]:
     if not isinstance(chats, list):
         return []
-    normalized = [chat for chat in (normalize_account_chat(item) for item in chats[:100]) if chat]
+    normalized = [chat for chat in (normalize_account_chat(item) for item in chats[:MAX_ACCOUNT_CHATS]) if chat]
     normalized.sort(key=lambda item: item.get("updatedAt") or "", reverse=True)
     return normalized
 
@@ -1524,13 +1605,16 @@ def coordinates_from_location(location: object) -> tuple[float, float]:
 def client_ip() -> str:
     forwarded_for = request.headers.get("X-Forwarded-For", "")
     if forwarded_for:
-        return forwarded_for.split(",", 1)[0].strip()
-    return request.remote_addr or "127.0.0.1"
+        value = forwarded_for.split(",", 1)[0].strip()
+    else:
+        value = request.remote_addr or "127.0.0.1"
+    return value[:80] or "127.0.0.1"
 
 
 def chat_response(payload: dict, ip_address: str, account_id: object = None) -> dict:
-    message = str(payload.get("message", "")).strip()
+    message = str(payload.get("message", "")).strip()[:MAX_CHAT_MESSAGE_CONTENT_LENGTH]
     chat = payload.get("chat") if isinstance(payload.get("chat"), list) else []
+    chat = chat[:MAX_CHAT_MESSAGES_PER_CHAT]
     location = payload.get("location")
     if not message:
         return {"reply": "Send a message first."}
@@ -1545,6 +1629,15 @@ def chat_response(payload: dict, ip_address: str, account_id: object = None) -> 
     if contains_profanity(message):
         safe_record_blocked_attempt(ip_address, message, chat)
         return {"reply": PROFANITY_BLOCK_MESSAGE, "profanityBlocked": True}
+    safety_reason = safety_lock_reason(message)
+    if safety_reason:
+        safe_record_blocked_attempt(ip_address, message, chat)
+        return {
+            "reply": SAFETY_LOCK_MESSAGE,
+            "safetyLocked": True,
+            "safetyReason": safety_reason,
+            "rateLimit": rate_limit_status(ip_address, account_id),
+        }
     if looks_like_location_time_request(message) and not location:
         return {"reply": "Aether needs your permission to see your location to give your location."}
     rate = consume_rate_limit(ip_address, account_id)
@@ -1568,15 +1661,69 @@ def chat_response(payload: dict, ip_address: str, account_id: object = None) -> 
 
 @app.after_request
 def add_cors_headers(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
+    origin = request.headers.get("Origin", "").strip()
+    if origin and is_allowed_origin(origin):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+    elif not origin:
+        response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(self), geolocation=(self)"
+    response.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
     return response
+
+
+@app.before_request
+def enforce_request_security():
+    if request.method == "OPTIONS":
+        return None
+    if request.method in {"POST", "PUT", "DELETE"}:
+        origin = request.headers.get("Origin", "").strip()
+        if origin and not is_allowed_origin(origin):
+            return jsonify({"error": "Request origin is not allowed."}), 403
+    return None
+
+
+def allowed_origins() -> set[str]:
+    configured = os.getenv("AETHER_ALLOWED_ORIGINS", "").strip()
+    origins = {
+        "https://aether.env.pm",
+        "https://adamsrealm1.github.io",
+        "http://127.0.0.1:8765",
+        "http://localhost:8765",
+    }
+    if configured:
+        origins.update(value.strip().rstrip("/") for value in re.split(r"[\s,;]+", configured) if value.strip())
+    host_url = request.host_url.rstrip("/") if request else ""
+    if host_url:
+        origins.add(host_url)
+    return origins
+
+
+def is_allowed_origin(origin: str) -> bool:
+    origin = str(origin or "").strip().rstrip("/")
+    if not origin:
+        return False
+    if origin in allowed_origins():
+        return True
+    try:
+        parsed = urllib.parse.urlparse(origin)
+    except Exception:
+        return False
+    return parsed.scheme in {"http", "https"} and parsed.hostname in {"127.0.0.1", "localhost"}
 
 
 @app.get("/")
 def index():
     return send_from_directory(ROOT, "index.html")
+
+
+@app.errorhandler(RequestEntityTooLarge)
+def request_entity_too_large(_exc):
+    return jsonify({"error": "Request is too large."}), 413
 
 
 @app.get("/api/status")
@@ -1600,11 +1747,15 @@ def api_account_session():
 
 @app.post("/api/account/create")
 def api_account_create():
+    auth_limit = consume_auth_rate_limit(client_ip())
+    if not auth_limit["allowed"]:
+        return jsonify({"error": "Too many account attempts. Try again later."}), 429
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
         payload = {}
     try:
         account = create_account(payload.get("username"), payload.get("password"))
+        bind_anonymous_rate_limit_to_account(client_ip(), account.get("id"))
         token = create_account_session(account.get("id"), client_ip(), request.headers.get("User-Agent", ""))
         response = account_response(account, {"message": "Account created.", "sessionToken": token})
         set_session_cookie(response, token)
@@ -1615,6 +1766,9 @@ def api_account_create():
 
 @app.post("/api/account/signin")
 def api_account_signin():
+    auth_limit = consume_auth_rate_limit(client_ip())
+    if not auth_limit["allowed"]:
+        return jsonify({"error": "Too many sign-in attempts. Try again later."}), 429
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
         payload = {}
@@ -1624,6 +1778,7 @@ def api_account_signin():
     if not account or not verify_password(password, account.get("password_hash")):
         return jsonify({"error": "Username or password is incorrect."}), 401
 
+    bind_anonymous_rate_limit_to_account(client_ip(), account.get("id"))
     token = create_account_session(account.get("id"), client_ip(), request.headers.get("User-Agent", ""))
     response = account_response(account, {"message": "Signed in.", "sessionToken": token})
     set_session_cookie(response, token)
@@ -1632,6 +1787,9 @@ def api_account_signin():
 
 @app.post("/api/account/signout")
 def api_account_signout():
+    account = current_account()
+    if account:
+        bind_account_rate_limit_to_ip(client_ip(), account.get("id"))
     delete_account_session(request_session_token())
     response = jsonify({"signedIn": False, "account": None, "message": "Signed out."})
     clear_session_cookie(response)
@@ -1655,6 +1813,9 @@ def api_account_username():
 
 @app.post("/api/account/password")
 def api_account_password():
+    auth_limit = consume_auth_rate_limit(client_ip())
+    if not auth_limit["allowed"]:
+        return jsonify({"error": "Too many account attempts. Try again later."}), 429
     account = current_account()
     if not account:
         return jsonify({"error": "Sign in first."}), 401
@@ -1719,6 +1880,9 @@ def api_account_chats_put():
 
 @app.delete("/api/account")
 def api_account_delete():
+    auth_limit = consume_auth_rate_limit(client_ip())
+    if not auth_limit["allowed"]:
+        return jsonify({"error": "Too many account attempts. Try again later."}), 429
     account = current_account()
     if not account:
         return jsonify({"error": "Sign in first."}), 401
@@ -1943,8 +2107,9 @@ def api_chat():
     except TimeoutError:
         refund_rate_limit(ip_address, account_id)
         return jsonify({"retryable": True, "retryAfterSeconds": 4})
-    except Exception as exc:
-        return jsonify({"reply": f"Server error: {exc}"})
+    except Exception:
+        refund_rate_limit(ip_address, account_id)
+        return jsonify({"reply": "Server error. Please try again later."})
 
 
 def http_error_message(exc: urllib.error.HTTPError) -> str:
