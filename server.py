@@ -20,7 +20,6 @@ from groq import APIConnectionError, APIStatusError, APITimeoutError, Groq
 
 ROOT = Path(__file__).resolve().parent
 PROFANITY_BLOCK_MESSAGE = "You cant send Aether a message with profanity in it. You can try again without profanity in your message."
-SAFETY_LOCK_MESSAGE = "Aether can not continue this conversation. Please create a new conversation to keep using Aether."
 DEFAULT_RATE_LIMIT = 300
 DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60
 DEFAULT_RATE_LIMIT_TIMEZONE = "America/New_York"
@@ -1633,7 +1632,6 @@ def chat_response(payload: dict, ip_address: str, account_id: object = None) -> 
     if safety_reason:
         safe_record_blocked_attempt(ip_address, message, chat)
         return {
-            "reply": SAFETY_LOCK_MESSAGE,
             "safetyLocked": True,
             "safetyReason": safety_reason,
             "rateLimit": rate_limit_status(ip_address, account_id),

@@ -65,9 +65,9 @@ let voiceAutoSending = false;
 const thoughtTimerTimeouts = new Map();
 const LOCATION_TIME_PERMISSION_MESSAGE = "Aether needs your permission to see your location to give your location.";
 const PROFANITY_BLOCK_MESSAGE = "You cant send Aether a message with profanity in it. You can try again without profanity in your message.";
-const SAFETY_LOCK_MESSAGE = "Aether can not continue this conversation. Please create a new conversation to keep using Aether.";
 const SAFETY_LOCK_PLACEHOLDER = "Aether can not continue this conversation. Create a new conversation to keep using Aether.";
 const VOICE_AUTO_SEND_DELAY_MS = 1800;
+const SAFETY_LOCK_DELAY_MS = 3000;
 const ACCOUNT_SESSION_TOKEN_KEY = "aether.accountSessionToken";
 const MOBILE_SCROLL_FADE_QUERY = "(max-width: 860px), (pointer: coarse)";
 const MAX_PROFILE_PICTURE_FILE_SIZE = 560000;
@@ -1325,9 +1325,10 @@ async function sendTextMessage(text, options = {}) {
   touchChat(chat);
   const safetyReason = safetyLockReason(text);
   if (safetyReason) {
-    lockChatForSafety(chat, safetyReason);
+    Aether.state.thinking = true;
     storage.save();
     render();
+    await lockChatForSafetyAfterDelay(chat, safetyReason);
     return;
   }
 
@@ -1579,9 +1580,7 @@ async function fetchAssistantReply(text, location = null) {
           return "";
         }
         if (data.safetyLocked) {
-          lockChatForSafety(activeChat(), data.safetyReason || "safety");
-          storage.save();
-          render();
+          await lockChatForSafetyAfterDelay(activeChat(), data.safetyReason || "safety");
           return "";
         }
         if (data.aetherUnavailable) {
@@ -1629,10 +1628,16 @@ function lockChatForSafety(chat, reason = "safety") {
   chat.safetyLocked = true;
   chat.safetyReason = reason;
   chat.safetyLockedAt = now;
-  chat.messages.push(createMessage("assistant", SAFETY_LOCK_MESSAGE));
   touchChat(chat);
   Aether.state.thinking = false;
   stopVoiceInput({ keepDraft: true, silent: true });
+}
+
+async function lockChatForSafetyAfterDelay(chat, reason = "safety") {
+  await wait(SAFETY_LOCK_DELAY_MS);
+  lockChatForSafety(chat, reason);
+  storage.save();
+  render();
 }
 
 function isRateLimited() {
