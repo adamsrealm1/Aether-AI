@@ -34,6 +34,9 @@ PASSWORD_HASH_ITERATIONS = 260000
 OWNER_ADMIN_USERNAME = os.getenv("AETHER_OWNER_USERNAME", "adamsrealm1").strip().lower() or "adamsrealm1"
 AUTH_RATE_LIMIT = 40
 AUTH_RATE_LIMIT_WINDOW_SECONDS = 15 * 60
+SAFETY_SCAN_RATE_LIMIT = 600
+SAFETY_SCAN_WINDOW_SECONDS = 60 * 60
+SAFETY_CLASSIFIER_CONFIDENCE_THRESHOLD = 0.72
 RATE_LIMITS: dict[str, dict] = {}
 DB_INITIALIZED = False
 app = Flask(__name__, static_folder=str(ROOT), static_url_path="")
@@ -233,6 +236,18 @@ def consume_auth_rate_limit(ip_address: str) -> dict:
     return consume_bucket_limit(f"security:auth:{str(ip_address or 'unknown')[:120]}", AUTH_RATE_LIMIT, AUTH_RATE_LIMIT_WINDOW_SECONDS)
 
 
+def safety_scan_rate_limit_key(ip_address: str, account_id: object = None) -> str:
+    return f"security:safety:{rate_limit_key(ip_address, account_id)}"
+
+
+def consume_safety_scan_rate_limit(ip_address: str, account_id: object = None) -> dict:
+    return consume_bucket_limit(
+        safety_scan_rate_limit_key(ip_address, account_id),
+        SAFETY_SCAN_RATE_LIMIT,
+        SAFETY_SCAN_WINDOW_SECONDS,
+    )
+
+
 def bind_rate_limit_buckets(source_key: str, target_key: str) -> None:
     if not source_key or not target_key or source_key == target_key:
         return
@@ -249,10 +264,12 @@ def bind_rate_limit_buckets(source_key: str, target_key: str) -> None:
 
 def bind_anonymous_rate_limit_to_account(ip_address: str, account_id: object) -> None:
     bind_rate_limit_buckets(rate_limit_key(ip_address), rate_limit_key(ip_address, account_id))
+    bind_rate_limit_buckets(safety_scan_rate_limit_key(ip_address), safety_scan_rate_limit_key(ip_address, account_id))
 
 
 def bind_account_rate_limit_to_ip(ip_address: str, account_id: object) -> None:
     bind_rate_limit_buckets(rate_limit_key(ip_address, account_id), rate_limit_key(ip_address))
+    bind_rate_limit_buckets(safety_scan_rate_limit_key(ip_address, account_id), safety_scan_rate_limit_key(ip_address))
 
 
 def load_dotenv() -> None:
@@ -1442,6 +1459,27 @@ def groq_models() -> list[str]:
     return models
 
 
+def groq_safety_models() -> list[str]:
+    candidates = []
+    configured_models = os.getenv("AETHER_SAFETY_MODELS", "").strip()
+    if configured_models:
+        candidates.extend(re.split(r"[\s,;]+", configured_models))
+
+    configured_model = os.getenv("AETHER_SAFETY_MODEL", "").strip()
+    if configured_model:
+        candidates.append(configured_model)
+
+    candidates.extend(["llama-3.1-8b-instant", "openai/gpt-oss-120b", "qwen/qwen3-32b"])
+    models = []
+    seen = set()
+    for model in candidates:
+        model = model.strip()
+        if model and model not in seen:
+            models.append(model)
+            seen.add(model)
+    return models
+
+
 def groq_completion_with_fallback(messages: list[dict]) -> str:
     keys = groq_api_keys()
     if not keys:
@@ -1485,6 +1523,151 @@ def groq_completion_with_fallback(messages: list[dict]) -> str:
     if last_not_found_error:
         raise last_not_found_error
     return "I could not read a response."
+
+
+def safety_classifier_messages(message: str, chat: list[dict]) -> list[dict]:
+    recent = []
+    for item in chat[-8:]:
+        role = item.get("role")
+        content = item.get("content")
+        if role in {"user", "assistant"} and isinstance(content, str) and content.strip():
+            recent.append({"role": role, "content": content[:1200]})
+
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are Aether's safety classifier. Classify whether the latest user message should lock the current conversation. "
+                "Return only one JSON object and no other text. "
+                "Lock only when the latest user message asks for, intends, threatens, or meaningfully enables: self-harm; harming people; "
+                "weapons or explosives construction/use; sexual content involving minors; malware, credential theft, phishing, DDoS, or other cyber abuse; "
+                "or manufacturing hard drugs. "
+                "Do not lock benign, educational, fictional, prevention, recovery, news, moderation, or support-seeking discussion unless the latest message includes active intent, instructions, or enablement. "
+                "Schema: {\"safe\": boolean, \"action\": \"continue\" | \"lock_conversation\", \"category\": \"none\" | \"self_harm\" | \"violence\" | \"weapons\" | \"child_safety\" | \"cyber_abuse\" | \"hard_drugs\" | \"other\", \"confidence\": number, \"reason\": string}."
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "recentConversation": recent,
+                    "latestUserMessage": message[:MAX_CHAT_MESSAGE_CONTENT_LENGTH],
+                },
+                ensure_ascii=True,
+            ),
+        },
+    ]
+
+
+def extract_json_object(text: str) -> dict | None:
+    text = str(text or "").strip()
+    if not text:
+        return None
+    try:
+        value = json.loads(text)
+        return value if isinstance(value, dict) else None
+    except Exception:
+        pass
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    try:
+        value = json.loads(text[start : end + 1])
+        return value if isinstance(value, dict) else None
+    except Exception:
+        return None
+
+
+def normalize_safety_category(value: object) -> str:
+    category = re.sub(r"[^a-z0-9_-]+", "_", str(value or "other").strip().lower()).strip("_")
+    aliases = {
+        "self-harm": "self_harm",
+        "harm": "violence",
+        "child-sexual": "child_safety",
+        "child-safety": "child_safety",
+        "cyber-abuse": "cyber_abuse",
+        "hard-drugs": "hard_drugs",
+    }
+    category = aliases.get(category, category)
+    return category if category in {"none", "self_harm", "violence", "weapons", "child_safety", "cyber_abuse", "hard_drugs", "other"} else "other"
+
+
+def normalize_safety_classification(value: dict | None) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    category = normalize_safety_category(value.get("category"))
+    try:
+        confidence = float(value.get("confidence", 0))
+    except Exception:
+        confidence = 0.0
+    confidence = max(0.0, min(1.0, confidence))
+    action = str(value.get("action") or "").strip().lower()
+    safe = value.get("safe")
+    lock = (
+        action == "lock_conversation"
+        or value.get("lock") is True
+        or value.get("shouldLock") is True
+        or (safe is False and category != "none")
+    )
+    if confidence < SAFETY_CLASSIFIER_CONFIDENCE_THRESHOLD:
+        lock = False
+    return {
+        "lock": bool(lock),
+        "reason": category if lock else "",
+        "confidence": confidence,
+        "source": "model",
+    }
+
+
+def ai_safety_classification(message: str, chat: list[dict]) -> dict | None:
+    keys = groq_api_keys()
+    if not keys:
+        return None
+
+    messages = safety_classifier_messages(message, chat)
+    timeout_seconds = bounded_int(os.getenv("AETHER_SAFETY_TIMEOUT_SECONDS", "6"), 6, 2, 20)
+    for model in groq_safety_models():
+        for api_key in keys:
+            try:
+                try:
+                    client = Groq(api_key=api_key, timeout=timeout_seconds)
+                except TypeError:
+                    client = Groq(api_key=api_key)
+                completion = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0,
+                    max_completion_tokens=220,
+                    top_p=1,
+                    stream=False,
+                )
+                content = completion.choices[0].message.content or ""
+                parsed = normalize_safety_classification(extract_json_object(content))
+                if parsed is not None:
+                    return parsed
+            except APIStatusError as exc:
+                if exc.status_code in {404, 429}:
+                    continue
+                continue
+            except Exception:
+                continue
+    return None
+
+
+def classify_message_safety(message: str, chat: list[dict]) -> dict:
+    model_result = ai_safety_classification(message, chat)
+    if model_result is not None:
+        return model_result
+    fallback_reason = safety_lock_reason(message)
+    if fallback_reason:
+        return {
+            "lock": True,
+            "reason": normalize_safety_category(fallback_reason),
+            "confidence": 1.0,
+            "source": "fallback",
+        }
+    return {"lock": False, "reason": "", "confidence": 0.0, "source": "fallback"}
 
 
 def groq_reply(message: str, chat: list[dict]) -> str:
@@ -1628,12 +1811,19 @@ def chat_response(payload: dict, ip_address: str, account_id: object = None) -> 
     if contains_profanity(message):
         safe_record_blocked_attempt(ip_address, message, chat)
         return {"reply": PROFANITY_BLOCK_MESSAGE, "profanityBlocked": True}
-    safety_reason = safety_lock_reason(message)
-    if safety_reason:
+    scan_limit = consume_safety_scan_rate_limit(ip_address, account_id)
+    if not scan_limit["allowed"]:
+        return {
+            "reply": "Your rate limit has been reached, try again later.",
+            "rateLimited": True,
+            "rateLimit": rate_limit_status(ip_address, account_id),
+        }
+    safety = classify_message_safety(message, chat)
+    if safety.get("lock"):
         safe_record_blocked_attempt(ip_address, message, chat)
         return {
             "safetyLocked": True,
-            "safetyReason": safety_reason,
+            "safetyReason": safety.get("reason") or "safety",
             "rateLimit": rate_limit_status(ip_address, account_id),
         }
     if looks_like_location_time_request(message) and not location:

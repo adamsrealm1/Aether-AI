@@ -1323,7 +1323,7 @@ async function sendTextMessage(text, options = {}) {
   }
   if (["New conversation", "..."].includes(chat.title)) chat.title = text.slice(0, 48);
   touchChat(chat);
-  const safetyReason = safetyLockReason(text);
+  const safetyReason = Aether.config.apiEndpoint ? "" : safetyLockReason(text);
   if (safetyReason) {
     Aether.state.thinking = true;
     storage.save();
