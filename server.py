@@ -1930,20 +1930,21 @@ def speed_mode_rate_limit_cost(speed_mode: str) -> int:
 def aether_system_prompt(speed_mode: str) -> str:
     if normalized_speed_mode(speed_mode) == "fast":
         return (
-            "You are Aether, a friendly AI model on a website. "
+            "You are Aether, a smart AI model. "
             "Never mention providers, sources, tokens, API calls, "
             "or implementation details. "
-            "Keep responses short and easy."
+            "Keep responses short."
+            "Never use markdown formatting like bold and italics."
         )
     return (
         "You are Aether, a friendly AI model on a website. "
         "Be friendly. Respond as helpful as possible and be respectful. "
         "Never mention providers, sources, tokens, API calls, "
         "or implementation details. "
-        "Use Markdown-style formatting like bold, italics, headers, lists, code, and emoji when it improves the answer. "
+        "Never use markdown formatting like bold and italics."
         "Keep responses as helpful and reasonable as possible."
     )
-
+s
 
 def groq_reply(message: str, chat: list[dict], speed_mode: str = "default") -> str:
     now = datetime.now().astimezone().strftime("%A, %B %d, %Y at %I:%M %p %Z")

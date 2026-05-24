@@ -452,33 +452,42 @@ img.account-avatar {
   position: relative;
 }
 .speed-trigger {
-  min-width: 118px;
-  justify-content: space-between;
-  gap: 9px;
+  min-width: 0;
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border-radius: 999px;
+  padding: 0 8px;
+  color: #d4d4d8;
+  background: transparent;
 }
 .speed-trigger span {
-  color: #bfdbfe;
-  font-size: 12px;
-  font-weight: 780;
-}
-.speed-trigger strong {
-  color: #fff;
-  font-size: 13px;
+  color: inherit;
+  font-size: 14px;
+  font-weight: 760;
 }
 .speed-trigger i {
-  width: 7px;
-  height: 7px;
-  border-right: 1.5px solid currentColor;
-  border-bottom: 1.5px solid currentColor;
-  transform: rotate(45deg) translateY(-2px);
-  opacity: 0.74;
+  width: 8px;
+  height: 8px;
+  border-right: 1.7px solid currentColor;
+  border-bottom: 1.7px solid currentColor;
+  transform: rotate(45deg) translateY(-3px);
+  opacity: 0.72;
+}
+.speed-trigger:hover,
+.speed-trigger:focus-visible {
+  color: #fff;
+  outline: none;
+  background: rgba(255, 255, 255, 0.08);
 }
 .speed-picker.open .speed-trigger i {
   transform: rotate(225deg) translateY(-1px);
 }
 .speed-menu {
   position: absolute;
-  top: calc(100% + 8px);
+  bottom: calc(100% + 10px);
   right: 0;
   z-index: 15;
   width: min(280px, calc(100vw - 36px));
@@ -1110,11 +1119,10 @@ img.account-avatar {
 }
 .composer {
   display: grid;
-  grid-template-columns: 1fr auto auto;
-  align-items: end;
-  gap: 10px;
+  grid-template-columns: 1fr;
+  gap: 7px;
   width: 100%;
-  padding: 8px;
+  padding: 12px;
   border-radius: 28px;
   border: 1px solid rgba(148, 163, 184, 0.35);
   background: rgba(5, 10, 20, 0.92);
@@ -1126,7 +1134,7 @@ img.account-avatar {
 }
 .composer-input-wrap {
   position: relative;
-  min-height: 42px;
+  min-height: 44px;
   max-height: 180px;
   overflow: hidden;
 }
@@ -1176,22 +1184,39 @@ img.account-avatar {
   opacity: 1;
   caret-color: transparent;
 }
+.composer-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.composer-tools-left,
+.composer-tools-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
 .composer button {
-  min-width: 76px;
+  min-width: 42px;
   min-height: 42px;
-  border-radius: 22px;
-  color: #07111f;
-  background: #bfdbfe;
+  border-radius: 999px;
   font-weight: 800;
-  transition: background 160ms ease, transform 160ms ease;
+  transition: background 160ms ease, color 160ms ease, transform 160ms ease;
 }
 .composer .voice-button {
-  min-width: 52px;
-  width: 52px;
+  min-width: 42px;
+  width: 42px;
   color: #dbeafe;
-  background: rgba(148, 163, 184, 0.16);
-  border: 1px solid rgba(191, 219, 254, 0.18);
+  background: transparent;
+  border: 1px solid transparent;
   overflow: hidden;
+}
+.composer .send-button {
+  width: 42px;
+  color: #0f172a;
+  background: #a1a1aa;
+  font-size: 21px;
+  line-height: 1;
 }
 .composer .voice-button.listening {
   color: #07111f;
@@ -1216,13 +1241,33 @@ img.account-avatar {
 }
 .composer button:disabled:hover,
 .composer button:disabled:focus-visible {
-  background: #bfdbfe;
   outline: none;
   transform: none;
 }
+.composer .speed-trigger,
+.composer .speed-trigger:disabled {
+  color: #d4d4d8;
+  background: transparent;
+  font-weight: 760;
+  padding: 0 8px;
+}
+.composer .speed-trigger:hover,
+.composer .speed-trigger:focus-visible {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+}
+.composer .speed-trigger:disabled:hover,
+.composer .speed-trigger:disabled:focus-visible {
+  color: #d4d4d8;
+  background: transparent;
+}
 .composer .voice-button:disabled:hover,
 .composer .voice-button:disabled:focus-visible {
-  background: rgba(148, 163, 184, 0.16);
+  background: transparent;
+}
+.composer .send-button:disabled:hover,
+.composer .send-button:disabled:focus-visible {
+  background: #a1a1aa;
 }
 @keyframes micPulse {
   0%, 100% {
@@ -1866,18 +1911,15 @@ img.account-avatar {
   .topbar-actions {
     width: 100%;
     display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-columns: 1fr 1fr;
   }
-  .topbar-actions .secondary-button,
-  .topbar-actions .speed-trigger {
+  .topbar-actions .secondary-button {
     width: 100%;
     min-width: 0;
     padding: 0 10px;
     font-size: 13px;
   }
   .speed-menu {
-    left: 0;
-    right: auto;
     width: min(280px, calc(100vw - 32px));
   }
   .messages {
@@ -1917,9 +1959,8 @@ img.account-avatar {
     gap: 6px;
   }
   .composer {
-    grid-template-columns: 1fr 46px 64px;
     gap: 7px;
-    padding: 7px;
+    padding: 10px;
     border-radius: 22px;
   }
   .composer-input-wrap,
@@ -1939,9 +1980,14 @@ img.account-avatar {
     font-size: 13px;
   }
   .composer .voice-button {
-    width: 46px;
-    min-width: 46px;
+    width: 40px;
+    min-width: 40px;
     font-size: 12px;
+  }
+  .composer .send-button {
+    width: 40px;
+    min-width: 40px;
+    font-size: 20px;
   }
   .composer-note {
     font-size: 11px;
@@ -1959,9 +2005,6 @@ img.account-avatar {
   }
   .topbar-actions {
     gap: 6px;
-  }
-  .composer {
-    grid-template-columns: 1fr 42px 56px;
   }
   .composer .voice-button {
     width: 42px;

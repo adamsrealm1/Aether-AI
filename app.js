@@ -351,7 +351,6 @@ function renderChatPage(chat) {
           <h1>${escapeHtml(chat.title)}</h1>
         </div>
         <div class="topbar-actions">
-          ${renderSpeedMenu(composerLocked)}
           <button class="secondary-button" data-action="rename-chat">Rename</button>
           <button class="secondary-button" data-action="regenerate-last"${composerLocked ? " disabled" : ""}>Resend last</button>
         </div>
@@ -366,8 +365,15 @@ function renderChatPage(chat) {
             <div class="composer-highlights" aria-hidden="true">${renderHighlightedComposerText(Aether.state.composerDraft)}</div>
             <textarea name="message" autocomplete="off" rows="1" placeholder="${escapeHtml(composerPlaceholder)}" spellcheck="true"${composerLocked ? " disabled" : ""}>${escapeHtml(Aether.state.composerDraft)}</textarea>
           </div>
-          <button class="voice-button ${Aether.state.voiceListening ? "listening" : ""}" type="button" data-action="voice-input" aria-label="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}" aria-pressed="${Aether.state.voiceListening ? "true" : "false"}" title="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}"${composerDisabled ? " disabled" : ""}>🎙️</button>
-          <button type="submit"${composerDisabled ? " disabled" : ""}>Send</button>
+          <div class="composer-toolbar">
+            <div class="composer-tools-left">
+              <button class="voice-button ${Aether.state.voiceListening ? "listening" : ""}" type="button" data-action="voice-input" aria-label="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}" aria-pressed="${Aether.state.voiceListening ? "true" : "false"}" title="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}"${composerDisabled ? " disabled" : ""}>🎙️</button>
+            </div>
+            <div class="composer-tools-right">
+              ${renderSpeedMenu(composerLocked)}
+              <button class="send-button" type="submit" aria-label="Send message"${composerDisabled ? " disabled" : ""}>↑</button>
+            </div>
+          </div>
         </form>
         <p class="composer-note">Aether can make mistakes. Double check important info.</p>
       </div>
@@ -376,13 +382,11 @@ function renderChatPage(chat) {
 }
 
 function renderSpeedMenu(disabled = false) {
-  const mode = speedModeDetails();
   const openClass = Aether.state.speedMenuOpen ? " open" : "";
   return `
     <div class="speed-picker${openClass}">
-      <button class="secondary-button speed-trigger" type="button" data-action="toggle-speed-menu" aria-haspopup="menu" aria-expanded="${Aether.state.speedMenuOpen ? "true" : "false"}"${disabled ? " disabled" : ""}>
+      <button class="speed-trigger" type="button" data-action="toggle-speed-menu" aria-haspopup="menu" aria-expanded="${Aether.state.speedMenuOpen ? "true" : "false"}"${disabled ? " disabled" : ""}>
         <span>Speed</span>
-        <strong>${escapeHtml(mode.label)}</strong>
         <i aria-hidden="true"></i>
       </button>
       ${Aether.state.speedMenuOpen ? `
@@ -1869,10 +1873,6 @@ function isAetherAvailable() {
 
 function normalizedSpeedMode(value) {
   return value === "fast" ? "fast" : "default";
-}
-
-function speedModeDetails() {
-  return SPEED_MODES[normalizedSpeedMode(Aether.config.speedMode)] || SPEED_MODES.default;
 }
 
 function setSpeedMode(value) {
