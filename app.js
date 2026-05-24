@@ -3418,6 +3418,31 @@ function injectStyles() {
     .account-form:has(label + label) {
       grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
     }
+    .pfp-form {
+      align-items: center;
+    }
+    .pfp-form label {
+      gap: 8px;
+    }
+    .pfp-form input[type="file"] {
+      display: flex;
+      align-items: center;
+      min-height: 38px;
+      padding: 7px 10px;
+      line-height: 1;
+      font-weight: 760;
+    }
+    .pfp-form input[type="file"]::file-selector-button {
+      height: 24px;
+      margin: 0 10px 0 0;
+      border: 0;
+      border-radius: 6px;
+      color: #07111f;
+      background: #bfdbfe;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 850;
+    }
     .account-danger {
       display: grid;
       grid-template-columns: auto minmax(0, 1fr);
