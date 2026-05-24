@@ -20,17 +20,16 @@ from groq import APIConnectionError, APIStatusError, APITimeoutError, Groq
 
 ROOT = Path(__file__).resolve().parent
 PROFANITY_BLOCK_MESSAGE = "You cant send Aether a message with profanity in it. You can try again without profanity in your message."
-DEFAULT_RATE_LIMIT = 300
-DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60
+DEFAULT_RATE_LIMIT = 100
+DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 86400
 DEFAULT_RATE_LIMIT_TIMEZONE = "America/New_York"
-ANONYMOUS_DAILY_RATE_LIMIT = 20
+ANONYMOUS_DAILY_RATE_LIMIT = 10
 ANONYMOUS_DAILY_RATE_LIMIT_WINDOW_SECONDS = 24 * 60 * 60
 MAX_PROFILE_PICTURE_DATA_URL_LENGTH = 750000
 MAX_REQUEST_BODY_BYTES = 2 * 1024 * 1024
 MAX_CHAT_MESSAGE_CONTENT_LENGTH = 24000
-MAX_CHAT_MESSAGES_PER_CHAT = 200
-MAX_ACCOUNT_CHATS = 100
-VOICE_MESSAGE_TTL_SECONDS = 25
+MAX_CHAT_MESSAGES_PER_CHAT = 1000
+MAX_ACCOUNT_CHATS = 10
 SESSION_COOKIE_NAME = "aether_session"
 SESSION_LIFETIME_DAYS = 30
 PASSWORD_HASH_ITERATIONS = 260000
@@ -108,14 +107,6 @@ def rate_limit_key(ip_address: str | None = None, account_id: object = None) -> 
         return f"account:{account_value[:120]}"
     cleaned = str(ip_address or "unknown").strip() or "unknown"
     return f"anonymous:{cleaned[:120]}"
-
-
-def rate_limit_for_request() -> int:
-    return rate_limit_settings()["limit"]
-
-
-def rate_limit_window_seconds() -> int:
-    return rate_limit_settings()["windowSeconds"]
 
 
 def request_rate_limit_settings(account_id: object = None) -> dict:
@@ -899,10 +890,6 @@ def banned_api_response(row: dict):
     ), 403
 
 
-def is_ip_banned(ip_address: str) -> bool:
-    return bool(banned_ip_record(ip_address))
-
-
 def is_account_banned(account_id: object) -> bool:
     return bool(banned_account_record(account_id))
 
@@ -977,28 +964,6 @@ def unban_account(account_id: object) -> None:
 def unban_ip(ip_address: str) -> None:
     placeholder = db_placeholder()
     db_execute(f"DELETE FROM banned_ips WHERE ip_address = {placeholder}", (ip_address.strip()[:80],))
-
-
-def latest_account_ip(username: object) -> tuple[str, str]:
-    username_lc = normalize_username(username)
-    if not username_lc:
-        raise ValueError("Username is required.")
-    account = find_account_by_username(username_lc)
-    if not account:
-        raise ValueError("Account was not found.")
-
-    placeholder = db_placeholder()
-    rows = db_query(
-        (
-            "SELECT ip_address FROM account_sessions "
-            f"WHERE account_id = {placeholder} AND ip_address IS NOT NULL AND ip_address <> '' "
-            "ORDER BY last_seen_at DESC, created_at DESC LIMIT 1"
-        ),
-        (account.get("id"),),
-    )
-    if not rows:
-        raise ValueError("That account does not have a recorded IP yet.")
-    return str(rows[0].get("ip_address") or "").strip(), str(account.get("username") or username_lc)
 
 
 def last_user_messages(chat: list[dict], current_message: str) -> list[str]:
@@ -1354,12 +1319,6 @@ def normalize_chat_message(value: object) -> dict | None:
     created_at = str(value.get("createdAt") or value.get("created_at") or utc_iso())[:40]
     message_id = str(value.get("id") or secrets.token_urlsafe(12))[:120]
     voice = bool(value.get("voice"))
-    voice_expires_at = str(value.get("voiceExpiresAt") or value.get("voice_expires_at") or "")[:40]
-    if voice:
-        expires_at = parse_utc(voice_expires_at) if voice_expires_at else utc_now() + timedelta(seconds=VOICE_MESSAGE_TTL_SECONDS)
-        if expires_at <= utc_now():
-            return None
-        voice_expires_at = expires_at.isoformat()
     message = {
         "id": message_id,
         "role": role,
@@ -1368,7 +1327,6 @@ def normalize_chat_message(value: object) -> dict | None:
     }
     if voice:
         message["voice"] = True
-        message["voiceExpiresAt"] = voice_expires_at
     return message
 
 
@@ -2630,11 +2588,6 @@ def api_admin_blocked_attempts():
         return denied
     include_all = request.args.get("all") == "1"
     return jsonify({"blockedAttempts": blocked_attempts(include_all)})
-
-
-@app.route("/api/report", methods=["GET", "POST", "OPTIONS"])
-def removed_endpoints():
-    return jsonify({"error": "Not found"}), 404
 
 
 @app.post("/api/chat")
