@@ -858,9 +858,9 @@ img.account-avatar {
   gap: 8px;
   min-height: 22px;
 }
-.copy-message {
+.copy-message,
+.thought-time {
   height: 22px;
-  min-width: 48px;
   padding: 0 8px;
   border-radius: 7px;
   color: rgba(219, 234, 254, 0.68);
@@ -877,11 +877,19 @@ img.account-avatar {
     background 150ms ease,
     transform 180ms ease;
 }
+.copy-message {
+  min-width: 48px;
+}
+.message-row:hover .copy-message,
+.message-row:focus-within .copy-message,
+.message-row:hover .thought-time,
+.message-row:focus-within .thought-time {
+  opacity: 0.76;
+  transform: translateY(0);
+}
 .message-row:hover .copy-message,
 .message-row:focus-within .copy-message {
-  opacity: 0.76;
   pointer-events: auto;
-  transform: translateY(0);
 }
 .copy-message:hover, .copy-message:focus-visible {
   color: #07111f;
@@ -894,28 +902,8 @@ img.account-avatar {
   display: inline-flex;
   align-items: center;
   min-height: 22px;
-  border-radius: 999px;
-  padding: 0 9px;
-  color: rgba(219, 234, 254, 0.92);
-  background: rgba(7, 17, 31, 0.44);
   border: 1px solid rgba(191, 219, 254, 0.12);
-  font-size: 12px;
-  font-weight: 760;
-  animation: thoughtTimePulse 3s ease forwards;
-}
-@keyframes thoughtTimePulse {
-  0% {
-    opacity: 0;
-    transform: translateY(2px);
-  }
-  18%, 72% {
-    opacity: 1;
-    transform: translateY(0);
-  }
-  100% {
-    opacity: 0;
-    transform: translateY(-2px);
-  }
+  pointer-events: none;
 }
 .thinking {
   transition: opacity 520ms ease, transform 520ms ease;

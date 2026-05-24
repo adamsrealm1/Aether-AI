@@ -65,7 +65,6 @@ let voiceFinalTranscript = "";
 let voiceFinalResultIndexes = new Set();
 let voiceTranscript = "";
 let voiceAutoSending = false;
-const thoughtTimerTimeouts = new Map();
 const LOCATION_TIME_PERMISSION_MESSAGE = "Aether needs your permission to see your location to give your location.";
 const PROFANITY_BLOCK_MESSAGE = "You cant send Aether a message with profanity in it. You can try again without profanity in your message.";
 const SAFETY_LOCK_PLACEHOLDER = "Aether can not continue this conversation. Create a new conversation to keep using Aether.";
@@ -731,8 +730,8 @@ function renderMessage(message) {
       ? `<button class="copy-message" data-copy-message="${escapeHtml(messageId)}" aria-label="Copy this message" title="Copy this message">Copy</button>`
       : "";
   const thoughtTime =
-    message.role === "assistant" && !message.typing && message.showThoughtTime && Number.isFinite(message.thoughtTimeMs)
-      ? `<span class="thought-time">Aether took ${escapeHtml(formatThoughtTime(message.thoughtTimeMs))}</span>`
+    message.role === "assistant" && !message.typing && Number.isFinite(message.thoughtTimeMs)
+      ? `<span class="thought-time">Thought for ${escapeHtml(formatThoughtTime(message.thoughtTimeMs))}</span>`
       : "";
   const messageControls = copyButton || thoughtTime ? `<div class="message-controls">${copyButton}${thoughtTime}</div>` : "";
   return `
@@ -2669,38 +2668,15 @@ async function typeAssistantMessage(chat, message, fullText) {
 
   message.content = cleanText;
   message.typing = false;
-  message.showThoughtTime = Number.isFinite(message.thoughtTimeMs);
   row?.classList.remove("typing");
   storage.save();
   render();
-  scheduleThoughtTimeFade(message.id);
-}
-
-function scheduleThoughtTimeFade(messageId) {
-  if (!messageId) return;
-  if (thoughtTimerTimeouts.has(messageId)) {
-    clearTimeout(thoughtTimerTimeouts.get(messageId));
-  }
-
-  const timeoutId = setTimeout(() => {
-    thoughtTimerTimeouts.delete(messageId);
-    const message = Aether.state.chats
-      .flatMap((chat) => chat.messages)
-      .find((item) => item.id === messageId);
-    if (!message || !message.showThoughtTime) return;
-    message.showThoughtTime = false;
-    storage.save();
-    const row = document.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
-    row?.querySelector(".thought-time")?.remove();
-  }, 3000);
-
-  thoughtTimerTimeouts.set(messageId, timeoutId);
 }
 
 function formatThoughtTime(milliseconds) {
-  if (milliseconds < 1000) return `${Math.max(0.1, milliseconds / 1000).toFixed(1)}s`;
-  if (milliseconds < 10000) return `${(milliseconds / 1000).toFixed(1)}s`;
-  return `${Math.round(milliseconds / 1000)}s`;
+  const seconds = Math.max(0.1, milliseconds / 1000);
+  if (seconds < 10) return `${seconds.toFixed(1)} seconds`;
+  return `${Math.round(seconds)} seconds`;
 }
 
 async function revealAssistantText(container, text) {
