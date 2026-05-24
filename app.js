@@ -692,11 +692,11 @@ function renderAccountModal() {
             <span>Profile picture</span>
             <input name="profilePicture" type="file" accept="image/png,image/jpeg,image/webp" required>
           </label>
-          <button class="secondary-button" type="submit"${Aether.state.accountLoading ? " disabled" : ""}>Submit for approval</button>
+          <button class="secondary-button" type="submit"${Aether.state.accountLoading ? " disabled" : ""}>Submit</button>
         </form>
-        ${account.profilePicturePending ? `<div class="form-note">Your profile picture is waiting for admin approval.</div>` : ""}
+        ${account.profilePicturePending ? `<div class="form-note">Your profile picture is waiting for approval.</div>` : ""}
         ${(account.profilePictureUrl || account.profilePicturePending) ? `
-          <button class="secondary-button" type="button" data-action="account-profile-picture-delete"${Aether.state.accountLoading ? " disabled" : ""}>Delete profile picture</button>
+          <button class="secondary-button" type="button" data-action="account-profile-picture-delete"${Aether.state.accountLoading ? " disabled" : ""}>Remove profile picture</button>
         ` : ""}
         <form class="account-form" data-action="account-username">
           <label>
