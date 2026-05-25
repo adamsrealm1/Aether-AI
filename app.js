@@ -968,7 +968,7 @@ function renderReportFixedPopup() {
         <span class="report-fixed-icon" aria-hidden="true"><img src="assets/icon_library/flag.png" alt=""></span>
         <span class="report-eyebrow">Thank you for your contribution to Aether AI.</span>
         <h2 id="report-fixed-title">Reported message</h2>
-        <p>You reported a message recently and the Aether AI team has fixed/acknowledged it!</p>
+        <p>The message you reported was fixed in the latest update.</p>
         ${notice.messageContent ? `<blockquote class="report-preview fixed">${escapeHtml(reportSnippet(notice.messageContent))}</blockquote>` : ""}
         <button class="warning-understand report-fixed-action" data-action="close-report-fixed">Got it</button>
       </section>
