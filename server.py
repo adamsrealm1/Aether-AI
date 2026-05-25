@@ -2286,7 +2286,7 @@ def aether_system_prompt(speed_mode: str) -> str:
         "Use markdown formatting like bolding and italics but do not make it excessive."
         "Keep responses as helpful and reasonable as possible and give as much guidance as possible."
         "Do not try to end a chat with enjoy, goodbye, take care, or other goodbye messages unless the user has verbally said a goodbye message."
-        "Do not use pipe or dash symbols."
+        "Do not use | or - symbols."
     )
 
 
