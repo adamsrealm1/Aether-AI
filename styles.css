@@ -1985,7 +1985,7 @@ img.account-avatar {
     font-size: 13px;
   }
   .speed-menu {
-    width: min(280px, calc(100vw - 32px));
+    width: min(330px, calc(100vw - 32px));
   }
   .messages {
     max-width: none;
