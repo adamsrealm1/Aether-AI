@@ -2751,10 +2751,9 @@ async function typeAssistantMessage(chat, message, fullText) {
 
   let finalText = cleanText;
   if (bubble) {
-    bubble.classList.remove("formatted");
-    const revealResult = await revealAssistantText(bubble, cleanText, message.id);
-    finalText = revealResult.stopped ? revealResult.text.trimEnd() : cleanText;
     bubble.classList.add("formatted");
+    const revealResult = await revealAssistantMarkdown(bubble, cleanText, message.id);
+    finalText = revealResult.stopped ? revealResult.text.trimEnd() : cleanText;
     bubble.innerHTML = renderAssistantMarkdown(finalText);
     scrollChatToBottom();
   }
@@ -2790,31 +2789,27 @@ function formatThoughtTime(milliseconds) {
   return `${Math.round(seconds)} seconds`;
 }
 
-async function revealAssistantText(container, text, messageId = "") {
+async function revealAssistantMarkdown(container, text, messageId = "") {
   const parts = text.match(/\s+|\S+/g) || [text];
   const totalWords = parts.filter((part) => !/^\s+$/.test(part)).length;
   const delayStep = wordRevealDelay(totalWords);
   let revealedWords = 0;
   let revealedText = "";
 
-  container.textContent = "";
+  container.innerHTML = "";
   for (const part of parts) {
     if (isAssistantRevealStopped(messageId)) {
       return { stopped: true, text: revealedText };
     }
 
     if (/^\s+$/.test(part)) {
-      container.appendChild(document.createTextNode(part));
       revealedText += part;
       continue;
     }
 
-    const word = document.createElement("span");
-    word.className = "fade-word";
-    word.textContent = part;
-    container.appendChild(word);
     revealedText += part;
     revealedWords += 1;
+    renderRevealedAssistantMarkdown(container, revealedText);
 
     if (revealedWords % 8 === 0) {
       scrollChatToBottom();
@@ -2825,6 +2820,39 @@ async function revealAssistantText(container, text, messageId = "") {
     }
   }
   return { stopped: false, text: revealedText };
+}
+
+function renderRevealedAssistantMarkdown(container, text) {
+  container.innerHTML = renderAssistantMarkdown(text);
+  markLatestRevealWord(container);
+}
+
+function markLatestRevealWord(container) {
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  let latestTextNode = null;
+  let node = walker.nextNode();
+
+  while (node) {
+    if (/\S/.test(node.nodeValue || "")) latestTextNode = node;
+    node = walker.nextNode();
+  }
+
+  if (!latestTextNode?.parentNode) return;
+  const value = latestTextNode.nodeValue || "";
+  const match = value.match(/(\S+)(\s*)$/);
+  if (!match) return;
+
+  const fragment = document.createDocumentFragment();
+  const leadingText = value.slice(0, match.index);
+  if (leadingText) fragment.appendChild(document.createTextNode(leadingText));
+
+  const word = document.createElement("span");
+  word.className = "fade-word";
+  word.textContent = match[1];
+  fragment.appendChild(word);
+
+  if (match[2]) fragment.appendChild(document.createTextNode(match[2]));
+  latestTextNode.parentNode.replaceChild(fragment, latestTextNode);
 }
 
 function isAssistantRevealStopped(messageId) {
