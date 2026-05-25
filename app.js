@@ -931,21 +931,24 @@ function renderReportModal() {
         <div class="report-modal-head">
           <span class="report-modal-icon" aria-hidden="true"><img src="assets/flag.png" alt=""></span>
           <div>
-            <span class="report-eyebrow">Admin review</span>
+            <span class="report-eyebrow">Report a message</span>
             <h2 id="report-title">Report message</h2>
           </div>
         </div>
-        <p class="report-modal-copy">Send this message to admins so they can review and fix it.</p>
+        <p class="report-modal-copy">Submit a report to the Aether AI team so they can review your report and fix it in an update.</p>
         <blockquote class="report-preview">${escapeHtml(reportSnippet(report.messageContent))}</blockquote>
         ${Aether.state.reportError ? `<div class="report-error">${escapeHtml(Aether.state.reportError)}</div>` : ""}
         <form class="report-form" data-action="submit-report">
           <label>
-            <span>Optional note</span>
-            <textarea name="note" rows="3" maxlength="1000" placeholder="What should admins look at?"></textarea>
+            <span>Note</span>
+            <textarea name="note" rows="3" maxlength="1000" placeholder="The reason for reporting this message goes here."></textarea>
           </label>
           <div class="report-modal-actions">
             <button class="secondary-button" type="button" data-action="close-report-modal"${Aether.state.reportLoading ? " disabled" : ""}>Cancel</button>
             <button class="primary-button report-submit-button" type="submit"${Aether.state.reportLoading ? " disabled" : ""}>${Aether.state.reportLoading ? "Sending..." : "Send report"}</button>
+          <label>
+            <span>False reports may result in a perma-ban. Use caution when reporting.</span>
+          </label>
           </div>
         </form>
       </section>
