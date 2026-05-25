@@ -236,6 +236,34 @@ img.account-avatar {
   display: block;
   object-fit: cover;
 }
+.username-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  min-width: 0;
+  vertical-align: middle;
+}
+.username-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.username-suffix {
+  flex: 0 0 auto;
+}
+.verified-icon {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  object-fit: contain;
+  display: inline-block;
+  vertical-align: middle;
+}
+.account-card-head h2 .verified-icon {
+  width: 18px;
+  height: 18px;
+}
 .account-avatar.large {
   width: 54px;
   height: 54px;
@@ -252,6 +280,9 @@ img.account-avatar {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.account-tab-copy .username-label {
+  display: flex;
 }
 .account-tab-copy small {
   color: #93c5fd;
@@ -1213,6 +1244,21 @@ img.account-avatar {
   background: #a1a1aa;
   font-size: 21px;
   line-height: 1;
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+.composer.has-composer-text .send-button,
+.composer .send-button.has-text,
+.composer .send-button.pause-button {
+  background: #fff;
+  color: #0f172a;
+}
+.composer .send-button img {
+  display: block;
+  width: 17px;
+  height: 17px;
+  object-fit: contain;
 }
 .composer .voice-button.listening {
   color: #07111f;
@@ -1234,6 +1280,23 @@ img.account-avatar {
   background: #a7f3d0;
   outline: none;
   transform: translateY(-1px);
+}
+.composer .send-button:not(.has-text):not(.pause-button):hover,
+.composer .send-button:not(.has-text):not(.pause-button):focus-visible {
+  background: #a1a1aa;
+}
+.composer.has-composer-text .send-button:hover,
+.composer.has-composer-text .send-button:focus-visible,
+.composer .send-button.has-text:hover,
+.composer .send-button.has-text:focus-visible,
+.composer .send-button.pause-button:hover,
+.composer .send-button.pause-button:focus-visible {
+  background: #fff;
+}
+.composer .send-button:disabled {
+  opacity: 1;
+  background: #a1a1aa;
+  color: #0f172a;
 }
 .composer button:disabled:hover,
 .composer button:disabled:focus-visible {

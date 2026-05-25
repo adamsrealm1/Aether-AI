@@ -12,6 +12,7 @@
     mobileSidebarOpen: false,
     toast: "",
     thinking: false,
+    assistantTyping: false,
     profanityPopup: false,
     rateLimitPopup: false,
     voiceListening: false,
@@ -65,6 +66,7 @@ let voiceFinalTranscript = "";
 let voiceFinalResultIndexes = new Set();
 let voiceTranscript = "";
 let voiceAutoSending = false;
+let activeAssistantReveal = null;
 const LOCATION_TIME_PERMISSION_MESSAGE = "Aether needs your permission to see your location to give your location.";
 const PROFANITY_BLOCK_MESSAGE = "You cant send Aether a message with profanity in it. You can try again without profanity in your message.";
 const SAFETY_LOCK_PLACEHOLDER = "Aether can not continue this conversation. Create a new conversation to keep using Aether.";
@@ -313,7 +315,7 @@ function renderAccountSidebarButton() {
       <button class="account-tab signed-in" data-action="account-tab">
         ${renderAccountAvatar(Aether.state.account)}
         <span class="account-tab-copy">
-          <strong>${escapeHtml(Aether.state.account.username)}</strong>
+          <strong>${renderUsernameLabel(Aether.state.account)}</strong>
           <small>Account</small>
         </span>
       </button>
@@ -330,14 +332,34 @@ function renderAccountAvatar(account, large = false) {
   return `<span class="account-avatar${largeClass}">${escapeHtml(accountInitials(account?.username || ""))}</span>`;
 }
 
+function renderVerifiedIcon(account) {
+  if (!account?.isVerified) return "";
+  return `<img class="verified-icon" src="assets/Verified.png" alt="Verified" title="Verified">`;
+}
+
+function renderUsernameLabel(account, options = {}) {
+  const username = typeof account === "object" && account !== null ? account.username : account;
+  const isVerified = Boolean((typeof account === "object" && account?.isVerified) || options.isVerified);
+  const suffix = String(options.suffix || "");
+  return `
+    <span class="username-label">
+      <span class="username-text">${escapeHtml(username || "")}</span>
+      ${renderVerifiedIcon({ isVerified })}
+      ${suffix ? `<span class="username-suffix">${escapeHtml(suffix)}</span>` : ""}
+    </span>
+  `;
+}
+
 function renderChatPage(chat) {
   const unavailable = Aether.state.aetherAvailable === false;
   const safetyLocked = Boolean(chat?.safetyLocked);
   const composerPlaceholder = safetyLocked
     ? SAFETY_LOCK_PLACEHOLDER
     : unavailable ? "Aether AI is currently unavailable" : "Send a message here.";
-  const composerDisabled = unavailable || safetyLocked || Aether.state.thinking;
   const composerLocked = unavailable || safetyLocked;
+  const responseBusy = Aether.state.thinking || Aether.state.assistantTyping;
+  const voiceDisabled = composerLocked || responseBusy;
+  const composerReady = composerHasText(Aether.state.composerDraft) && !composerLocked && !responseBusy;
   return `
     <main class="chat-page">
       <div class="animated-bg" aria-hidden="true"></div>
@@ -359,18 +381,18 @@ function renderChatPage(chat) {
         ${Aether.state.thinking ? renderThinking() : ""}
       </div>
       <div class="composer-area">
-        <form class="composer${composerLocked ? " unavailable" : ""}" data-action="send-message">
+        <form class="composer${composerLocked ? " unavailable" : ""}${composerReady ? " has-composer-text" : ""}" data-action="send-message">
           <div class="composer-input-wrap">
             <div class="composer-highlights" aria-hidden="true">${renderHighlightedComposerText(Aether.state.composerDraft)}</div>
             <textarea name="message" autocomplete="off" rows="1" placeholder="${escapeHtml(composerPlaceholder)}" spellcheck="true"${composerLocked ? " disabled" : ""}>${escapeHtml(Aether.state.composerDraft)}</textarea>
           </div>
           <div class="composer-toolbar">
             <div class="composer-tools-left">
-              <button class="voice-button ${Aether.state.voiceListening ? "listening" : ""}" type="button" data-action="voice-input" aria-label="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}" aria-pressed="${Aether.state.voiceListening ? "true" : "false"}" title="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}"${composerDisabled ? " disabled" : ""}>🎙️</button>
+              <button class="voice-button ${Aether.state.voiceListening ? "listening" : ""}" type="button" data-action="voice-input" aria-label="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}" aria-pressed="${Aether.state.voiceListening ? "true" : "false"}" title="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}"${voiceDisabled ? " disabled" : ""}>🎙️</button>
             </div>
             <div class="composer-tools-right">
               ${renderSpeedMenu(composerLocked)}
-              <button class="send-button" type="submit" aria-label="Send message"${composerDisabled ? " disabled" : ""}>↑</button>
+              ${renderSendButton(composerLocked)}
             </div>
           </div>
         </form>
@@ -378,6 +400,26 @@ function renderChatPage(chat) {
       </div>
     </main>
   `;
+}
+
+function renderSendButton(composerLocked = false) {
+  const stopping = Boolean(Aether.state.assistantTyping);
+  const hasText = composerHasText(Aether.state.composerDraft);
+  const disabled = composerLocked || (!stopping && Aether.state.thinking);
+  const ready = hasText && !composerLocked && !Aether.state.thinking && !stopping;
+  const classes = [
+    "send-button",
+    ready ? "has-text" : "",
+    stopping ? "pause-button" : "",
+  ].filter(Boolean).join(" ");
+  if (stopping) {
+    return `
+      <button class="${classes}" type="button" data-action="stop-response" aria-label="Stop Aether response" title="Stop Aether response">
+        <img src="assets/pause.png" alt="" aria-hidden="true">
+      </button>
+    `;
+  }
+  return `<button class="${classes}" type="submit" aria-label="Send message"${disabled ? " disabled" : ""}>↑</button>`;
 }
 
 function renderSpeedMenu(disabled = false) {
@@ -512,7 +554,7 @@ function renderBanIpPanel(bannedIps, bannedAccounts = []) {
         ${bannedAccounts.map((item) => `
           <div class="admin-list-item banned-user-item">
             <div>
-              <strong>${escapeHtml(item.username || "")}</strong>
+              <strong>${renderUsernameLabel(item)}</strong>
               <small>User ban - ${escapeHtml(item.reason || "No reason")} - ${escapeHtml(formatAdminDate(item.createdAt))}</small>
               ${item.sourceMessage ? `<p>${escapeHtml(item.sourceMessage)}</p>` : ""}
             </div>
@@ -526,7 +568,7 @@ function renderBanIpPanel(bannedIps, bannedAccounts = []) {
             <div class="admin-list-item banned-user-item">
               <div>
                 <strong>${escapeHtml(item.ipAddress || "")}</strong>
-                <small>IP ban${username ? ` for ${escapeHtml(username)}` : ""} - ${escapeHtml(item.reason || "No reason")} - ${escapeHtml(formatAdminDate(item.createdAt))}</small>
+                <small>IP ban${username ? ` for ${renderUsernameLabel(item)}` : ""} - ${escapeHtml(item.reason || "No reason")} - ${escapeHtml(formatAdminDate(item.createdAt))}</small>
                 ${sourceMessage ? `<p>${escapeHtml(sourceMessage)}</p>` : ""}
               </div>
               <button class="secondary-button" data-unban-ip="${escapeHtml(item.ipAddress || "")}">Unban IP</button>
@@ -551,13 +593,13 @@ function renderBlockedAttemptsPanel(attempts) {
           const username = String(attempt.username || "").trim();
           const ipAddress = String(attempt.ipAddress || "").trim();
           const attemptId = escapeHtml(attempt.id || "");
-          const primaryLabel = username || ipAddress;
-          const detailLabel = username ? `User ${escapeHtml(username)} - IP ${escapeHtml(ipAddress)}` : `IP ${escapeHtml(ipAddress)}`;
+          const primaryLabel = username ? renderUsernameLabel(attempt) : escapeHtml(ipAddress);
+          const detailLabel = username ? `User ${renderUsernameLabel(attempt)} - IP ${escapeHtml(ipAddress)}` : `IP ${escapeHtml(ipAddress)}`;
           return `
             <div class="blocked-attempt">
               <div class="blocked-attempt-head">
                 <div>
-                  <strong>${escapeHtml(primaryLabel)}</strong>
+                  <strong>${primaryLabel}</strong>
                   <small>${detailLabel}</small>
                 </div>
                 <small>${escapeHtml(formatAdminDate(attempt.createdAt))}</small>
@@ -590,7 +632,7 @@ function renderAdminsPanel(admins, canManageAdmins) {
         ${admins.map((admin) => `
           <div class="admin-list-item account-admin-item">
             <div>
-              <strong>${escapeHtml(admin.username || "")}${admin.isOwnerAdmin ? " (owner)" : ""}</strong>
+              <strong>${renderUsernameLabel(admin, { suffix: admin.isOwnerAdmin ? " (owner)" : "" })}</strong>
               <small>Admin since ${escapeHtml(formatAdminDate(admin.adminSince || admin.createdAt))}</small>
             </div>
             ${canManageAdmins && !admin.isOwnerAdmin ? `<button class="secondary-button" data-admin-revoke="${escapeHtml(admin.id || "")}"${Aether.state.adminLoading ? " disabled" : ""}>Remove admin</button>` : ""}
@@ -614,12 +656,13 @@ function renderAdminAccountsPanel(accounts, canManageAdmins) {
             <div class="account-admin-profile">
               ${renderAccountAvatar(account)}
               <div>
-                <strong>${escapeHtml(account.username || "")}</strong>
+                <strong>${renderUsernameLabel(account)}</strong>
                 <small>Created ${escapeHtml(formatAdminDate(account.createdAt))} - Last login ${escapeHtml(formatAdminDate(account.lastLoginAt))}${account.isAdmin ? " - Admin" : ""}${account.isBanned ? " - Banned" : ""}</small>
               </div>
             </div>
             <div class="admin-row-actions">
               ${canManageAdmins && !account.isAdmin ? `<button class="secondary-button" data-admin-grant="${escapeHtml(account.id || "")}"${Aether.state.adminLoading ? " disabled" : ""}>Give admin</button>` : ""}
+              <button class="secondary-button" data-admin-verify="${escapeHtml(account.id || "")}" data-verified-next="${account.isVerified ? "false" : "true"}"${Aether.state.adminLoading ? " disabled" : ""}>${account.isVerified ? "Unverify" : "Verify"}</button>
               <button class="danger-button" data-admin-delete-account="${escapeHtml(account.id || "")}"${Aether.state.adminLoading || account.isOwnerAdmin ? " disabled" : ""}>Delete</button>
             </div>
           </div>
@@ -641,7 +684,7 @@ function renderProfilePictureReviewPanel(requests) {
           <div class="admin-list-item pfp-review-item">
             <img class="pfp-review-image" src="${escapeHtml(request.imageDataUrl || "")}" alt="${escapeHtml(request.username || "Pending profile picture")}">
             <div>
-              <strong>${escapeHtml(request.username || "")}</strong>
+              <strong>${renderUsernameLabel(request)}</strong>
               <small>Submitted ${escapeHtml(formatAdminDate(request.submittedAt))}</small>
             </div>
             <div class="pfp-review-actions">
@@ -823,7 +866,7 @@ function renderBanOverlay() {
           ${username ? `
             <div class="ban-detail">
               <span>User</span>
-              <strong>${escapeHtml(username)}</strong>
+              <strong>${renderUsernameLabel(ban)}</strong>
             </div>
           ` : ""}
           ${bannedAt ? `
@@ -885,7 +928,7 @@ function renderAccountModal() {
           ${renderAccountAvatar(account, true)}
           <div>
             <span class="auth-badge">Signed in</span>
-            <h2 id="account-title">${escapeHtml(account.username)}</h2>
+            <h2 id="account-title">${renderUsernameLabel(account)}</h2>
             <p>Created ${escapeHtml(formatAdminDate(account.createdAt))}</p>
           </div>
         </div>
@@ -1001,6 +1044,7 @@ function bindEvents(root) {
   bindChatListEvents(root);
 
   root.querySelector("[data-action='send-message']")?.addEventListener("submit", sendMessage);
+  root.querySelector("[data-action='stop-response']")?.addEventListener("click", stopAssistantResponse);
   root.querySelector("[data-action='voice-input']")?.addEventListener("click", toggleVoiceInput);
   const composerInput = root.querySelector(".composer textarea[name='message']");
   composerInput?.addEventListener("input", (event) => {
@@ -1010,6 +1054,7 @@ function bindEvents(root) {
     }
     syncComposerHeight(event.currentTarget);
     updateProfanityHighlightDom(event.currentTarget);
+    updateSendButtonDom(event.currentTarget);
   });
   composerInput?.addEventListener("scroll", () => syncComposerHighlightScroll(composerInput));
   composerInput?.addEventListener("keydown", (event) => {
@@ -1021,6 +1066,7 @@ function bindEvents(root) {
   if (composerInput) {
     syncComposerHeight(composerInput);
     updateProfanityHighlightDom(composerInput);
+    updateSendButtonDom(composerInput);
   }
   root.querySelector("[data-action='close-profanity']")?.addEventListener("click", () => {
     Aether.state.profanityPopup = false;
@@ -1366,6 +1412,16 @@ function bindAdminEvents(root) {
       if (granted) showToast("Admin access granted.");
     });
   });
+  root.querySelectorAll("[data-admin-verify]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const verified = button.dataset.verifiedNext !== "false";
+      const updated = await adminRequest("/api/admin/verify-account", {
+        method: "POST",
+        body: JSON.stringify({ accountId: button.dataset.adminVerify || "", verified }),
+      });
+      if (updated) showToast(verified ? "Account verified." : "Account unverified.");
+    });
+  });
   root.querySelectorAll("[data-admin-revoke]").forEach((button) => {
     button.addEventListener("click", async () => {
       const revoked = await adminRequest("/api/admin/revoke-admin", {
@@ -1421,6 +1477,7 @@ function deleteChat(chatId) {
   }
 
   Aether.state.thinking = false;
+  stopAssistantResponse({ silent: true });
   storage.save();
   render();
 }
@@ -1483,8 +1540,30 @@ function renderHighlightedComposerText(text) {
   return escapeHtml(value).replace(combined, (match) => `<mark>${match}</mark>`);
 }
 
+function composerHasText(value) {
+  return String(value || "").trim().length > 0;
+}
+
+function updateSendButtonDom(input = null) {
+  if (Aether.state.assistantTyping) return;
+  const button = document.querySelector(".send-button");
+  if (!button) return;
+  const composer = button.closest(".composer");
+  const chat = activeChat();
+  const locked = Aether.state.aetherAvailable === false || Boolean(chat?.safetyLocked) || isUserBanned();
+  const hasText = composerHasText(input?.value ?? Aether.state.composerDraft);
+  const ready = hasText && !locked && !Aether.state.thinking;
+  composer?.classList.toggle("has-composer-text", ready);
+  button.classList.toggle("has-text", ready);
+  button.disabled = locked || Aether.state.thinking;
+}
+
 async function sendMessage(event) {
   event.preventDefault();
+  if (Aether.state.assistantTyping) {
+    stopAssistantResponse();
+    return;
+  }
   if (Aether.state.thinking) return;
   if (!isAetherAvailable()) return;
   stopVoiceInput({ keepDraft: true });
@@ -1517,7 +1596,7 @@ async function sendMessage(event) {
 
 async function sendTextMessage(text, options = {}) {
   if (isUserBanned()) return;
-  if (Aether.state.thinking) return;
+  if (Aether.state.thinking || Aether.state.assistantTyping) return;
   if (!isAetherAvailable()) return;
   const chat = activeChat();
   if (!chat || chat.safetyLocked) return;
@@ -1555,12 +1634,14 @@ async function sendTextMessage(text, options = {}) {
     chat.messages.push(assistantMessage);
     touchChat(chat);
     Aether.state.thinking = false;
+    Aether.state.assistantTyping = true;
     storage.save();
     render();
     await typeAssistantMessage(chat, assistantMessage, answer);
     return;
   }
   Aether.state.thinking = false;
+  Aether.state.assistantTyping = false;
   storage.save();
   render();
 }
@@ -1852,6 +1933,7 @@ function lockChatForSafety(chat, reason = "safety") {
   chat.safetyLockedAt = now;
   touchChat(chat);
   Aether.state.thinking = false;
+  stopAssistantResponse({ silent: true });
   stopVoiceInput({ keepDraft: true, silent: true });
 }
 
@@ -1911,6 +1993,7 @@ function applyBanStatus(data) {
   document.body.classList.toggle("ban-locked", Boolean(nextStatus?.banned));
   if (nextStatus?.banned) {
     Aether.state.thinking = false;
+    stopAssistantResponse({ silent: true });
     Aether.state.authModal = false;
     Aether.state.accountModal = false;
     Aether.state.profanityPopup = false;
@@ -1931,6 +2014,7 @@ function normalizeBanStatus(data) {
     accountId: String(rawBan.accountId || ""),
     ipAddress: String(rawBan.ipAddress || ""),
     username: String(rawBan.username || ""),
+    isVerified: Boolean(rawBan.isVerified),
     reason: String(rawBan.reason || ""),
     sourceMessage: String(rawBan.sourceMessage || ""),
     createdAt: String(rawBan.createdAt || ""),
@@ -1944,6 +2028,7 @@ function banStatusKey(status) {
     status.accountId || "",
     status.ipAddress || "",
     status.username || "",
+    status.isVerified ? "verified" : "",
     status.reason || "",
     status.sourceMessage || "",
     status.createdAt || "",
@@ -2017,6 +2102,7 @@ function accountRenderKey(account) {
     account.profilePicturePending ? "pending" : "",
     account.isAdmin ? "admin" : "",
     account.isOwnerAdmin ? "owner" : "",
+    account.isVerified ? "verified" : "",
   ].join("|");
 }
 
@@ -2659,20 +2745,43 @@ async function typeAssistantMessage(chat, message, fullText) {
   const row = document.querySelector(`[data-message-id="${CSS.escape(message.id)}"]`);
   const bubble = row?.querySelector(".bubble");
   const cleanText = normalizeAssistantText(fullText);
+  const revealControl = { messageId: message.id, stopped: false };
+  activeAssistantReveal = revealControl;
+  Aether.state.assistantTyping = true;
 
+  let finalText = cleanText;
   if (bubble) {
     bubble.classList.remove("formatted");
-    await revealAssistantText(bubble, cleanText);
+    const revealResult = await revealAssistantText(bubble, cleanText, message.id);
+    finalText = revealResult.stopped ? revealResult.text.trimEnd() : cleanText;
     bubble.classList.add("formatted");
-    bubble.innerHTML = renderAssistantMarkdown(cleanText);
+    bubble.innerHTML = renderAssistantMarkdown(finalText);
     scrollChatToBottom();
   }
 
-  message.content = cleanText;
+  if (activeAssistantReveal === revealControl) {
+    activeAssistantReveal = null;
+  }
+  Aether.state.assistantTyping = false;
+  message.content = finalText;
   message.typing = false;
   row?.classList.remove("typing");
   storage.save();
   render();
+}
+
+function stopAssistantResponse(options = {}) {
+  if (activeAssistantReveal) {
+    activeAssistantReveal.stopped = true;
+  }
+  if (options.silent) {
+    Aether.state.assistantTyping = false;
+    return;
+  }
+  if (!activeAssistantReveal && Aether.state.assistantTyping) {
+    Aether.state.assistantTyping = false;
+    render();
+  }
 }
 
 function formatThoughtTime(milliseconds) {
@@ -2681,16 +2790,22 @@ function formatThoughtTime(milliseconds) {
   return `${Math.round(seconds)} seconds`;
 }
 
-async function revealAssistantText(container, text) {
+async function revealAssistantText(container, text, messageId = "") {
   const parts = text.match(/\s+|\S+/g) || [text];
   const totalWords = parts.filter((part) => !/^\s+$/.test(part)).length;
   const delayStep = wordRevealDelay(totalWords);
   let revealedWords = 0;
+  let revealedText = "";
 
   container.textContent = "";
   for (const part of parts) {
+    if (isAssistantRevealStopped(messageId)) {
+      return { stopped: true, text: revealedText };
+    }
+
     if (/^\s+$/.test(part)) {
       container.appendChild(document.createTextNode(part));
+      revealedText += part;
       continue;
     }
 
@@ -2698,13 +2813,22 @@ async function revealAssistantText(container, text) {
     word.className = "fade-word";
     word.textContent = part;
     container.appendChild(word);
+    revealedText += part;
     revealedWords += 1;
 
     if (revealedWords % 8 === 0) {
       scrollChatToBottom();
     }
     await wait(delayStep);
+    if (isAssistantRevealStopped(messageId)) {
+      return { stopped: true, text: revealedText };
+    }
   }
+  return { stopped: false, text: revealedText };
+}
+
+function isAssistantRevealStopped(messageId) {
+  return Boolean(activeAssistantReveal?.stopped && activeAssistantReveal.messageId === messageId);
 }
 
 function wordRevealDelay(wordCount) {

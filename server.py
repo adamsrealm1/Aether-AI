@@ -416,6 +416,13 @@ def ensure_banned_ip_columns() -> None:
         db_execute_raw("ALTER TABLE banned_ips ADD COLUMN source_message TEXT")
 
 
+def ensure_account_columns() -> None:
+    columns = db_table_columns("accounts")
+    if "verified" not in columns:
+        definition = "TINYINT(1) NOT NULL DEFAULT 0" if database_provider() == "mysql" else "INTEGER NOT NULL DEFAULT 0"
+        db_execute_raw(f"ALTER TABLE accounts ADD COLUMN verified {definition}")
+
+
 def migrate_username_ip_bans_to_account_bans() -> None:
     placeholder = db_placeholder()
     rows = db_execute_raw(
@@ -523,7 +530,8 @@ def ensure_admin_db() -> None:
               password_hash TEXT NOT NULL,
               created_at VARCHAR(40) NOT NULL,
               updated_at VARCHAR(40) NOT NULL,
-              last_login_at VARCHAR(40)
+              last_login_at VARCHAR(40),
+              verified TINYINT(1) NOT NULL DEFAULT 0
             ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
             """,
             """
@@ -625,7 +633,8 @@ def ensure_admin_db() -> None:
               password_hash TEXT NOT NULL,
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL,
-              last_login_at TEXT
+              last_login_at TEXT,
+              verified INTEGER NOT NULL DEFAULT 0
             )
             """,
             """
@@ -685,6 +694,7 @@ def ensure_admin_db() -> None:
                 raise
 
     ensure_banned_ip_columns()
+    ensure_account_columns()
     migrate_username_ip_bans_to_account_bans()
     DB_INITIALIZED = True
     if get_admin_setting("aether_available") is None:
@@ -855,12 +865,14 @@ def public_ban_details(row: dict | None) -> dict:
     if not row:
         return {"banned": False}
     ban_type = row.get("ban_type") or ("account" if row.get("account_id") is not None else "ip")
+    account = find_account_by_id(row.get("account_id")) if row.get("account_id") is not None else verified_account_for_username(row.get("username"))
     return {
         "banned": True,
         "banType": ban_type,
         "accountId": row.get("account_id"),
         "ipAddress": row.get("ip_address") or "",
         "username": row.get("username") or "",
+        "isVerified": account_is_verified(account),
         "reason": row.get("reason") or "",
         "sourceMessage": row.get("source_message") or "",
         "createdAt": row.get("created_at"),
@@ -869,32 +881,36 @@ def public_ban_details(row: dict | None) -> dict:
 
 def banned_ips() -> list[dict]:
     rows = db_query("SELECT ip_address, username, reason, source_message, created_at FROM banned_ips ORDER BY created_at DESC")
-    return [
-        {
+    bans = []
+    for row in rows:
+        account = verified_account_for_username(row.get("username"))
+        bans.append({
             "banType": "ip",
             "ipAddress": row.get("ip_address"),
             "username": row.get("username") or "",
+            "isVerified": account_is_verified(account),
             "reason": row.get("reason") or "",
             "sourceMessage": row.get("source_message") or "",
             "createdAt": row.get("created_at"),
-        }
-        for row in rows
-    ]
+        })
+    return bans
 
 
 def banned_accounts() -> list[dict]:
     rows = db_query("SELECT account_id, username, reason, source_message, created_at FROM banned_accounts ORDER BY created_at DESC")
-    return [
-        {
+    bans = []
+    for row in rows:
+        account = find_account_by_id(row.get("account_id"))
+        bans.append({
             "banType": "account",
             "accountId": row.get("account_id"),
             "username": row.get("username") or "",
+            "isVerified": account_is_verified(account),
             "reason": row.get("reason") or "",
             "sourceMessage": row.get("source_message") or "",
             "createdAt": row.get("created_at"),
-        }
-        for row in rows
-    ]
+        })
+    return bans
 
 
 def banned_ip_record(ip_address: str) -> dict | None:
@@ -938,6 +954,11 @@ def banned_api_response(row: dict):
 
 def is_account_banned(account_id: object) -> bool:
     return bool(banned_account_record(account_id))
+
+
+def verified_account_for_username(username: object) -> dict | None:
+    normalized = normalize_username(username)
+    return find_account_by_username(normalized) if normalized else None
 
 
 def ban_ip(ip_address: str, reason: str = "", username: str = "", source_message: str = "") -> None:
@@ -1063,6 +1084,7 @@ def blocked_attempts(include_all: bool = False) -> list[dict]:
         else:
             context = raw_context if isinstance(raw_context, list) else []
             account = {}
+        account_row = find_account_by_id(account.get("id")) if account.get("id") else verified_account_for_username(account.get("username"))
         attempts.append(
             {
                 "id": row.get("id"),
@@ -1072,6 +1094,7 @@ def blocked_attempts(include_all: bool = False) -> list[dict]:
                 "context": context[-5:],
                 "accountId": account.get("id"),
                 "username": account.get("username") or "",
+                "isVerified": account_is_verified(account_row),
             }
         )
     return attempts
@@ -1137,6 +1160,15 @@ def verify_password(password: object, stored_hash: object) -> bool:
         return False
 
 
+def account_is_verified(row: dict | None) -> bool:
+    if not row:
+        return False
+    try:
+        return int(row.get("verified") or 0) == 1
+    except Exception:
+        return str(row.get("verified") or "").strip().lower() in {"1", "true", "yes"}
+
+
 def account_public(row: dict | None) -> dict | None:
     if not row:
         return None
@@ -1151,6 +1183,7 @@ def account_public(row: dict | None) -> dict | None:
         "profilePicturePending": bool(profile_picture.get("pendingDataUrl")),
         "isAdmin": is_owner or has_admin_access(row.get("id")),
         "isOwnerAdmin": is_owner,
+        "isVerified": account_is_verified(row),
     }
 
 
@@ -1213,7 +1246,7 @@ def admin_summaries() -> list[dict]:
     owner = find_account_by_username(OWNER_ADMIN_USERNAME)
     rows = db_query(
         (
-            "SELECT accounts.id, accounts.username, accounts.username_lc, accounts.created_at, accounts.updated_at, accounts.last_login_at, "
+            "SELECT accounts.id, accounts.username, accounts.username_lc, accounts.created_at, accounts.updated_at, accounts.last_login_at, accounts.verified, "
             "account_admins.created_at AS admin_created_at "
             "FROM account_admins JOIN accounts ON accounts.id = account_admins.account_id ORDER BY account_admins.created_at DESC"
         )
@@ -1231,6 +1264,7 @@ def admin_summaries() -> list[dict]:
                 "adminSince": owner.get("created_at"),
                 "isOwnerAdmin": True,
                 "isAdmin": True,
+                "isVerified": account_is_verified(owner),
             }
         )
         seen.add(str(owner.get("id")))
@@ -1247,6 +1281,7 @@ def admin_summaries() -> list[dict]:
                 "adminSince": row.get("admin_created_at"),
                 "isOwnerAdmin": is_owner_account(row),
                 "isAdmin": True,
+                "isVerified": account_is_verified(row),
             }
         )
     return admins
@@ -1315,7 +1350,7 @@ def delete_profile_picture(account_id: object) -> None:
 def pending_profile_pictures() -> list[dict]:
     rows = db_query(
         (
-            "SELECT accounts.id, accounts.username, account_profile_pictures.pending_data_url, account_profile_pictures.pending_at "
+            "SELECT accounts.id, accounts.username, accounts.verified, account_profile_pictures.pending_data_url, account_profile_pictures.pending_at "
             "FROM account_profile_pictures JOIN accounts ON accounts.id = account_profile_pictures.account_id "
             "WHERE account_profile_pictures.pending_data_url IS NOT NULL AND account_profile_pictures.pending_data_url <> '' "
             "ORDER BY account_profile_pictures.pending_at ASC"
@@ -1325,6 +1360,7 @@ def pending_profile_pictures() -> list[dict]:
         {
             "accountId": row.get("id"),
             "username": row.get("username") or "",
+            "isVerified": account_is_verified(row),
             "imageDataUrl": row.get("pending_data_url") or "",
             "submittedAt": row.get("pending_at"),
         }
@@ -1470,13 +1506,13 @@ def save_account_chat_state(account_id: object, chats: object, active_chat_id: o
 
 def find_account_by_username(username: str) -> dict | None:
     placeholder = db_placeholder()
-    rows = db_query(f"SELECT id, username, username_lc, password_hash, created_at, updated_at, last_login_at FROM accounts WHERE username_lc = {placeholder}", (username.lower(),))
+    rows = db_query(f"SELECT id, username, username_lc, password_hash, created_at, updated_at, last_login_at, verified FROM accounts WHERE username_lc = {placeholder}", (username.lower(),))
     return rows[0] if rows else None
 
 
 def find_account_by_id(account_id: object) -> dict | None:
     placeholder = db_placeholder()
-    rows = db_query(f"SELECT id, username, username_lc, password_hash, created_at, updated_at, last_login_at FROM accounts WHERE id = {placeholder}", (account_id,))
+    rows = db_query(f"SELECT id, username, username_lc, password_hash, created_at, updated_at, last_login_at, verified FROM accounts WHERE id = {placeholder}", (account_id,))
     return rows[0] if rows else None
 
 
@@ -1528,6 +1564,21 @@ def update_account_password(account_id: object, current_password: object, new_pa
     db_execute(f"DELETE FROM account_sessions WHERE account_id = {placeholder}", (account_id,))
 
 
+def set_account_verified(account_id: object, verified: bool = True) -> dict:
+    account = find_account_by_id(account_id)
+    if not account:
+        raise ValueError("Account was not found.")
+    placeholder = db_placeholder()
+    db_execute(
+        f"UPDATE accounts SET verified = {placeholder}, updated_at = {placeholder} WHERE id = {placeholder}",
+        (1 if verified else 0, utc_iso(), account_id),
+    )
+    updated = find_account_by_id(account_id)
+    if not updated:
+        raise ValueError("Account was not found.")
+    return updated
+
+
 def delete_account(account_id: object) -> None:
     placeholder = db_placeholder()
     db_execute(f"DELETE FROM account_sessions WHERE account_id = {placeholder}", (account_id,))
@@ -1539,7 +1590,7 @@ def delete_account(account_id: object) -> None:
 
 
 def account_summaries() -> list[dict]:
-    rows = db_query("SELECT id, username, created_at, updated_at, last_login_at FROM accounts ORDER BY created_at DESC")
+    rows = db_query("SELECT id, username, username_lc, created_at, updated_at, last_login_at, verified FROM accounts ORDER BY created_at DESC")
     return [
         {
             "id": row.get("id"),
@@ -1551,6 +1602,7 @@ def account_summaries() -> list[dict]:
             "isAdmin": is_admin_account(row),
             "isOwnerAdmin": is_owner_account(row),
             "isBanned": is_account_banned(row.get("id")),
+            "isVerified": account_is_verified(row),
         }
         for row in rows
     ]
@@ -1607,7 +1659,7 @@ def current_account() -> dict | None:
     rows = db_query(
         (
             "SELECT accounts.id, accounts.username, accounts.username_lc, accounts.password_hash, "
-            "accounts.created_at, accounts.updated_at, accounts.last_login_at, account_sessions.expires_at "
+            "accounts.created_at, accounts.updated_at, accounts.last_login_at, accounts.verified, account_sessions.expires_at "
             f"FROM account_sessions JOIN accounts ON accounts.id = account_sessions.account_id WHERE account_sessions.token_hash = {placeholder}"
         ),
         (session_token_hash(token),),
@@ -2579,6 +2631,24 @@ def api_admin_blocked_attempt_ignore():
         return jsonify({"error": "Blocked attempt was not found."}), 404
     delete_blocked_attempt(attempt_id)
     return jsonify(admin_status())
+
+
+@app.post("/api/admin/verify-account")
+def api_admin_verify_account():
+    denied = require_admin()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    try:
+        verified = bool(payload.get("verified", True))
+        account = set_account_verified(payload.get("accountId"), verified)
+        status = admin_status()
+        status["message"] = f"{'Verified' if verified else 'Unverified'} {account.get('username') or 'account'}."
+        return jsonify(status)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
 
 @app.post("/api/admin/delete-account")
