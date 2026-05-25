@@ -21,12 +21,12 @@ from groq import APIConnectionError, APIStatusError, APITimeoutError, Groq
 
 ROOT = Path(__file__).resolve().parent
 PROFANITY_BLOCK_MESSAGE = "You cant send Aether a message with profanity in it. You can try again without profanity in your message."
-DEFAULT_RATE_LIMIT = 100
+DEFAULT_RATE_LIMIT = 200
 DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 86400
 DEFAULT_RATE_LIMIT_TIMEZONE = "America/New_York"
 ANONYMOUS_DAILY_RATE_LIMIT = 10
 ANONYMOUS_DAILY_RATE_LIMIT_WINDOW_SECONDS = 24 * 60 * 60
-FAST_MODE_RATE_LIMIT_COST = 2
+FAST_MODE_RATE_LIMIT_COST = 3
 MAX_PROFILE_PICTURE_DATA_URL_LENGTH = 750000
 MAX_REQUEST_BODY_BYTES = 2 * 1024 * 1024
 MAX_CHAT_MESSAGE_CONTENT_LENGTH = 24000
@@ -2273,18 +2273,19 @@ def speed_mode_rate_limit_cost(speed_mode: str) -> int:
 def aether_system_prompt(speed_mode: str) -> str:
     if normalized_speed_mode(speed_mode) == "fast":
         return (
-            "You are Aether, an AI model. "
-            "Never mention providers, sources, tokens, API calls, "
+            "You are Aether. "
+            "Never mention providers, sources, tokens, "
             "or implementation details. "
-            "Keep responses as short as possible."
+            "Keep responses short."
         )
     return (
-        "You are Aether, a friendly AI model on a website. "
-        "Be friendly. Respond as helpful as possible and be respectful. "
+        "You are Aether, a friendly AI model on a website called Aether AI. "
+        "Be friendly and nice. Respond as helpful as possible and be respectful. "
         "Never mention providers, sources, tokens, API calls, "
         "or implementation details. "
-        "Use markdown formatting like bolding and italics when the answer feels improved with it."
+        "Use markdown formatting like bolding and italics but do not make it excessive."
         "Keep responses as helpful and reasonable as possible and give as much guidance as possible."
+        "Do not try to end a chat with enjoy, goodbye, take care, or other goodbye messages unless the user has verbally said a goodbye message."
     )
 
 

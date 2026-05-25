@@ -78,6 +78,7 @@ const SAFETY_LOCK_PLACEHOLDER = "Aether can not continue this conversation. Crea
 const BAN_POPUP_BODY = "You can not use Aether AI because you were banned by an admin.";
 const VOICE_AUTO_SEND_DELAY_MS = 1800;
 const SAFETY_LOCK_DELAY_MS = 3000;
+const DEFAULT_MODE_EXTRA_THINK_DELAY_MS = 2000;
 const ACCOUNT_SESSION_TOKEN_KEY = "aether.accountSessionToken";
 const REPORTER_CLIENT_ID_KEY = "aether.reporterClientId";
 const MOBILE_SCROLL_FADE_QUERY = "(max-width: 860px), (pointer: coarse)";
@@ -1787,8 +1788,12 @@ async function sendTextMessage(text, options = {}) {
   storage.save();
   render();
 
+  const responseSpeedMode = normalizedSpeedMode(Aether.config.speedMode);
   const thinkingStartedAt = performance.now();
-  const answer = await getAssistantReply(text);
+  const answer = await getAssistantReply(text, { speedMode: responseSpeedMode });
+  if (answer && responseSpeedMode === "default") {
+    await wait(DEFAULT_MODE_EXTRA_THINK_DELAY_MS);
+  }
   const thoughtTimeMs = performance.now() - thinkingStartedAt;
   if (answer) {
     const assistantMessage = createMessage("assistant", "", { typing: true, thoughtTimeMs });
@@ -1807,14 +1812,15 @@ async function sendTextMessage(text, options = {}) {
   render();
 }
 
-async function getAssistantReply(text) {
+async function getAssistantReply(text, options = {}) {
+  const speedMode = normalizedSpeedMode(options.speedMode);
   if (looksLikeLocationTimeRequest(text)) {
-    return getLocationTimeReply(text);
+    return getLocationTimeReply(text, speedMode);
   }
 
   if (Aether.config.apiEndpoint) {
     const location = await locationForWeatherRequest(text);
-    return fetchAssistantReply(text, location);
+    return fetchAssistantReply(text, location, speedMode);
   }
 
   await wait(650);
@@ -2014,7 +2020,7 @@ function conversationTitleFromText(text, maxLength = 48) {
   return `${source.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
 }
 
-async function getLocationTimeReply(text) {
+async function getLocationTimeReply(text, speedMode = normalizedSpeedMode(Aether.config.speedMode)) {
   const permissionState = await geolocationPermissionState();
   if (permissionState !== "granted") {
     addAssistantMessage(LOCATION_TIME_PERMISSION_MESSAGE);
@@ -2026,19 +2032,20 @@ async function getLocationTimeReply(text) {
     return browserTimeReply();
   }
 
-  return fetchAssistantReply(text, location);
+  return fetchAssistantReply(text, location, speedMode);
 }
 
-async function fetchAssistantReply(text, location = null) {
+async function fetchAssistantReply(text, location = null, speedMode = normalizedSpeedMode(Aether.config.speedMode)) {
   if (Aether.config.apiEndpoint) {
     let retryDelayMs = 3000;
+    const requestSpeedMode = normalizedSpeedMode(speedMode);
     while (true) {
       try {
         const headers = await authHeaders({ "Content-Type": "application/json;charset=UTF-8" });
         const response = await fetch(Aether.config.apiEndpoint, {
           method: "POST",
           headers,
-          body: JSON.stringify({ message: text, chat: activeChat().messages, location, speedMode: normalizedSpeedMode(Aether.config.speedMode) }),
+          body: JSON.stringify({ message: text, chat: activeChat().messages, location, speedMode: requestSpeedMode }),
         });
         if (!response.ok) {
           const data = await response.json().catch(() => ({}));
