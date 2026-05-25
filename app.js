@@ -88,15 +88,15 @@ const DEFAULT_ASSISTANT_GREETING = "Hi there! I'm Aether. What's on your mind?";
 const DEFAULT_CHAT_TITLE = "New conversation";
 const SPEED_MODES = {
   default: {
-    label: "Default",
+    label: "Standard",
     title: "Standard",
-    detail: "Higher reasoning, less usage",
+    detail: "Higher reasoning but slower (Less usage)",
     icon: "assets/icon_library/slow.png",
   },
   fast: {
     label: "Fast",
     title: "Fast",
-    detail: "Low reasoning, increased usage",
+    detail: "Low reasoning but faster (More usage)",
     icon: "assets/icon_library/fast.png",
   },
 };
