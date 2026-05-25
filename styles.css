@@ -253,16 +253,16 @@ img.account-avatar {
   flex: 0 0 auto;
 }
 .verified-icon {
-  width: 15px;
-  height: 15px;
+  width: 18px;
+  height: 18px;
   flex: 0 0 auto;
   object-fit: contain;
   display: inline-block;
   vertical-align: middle;
 }
 .account-card-head h2 .verified-icon {
-  width: 18px;
-  height: 18px;
+  width: 21px;
+  height: 21px;
 }
 .account-avatar.large {
   width: 54px;
@@ -567,6 +567,12 @@ img.account-avatar {
   place-items: center;
   color: #d4d4d8;
   font-size: 18px;
+}
+.speed-icon img {
+  width: 18px;
+  height: 18px;
+  display: block;
+  object-fit: contain;
 }
 .speed-option strong,
 .speed-option small {

@@ -439,7 +439,7 @@ function renderSpeedMenu(disabled = false) {
             const active = key === normalizedSpeedMode(Aether.config.speedMode);
             return `
               <button class="speed-option ${active ? "active" : ""}" type="button" role="menuitemradio" aria-checked="${active ? "true" : "false"}" data-speed-mode="${escapeHtml(key)}">
-                <span class="speed-icon" aria-hidden="true">${key === "fast" ? "⚡" : ""}</span>
+                <span class="speed-icon" aria-hidden="true">${key === "fast" ? `<img src="assets/fasticon.png" alt="">` : ""}</span>
                 <span>
                   <strong>${escapeHtml(item.title)}</strong>
                   <small>${escapeHtml(item.detail)}</small>
