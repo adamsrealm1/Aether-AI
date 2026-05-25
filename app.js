@@ -844,6 +844,7 @@ function renderMessage(message) {
   const roleClass = message.role === "user" ? "user" : "assistant";
   const typingClass = message.typing ? " typing" : "";
   const voiceClass = message.voice ? " voice-message-row" : "";
+  const reportedClass = message.reportedAt ? " reported-message" : "";
   const messageId = message.id || "";
   const content = message.role === "assistant" ? normalizeAssistantText(message.content) : message.content;
   const bubble = message.role === "assistant"
@@ -854,8 +855,8 @@ function renderMessage(message) {
       ? `<button class="copy-message" data-copy-message="${escapeHtml(messageId)}" aria-label="Copy this message" title="Copy this message">Copy</button>`
       : "";
   const reportButton =
-    message.role === "assistant" && !message.typing
-      ? `<button class="report-message${message.reportedAt ? " reported" : ""}" data-report-message="${escapeHtml(messageId)}" aria-label="${message.reportedAt ? "Message reported" : "Report this message"}" title="${message.reportedAt ? "Message reported" : "Report this message"}"${message.reportedAt ? " disabled" : ""}>
+    message.role === "assistant" && !message.typing && !message.reportedAt
+      ? `<button class="report-message" data-report-message="${escapeHtml(messageId)}" aria-label="Report this message" title="Report this message">
           <img src="assets/flag.png" alt="" aria-hidden="true">
         </button>`
       : "";
@@ -865,7 +866,7 @@ function renderMessage(message) {
       : "";
   const messageControls = copyButton || reportButton || thoughtTime ? `<div class="message-controls">${copyButton}${reportButton}${thoughtTime}</div>` : "";
   return `
-    <div class="message-row ${roleClass}${typingClass}${voiceClass}" data-message-id="${escapeHtml(messageId)}">
+    <div class="message-row ${roleClass}${typingClass}${voiceClass}${reportedClass}" data-message-id="${escapeHtml(messageId)}">
       <div class="message-stack">
         ${message.voice ? renderVoiceBubble(message) : bubble}
         ${messageControls}
