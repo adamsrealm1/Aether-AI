@@ -468,6 +468,14 @@ img.account-avatar {
   font-size: 14px;
   font-weight: 760;
 }
+.speed-trigger .speed-current {
+  color: rgba(212, 212, 216, 0.62);
+  font-weight: 650;
+}
+.speed-trigger:hover .speed-current,
+.speed-trigger:focus-visible .speed-current {
+  color: rgba(255, 255, 255, 0.68);
+}
 .speed-trigger i {
   width: 8px;
   height: 8px;

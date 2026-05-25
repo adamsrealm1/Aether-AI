@@ -381,11 +381,13 @@ function renderChatPage(chat) {
 }
 
 function renderSpeedMenu(disabled = false) {
+  const mode = SPEED_MODES[normalizedSpeedMode(Aether.config.speedMode)] || SPEED_MODES.default;
   const openClass = Aether.state.speedMenuOpen ? " open" : "";
   return `
     <div class="speed-picker${openClass}">
       <button class="speed-trigger" type="button" data-action="toggle-speed-menu" aria-haspopup="menu" aria-expanded="${Aether.state.speedMenuOpen ? "true" : "false"}"${disabled ? " disabled" : ""}>
         <span>Speed</span>
+        <span class="speed-current">${escapeHtml(mode.label)}</span>
         <i aria-hidden="true"></i>
       </button>
       ${Aether.state.speedMenuOpen ? `
