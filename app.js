@@ -78,6 +78,7 @@ const MOBILE_SCROLL_FADE_QUERY = "(max-width: 860px), (pointer: coarse)";
 const MAX_PROFILE_PICTURE_FILE_SIZE = 560000;
 const ACCOUNT_CHATS_SAVE_DELAY_MS = 700;
 const DEFAULT_ASSISTANT_GREETING = "Hi there! I'm Aether. What's on your mind?";
+const DEFAULT_CHAT_TITLE = "New conversation";
 const SPEED_MODES = {
   default: {
     label: "Default",
@@ -132,7 +133,7 @@ const storage = {
     Aether.state.activeChatId = localStorage.getItem("aether.activeChatId");
 
     if (!Aether.state.chats.length) {
-      const chat = createChat("New conversation");
+      const chat = createChat(DEFAULT_CHAT_TITLE);
       Aether.state.chats = [chat];
       Aether.state.activeChatId = chat.id;
       storage.save();
@@ -218,7 +219,7 @@ function normalizeChat(chat) {
   const now = new Date().toISOString();
   const normalized = {
     id: chat?.id || createId(),
-    title: String(chat?.title || "New conversation"),
+    title: String(chat?.title || DEFAULT_CHAT_TITLE),
     createdAt: chat?.createdAt || now,
     updatedAt: chat?.updatedAt || chat?.createdAt || now,
     safetyLocked: Boolean(chat?.safetyLocked),
@@ -1464,7 +1465,7 @@ function deleteChat(chatId) {
 
   Aether.state.chats.splice(index, 1);
   if (!Aether.state.chats.length) {
-    const chat = createChat("New conversation");
+    const chat = createChat(DEFAULT_CHAT_TITLE);
     Aether.state.chats.push(chat);
     Aether.state.activeChatId = chat.id;
   } else if (Aether.state.activeChatId === chatId) {
@@ -1479,7 +1480,7 @@ function deleteChat(chatId) {
 }
 
 function createNewChat(seedText = "") {
-  const chat = createChat(seedText ? seedText.slice(0, 36) : "New conversation");
+  const chat = createChat(seedText ? conversationTitleFromText(seedText, 36) : DEFAULT_CHAT_TITLE);
   Aether.state.chats.unshift(chat);
   Aether.state.activeChatId = chat.id;
   Aether.state.adminView = false;
@@ -1607,7 +1608,7 @@ async function sendTextMessage(text, options = {}) {
     const userMessage = createMessage("user", text, options.voice ? { voice: true } : {});
     chat.messages.push(userMessage);
   }
-  if (!options.voice && ["New conversation", "..."].includes(chat.title)) chat.title = text.slice(0, 48);
+  if (!options.voice && isDefaultChatTitle(chat.title)) chat.title = conversationTitleFromText(text);
   touchChat(chat);
   const safetyReason = Aether.config.apiEndpoint ? "" : safetyLockReason(text);
   if (safetyReason) {
@@ -1718,7 +1719,11 @@ function startVoiceInput() {
     voiceRecognition.start();
     Aether.state.voiceListening = true;
     updateVoiceButtonDom();
-    input.focus();
+    if (useCompactVoiceCapture()) {
+      input.blur();
+    } else {
+      input.focus();
+    }
   } catch {
     Aether.state.voiceListening = false;
     updateVoiceButtonDom();
@@ -1749,6 +1754,7 @@ function joinVoiceText(...parts) {
 }
 
 function applyVoiceTranscript() {
+  if (useCompactVoiceCapture()) return;
   const input = document.querySelector(".composer textarea[name='message']");
   if (!input) return;
   const nextText = [voiceBaseDraft, voiceTranscript].filter(Boolean).join(" ").trim();
@@ -1768,10 +1774,21 @@ function scheduleVoiceAutoSend() {
 function autoSendVoiceTranscript() {
   const form = document.querySelector("[data-action='send-message']");
   const input = form?.elements?.message;
-  const text = input?.value?.trim() || "";
-  if (!form || !text || Aether.state.thinking) return;
+  const compactVoice = useCompactVoiceCapture();
+  const text = compactVoice ? voiceTranscript.trim() : input?.value?.trim() || "";
+  if (!text || Aether.state.thinking) return;
   voiceAutoSending = true;
   stopVoiceInput({ keepDraft: true, silent: true });
+  if (compactVoice) {
+    sendTextMessage(text, { voice: true }).finally(() => {
+      voiceAutoSending = false;
+    });
+    return;
+  }
+  if (!form) {
+    voiceAutoSending = false;
+    return;
+  }
   form.requestSubmit();
 }
 
@@ -1816,6 +1833,21 @@ function updateVoiceButtonDom() {
   button.setAttribute("aria-pressed", listening ? "true" : "false");
   button.setAttribute("aria-label", listening ? "Stop voice input" : "Start voice input");
   button.setAttribute("title", listening ? "Stop voice input" : "Start voice input");
+}
+
+function useCompactVoiceCapture() {
+  return window.matchMedia?.("(max-width: 860px), (pointer: coarse)")?.matches || false;
+}
+
+function isDefaultChatTitle(title) {
+  return [DEFAULT_CHAT_TITLE, "..."].includes(String(title || ""));
+}
+
+function conversationTitleFromText(text, maxLength = 48) {
+  const source = String(text || "").replace(/\s+/g, " ").trim();
+  if (!source) return DEFAULT_CHAT_TITLE;
+  if (source.length <= maxLength) return source;
+  return `${source.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
 }
 
 async function getLocationTimeReply(text) {

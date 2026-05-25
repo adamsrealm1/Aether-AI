@@ -375,7 +375,7 @@ img.account-avatar {
 }
 .chat-item-row {
   display: grid;
-  grid-template-columns: 1fr 28px;
+  grid-template-columns: minmax(0, 1fr) 28px;
   align-items: center;
   width: 100%;
   min-height: 54px;
@@ -387,6 +387,8 @@ img.account-avatar {
   background: rgba(219, 234, 254, 0.12);
 }
 .chat-item {
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
   min-height: 54px;
   display: grid;
@@ -514,15 +516,21 @@ img.account-avatar {
   gap: 16px;
   max-width: 980px;
   width: 100%;
+  min-width: 0;
   margin: 0 auto;
 }
 .topbar-title-row {
+  flex: 1 1 auto;
   display: flex;
   align-items: center;
   gap: 12px;
   min-width: 0;
+  max-width: 100%;
 }
 .topbar h1 {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
   margin: 0;
   font-size: 24px;
   letter-spacing: 0;
@@ -601,7 +609,7 @@ img.account-avatar {
   bottom: calc(100% + 10px);
   right: 0;
   z-index: 15;
-  width: min(280px, calc(100vw - 36px));
+  width: min(330px, calc(100vw - 28px));
   display: grid;
   gap: 6px;
   padding: 10px;
@@ -617,12 +625,12 @@ img.account-avatar {
   font-weight: 760;
 }
 .speed-option {
-  min-height: 58px;
+  min-height: 64px;
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) 22px;
-  align-items: center;
-  gap: 8px;
-  padding: 9px 8px;
+  grid-template-columns: 26px minmax(0, 1fr) 22px;
+  align-items: start;
+  gap: 10px;
+  padding: 10px;
   border-radius: 9px;
   color: #e5e7eb;
   background: transparent;
@@ -637,6 +645,7 @@ img.account-avatar {
 .speed-icon {
   display: grid;
   place-items: center;
+  align-self: center;
   color: #d4d4d8;
   font-size: 18px;
 }
@@ -652,25 +661,27 @@ img.account-avatar {
 .speed-option small {
   display: block;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 .speed-option strong {
   font-size: 14px;
   font-weight: 760;
+  line-height: 1.15;
 }
 .speed-option small {
   margin-top: 3px;
   color: #a1a1aa;
   font-size: 13px;
-  line-height: 1.2;
+  line-height: 1.25;
 }
 .speed-option b {
   color: #d4d4d8;
   font-size: 18px;
   font-weight: 500;
   text-align: center;
+  align-self: center;
 }
 .admin-page {
   grid-template-rows: auto 1fr;
@@ -2276,6 +2287,13 @@ img.account-avatar {
   }
   .topbar-actions {
     gap: 6px;
+  }
+  .speed-menu {
+    position: fixed;
+    left: 14px;
+    right: 14px;
+    bottom: calc(108px + env(safe-area-inset-bottom));
+    width: auto;
   }
   .composer .voice-button {
     width: 42px;
