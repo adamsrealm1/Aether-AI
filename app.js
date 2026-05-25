@@ -80,12 +80,12 @@ const SPEED_MODES = {
   default: {
     label: "Default",
     title: "Standard",
-    detail: "Default speed",
+    detail: "Higher reasoning, less usage",
   },
   fast: {
     label: "Fast",
     title: "Fast",
-    detail: "1.5x speed, increased usage",
+    detail: "Low reasoning, increased usage",
   },
 };
 const PROFANITY_PATTERNS = [
