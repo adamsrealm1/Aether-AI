@@ -447,6 +447,64 @@ img.account-avatar {
   overflow: hidden;
   padding: 24px 36px 28px;
 }
+.chat-page::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  opacity: 0;
+  background:
+    linear-gradient(180deg, rgba(2, 6, 23, 0.68), rgba(2, 6, 23, 0.8)),
+    conic-gradient(from 180deg at 50% 50%, transparent 0deg, rgba(45, 212, 191, 0.12) 92deg, transparent 178deg, rgba(96, 165, 250, 0.14) 272deg, transparent 360deg);
+  -webkit-backdrop-filter: blur(10px) saturate(0.72);
+  backdrop-filter: blur(10px) saturate(0.72);
+  transition: opacity 360ms ease;
+}
+.chat-page.voice-listening::before {
+  opacity: 1;
+  animation: voiceBackdropBreath 3.2s ease-in-out infinite;
+}
+.chat-page .topbar,
+.chat-page .messages,
+.chat-page .composer,
+.chat-page .composer-input-wrap,
+.chat-page .composer-tools-right,
+.chat-page .composer-note {
+  transition:
+    opacity 360ms ease,
+    filter 420ms ease,
+    transform 420ms ease,
+    border-color 260ms ease,
+    background 260ms ease,
+    box-shadow 260ms ease;
+}
+.chat-page.voice-listening .topbar,
+.chat-page.voice-listening .messages,
+.chat-page.voice-listening .composer-input-wrap,
+.chat-page.voice-listening .composer-tools-right,
+.chat-page.voice-listening .composer-note {
+  opacity: 0;
+  filter: blur(14px) saturate(0.55);
+  transform: scale(0.985);
+  pointer-events: none;
+}
+.chat-page.voice-listening .composer {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+.chat-page.voice-listening .composer-area {
+  z-index: 5;
+}
+@keyframes voiceBackdropBreath {
+  0%, 100% {
+    filter: saturate(0.95);
+  }
+  50% {
+    filter: saturate(1.18);
+  }
+}
 .topbar {
   position: relative;
   z-index: 1;
@@ -501,6 +559,21 @@ img.account-avatar {
 .speed-trigger .speed-current {
   color: rgba(212, 212, 216, 0.62);
   font-weight: 650;
+}
+.speed-trigger-icon {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+}
+.speed-trigger-icon img {
+  display: block;
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  filter: invert(93%) sepia(12%) saturate(498%) hue-rotate(183deg) brightness(103%) contrast(96%);
+  opacity: 0.88;
 }
 .speed-trigger:hover .speed-current,
 .speed-trigger:focus-visible .speed-current {
@@ -572,6 +645,8 @@ img.account-avatar {
   height: 18px;
   display: block;
   object-fit: contain;
+  filter: invert(93%) sepia(12%) saturate(498%) hue-rotate(183deg) brightness(103%) contrast(96%);
+  opacity: 0.9;
 }
 .speed-option strong,
 .speed-option small {
@@ -961,50 +1036,80 @@ img.account-avatar {
   border: 1px solid rgba(219, 234, 254, 0.94);
 }
 .message-row.user .voice-bubble {
-  display: grid;
-  grid-template-columns: minmax(150px, 1fr) auto;
+  position: relative;
+  display: inline-flex;
   align-items: center;
-  gap: 11px;
-  width: min(260px, 74vw);
-  min-height: 52px;
+  justify-content: center;
+  width: min(200px, 74vw);
+  min-height: 54px;
   border: 0;
-  border-radius: 11px;
+  border-radius: 14px;
+  padding: 0 20px;
   color: #fff;
-  background: linear-gradient(135deg, #38bdf8, #258ee7);
-  box-shadow: 0 14px 34px rgba(37, 142, 231, 0.28);
+  background: linear-gradient(135deg, #38bdf8 0%, #258ee7 58%, #1d4ed8 100%);
+  box-shadow:
+    0 16px 38px rgba(37, 142, 231, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
   white-space: normal;
+  overflow: hidden;
+  animation: voiceBubbleIn 360ms cubic-bezier(0.2, 0.8, 0.2, 1), voiceBubbleGlow 3.8s ease-in-out infinite;
 }
-.voice-wave {
-  display: grid;
-  grid-template-columns: repeat(22, 1fr);
-  align-items: center;
-  gap: 2px;
-  height: 30px;
-  min-width: 0;
+.message-row.user .voice-bubble::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: linear-gradient(110deg, transparent 0%, rgba(255, 255, 255, 0.3) 45%, transparent 62%);
+  transform: translateX(-125%);
+  animation: voiceBubbleSheen 4s ease-in-out infinite;
 }
-.voice-wave span {
+.voice-label {
+  position: relative;
+  z-index: 1;
   display: block;
-  height: calc(7px + (24px * var(--h)));
-  min-height: 8px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.72);
-  opacity: 0.82;
+  max-width: 100%;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #fff;
+  -webkit-text-fill-color: #fff;
+  font-size: 16px;
+  font-weight: 950;
+  letter-spacing: 0;
+  line-height: 1.1;
+  text-shadow:
+    0 1px 2px rgba(2, 6, 23, 0.48),
+    0 0 18px rgba(255, 255, 255, 0.36);
 }
-.voice-message-row:not(.is-faded) .voice-wave span {
-  animation: voiceWave 1.25s ease-in-out infinite;
-  animation-delay: calc(var(--d) * -54ms);
+@keyframes voiceBubbleIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
-.voice-time {
-  font-size: 12px;
-  font-weight: 850;
-  font-variant-numeric: tabular-nums;
+@keyframes voiceBubbleSheen {
+  0%, 42% {
+    transform: translateX(-125%);
+  }
+  76%, 100% {
+    transform: translateX(125%);
+  }
 }
-@keyframes voiceWave {
+@keyframes voiceBubbleGlow {
   0%, 100% {
-    transform: scaleY(0.72);
+    box-shadow:
+      0 16px 38px rgba(37, 142, 231, 0.34),
+      inset 0 1px 0 rgba(255, 255, 255, 0.28);
   }
   50% {
-    transform: scaleY(1.08);
+    box-shadow:
+      0 18px 46px rgba(37, 142, 231, 0.46),
+      inset 0 1px 0 rgba(255, 255, 255, 0.34);
   }
 }
 .message-row.assistant .bubble {
@@ -1236,12 +1341,23 @@ img.account-avatar {
   transition: background 160ms ease, color 160ms ease, transform 160ms ease;
 }
 .composer .voice-button {
+  display: grid;
+  place-items: center;
   min-width: 42px;
   width: 42px;
   color: #dbeafe;
   background: transparent;
   border: 1px solid transparent;
   overflow: hidden;
+  font-size: 17px;
+  line-height: 1;
+}
+.composer .voice-button img {
+  display: block;
+  width: 19px;
+  height: 19px;
+  object-fit: contain;
+  pointer-events: none;
 }
 .composer .send-button {
   width: 42px;
@@ -1270,6 +1386,65 @@ img.account-avatar {
   background: #a7f3d0;
   box-shadow: 0 0 0 6px rgba(167, 243, 208, 0.12);
   animation: micPulse 1.05s ease-in-out infinite;
+}
+.chat-page.voice-listening .composer .voice-button.listening {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 12;
+  width: 154px;
+  min-width: 154px;
+  height: 154px;
+  min-height: 154px;
+  padding: 0;
+  border: 1px solid rgba(219, 234, 254, 0.78);
+  border-radius: 999px;
+  color: #f8fbff;
+  background:
+    linear-gradient(145deg, rgba(224, 242, 254, 0.98) 0%, rgba(56, 189, 248, 0.96) 42%, rgba(37, 99, 235, 0.98) 100%);
+  box-shadow:
+    0 26px 90px rgba(37, 99, 235, 0.46),
+    0 0 0 1px rgba(255, 255, 255, 0.18) inset,
+    0 18px 40px rgba(0, 0, 0, 0.32);
+  font-size: 58px;
+  overflow: visible;
+  transform: translate(-50%, -50%);
+  isolation: isolate;
+  animation: voiceButtonBreathe 1.65s ease-in-out infinite;
+}
+.chat-page.voice-listening .composer .voice-button.listening img {
+  width: 70px;
+  height: 70px;
+  filter: drop-shadow(0 10px 18px rgba(7, 17, 31, 0.26));
+}
+.chat-page.voice-listening .composer .voice-button.listening::before,
+.chat-page.voice-listening .composer .voice-button.listening::after {
+  content: "";
+  position: absolute;
+  inset: -22px;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.chat-page.voice-listening .composer .voice-button.listening::before {
+  border: 1px solid rgba(125, 211, 252, 0.62);
+  box-shadow:
+    0 0 34px rgba(56, 189, 248, 0.38),
+    inset 0 0 24px rgba(186, 230, 253, 0.16);
+  animation: voiceRingPulse 1.65s ease-out infinite;
+}
+.chat-page.voice-listening .composer .voice-button.listening::after {
+  inset: -42px;
+  background: conic-gradient(from 0deg, transparent 0deg, rgba(125, 211, 252, 0.18) 72deg, transparent 150deg, rgba(167, 243, 208, 0.16) 246deg, transparent 360deg);
+  filter: blur(8px);
+  opacity: 0.9;
+  animation: voiceHaloSpin 5.5s linear infinite;
+}
+.chat-page.voice-listening .composer .voice-button.listening:hover,
+.chat-page.voice-listening .composer .voice-button.listening:focus-visible {
+  background:
+    linear-gradient(145deg, rgba(240, 249, 255, 1) 0%, rgba(56, 189, 248, 1) 42%, rgba(37, 99, 235, 1) 100%);
+  outline: none;
 }
 .composer .voice-button:disabled {
   opacity: 0.48;
@@ -1339,6 +1514,29 @@ img.account-avatar {
   }
   50% {
     box-shadow: 0 0 0 9px rgba(167, 243, 208, 0.22);
+  }
+}
+@keyframes voiceButtonBreathe {
+  0%, 100% {
+    transform: translate(-50%, -50%) scale(1);
+  }
+  50% {
+    transform: translate(-50%, -51%) scale(1.045);
+  }
+}
+@keyframes voiceRingPulse {
+  0% {
+    opacity: 0.82;
+    transform: scale(0.72);
+  }
+  70%, 100% {
+    opacity: 0;
+    transform: scale(1.55);
+  }
+}
+@keyframes voiceHaloSpin {
+  to {
+    transform: rotate(360deg);
   }
 }
 .composer-note {
@@ -1999,11 +2197,9 @@ img.account-avatar {
     align-items: flex-end;
   }
   .message-row.user .voice-bubble {
-    grid-template-columns: minmax(110px, 1fr) auto;
-    gap: 8px;
-    width: min(238px, 82vw);
+    width: min(178px, 82vw);
     min-height: 50px;
-    padding: 9px 12px;
+    padding: 0 16px;
   }
   .bubble {
     border-radius: 18px;
@@ -2046,7 +2242,18 @@ img.account-avatar {
   .composer .voice-button {
     width: 40px;
     min-width: 40px;
-    font-size: 12px;
+    font-size: 16px;
+  }
+  .chat-page.voice-listening .composer .voice-button.listening {
+    width: 132px;
+    min-width: 132px;
+    height: 132px;
+    min-height: 132px;
+    font-size: 48px;
+  }
+  .chat-page.voice-listening .composer .voice-button.listening img {
+    width: 60px;
+    height: 60px;
   }
   .composer .send-button {
     width: 40px;
@@ -2073,6 +2280,17 @@ img.account-avatar {
   .composer .voice-button {
     width: 42px;
     min-width: 42px;
+  }
+  .chat-page.voice-listening .composer .voice-button.listening {
+    width: 126px;
+    min-width: 126px;
+    height: 126px;
+    min-height: 126px;
+    font-size: 44px;
+  }
+  .chat-page.voice-listening .composer .voice-button.listening img {
+    width: 56px;
+    height: 56px;
   }
   .composer button {
     font-size: 12px;

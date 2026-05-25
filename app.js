@@ -83,11 +83,13 @@ const SPEED_MODES = {
     label: "Default",
     title: "Standard",
     detail: "Higher reasoning, less usage",
+    icon: "assets/slow.png",
   },
   fast: {
     label: "Fast",
     title: "Fast",
     detail: "Low reasoning, increased usage",
+    icon: "assets/fasticon.png",
   },
 };
 const PROFANITY_PATTERNS = [
@@ -117,8 +119,6 @@ const SAFETY_LOCK_PATTERNS = [
   { reason: "cyber-abuse", pattern: /\b(?:make|write|build|deploy|use)\s+(?:malware|ransomware|keylogger|token grabber|phishing kit|password stealer|ddos bot)\b/i },
   { reason: "hard-drugs", pattern: /\b(?:make|cook|synthesize|manufacture)\s+(?:meth|fentanyl|heroin|cocaine|mdma)\b/i },
 ];
-const VOICE_WAVE_BARS = [0.34, 0.55, 0.42, 0.72, 0.5, 0.86, 0.48, 0.64, 0.94, 0.56, 0.74, 0.46, 0.82, 0.58, 0.38, 0.7, 0.52, 0.9, 0.44, 0.62, 0.78, 0.4];
-
 const storage = {
   load() {
     const savedConfig = readJson("aether.config", {});
@@ -360,8 +360,9 @@ function renderChatPage(chat) {
   const responseBusy = Aether.state.thinking || Aether.state.assistantTyping;
   const voiceDisabled = composerLocked || responseBusy;
   const composerReady = composerHasText(Aether.state.composerDraft) && !composerLocked && !responseBusy;
+  const listeningClass = Aether.state.voiceListening ? " voice-listening" : "";
   return `
-    <main class="chat-page">
+    <main class="chat-page${listeningClass}">
       <div class="animated-bg" aria-hidden="true"></div>
       <header class="topbar">
         <div class="topbar-title-row">
@@ -388,7 +389,9 @@ function renderChatPage(chat) {
           </div>
           <div class="composer-toolbar">
             <div class="composer-tools-left">
-              <button class="voice-button ${Aether.state.voiceListening ? "listening" : ""}" type="button" data-action="voice-input" aria-label="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}" aria-pressed="${Aether.state.voiceListening ? "true" : "false"}" title="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}"${voiceDisabled ? " disabled" : ""}>🎙️</button>
+              <button class="voice-button ${Aether.state.voiceListening ? "listening" : ""}" type="button" data-action="voice-input" aria-label="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}" aria-pressed="${Aether.state.voiceListening ? "true" : "false"}" title="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}"${voiceDisabled ? " disabled" : ""}>
+                <img src="assets/mic.png" alt="" aria-hidden="true">
+              </button>
             </div>
             <div class="composer-tools-right">
               ${renderSpeedMenu(composerLocked)}
@@ -428,6 +431,7 @@ function renderSpeedMenu(disabled = false) {
   return `
     <div class="speed-picker${openClass}">
       <button class="speed-trigger" type="button" data-action="toggle-speed-menu" aria-haspopup="menu" aria-expanded="${Aether.state.speedMenuOpen ? "true" : "false"}"${disabled ? " disabled" : ""}>
+        <span class="speed-trigger-icon" aria-hidden="true"><img src="${escapeHtml(mode.icon)}" alt=""></span>
         <span>Speed</span>
         <span class="speed-current">${escapeHtml(mode.label)}</span>
         <i aria-hidden="true"></i>
@@ -439,7 +443,7 @@ function renderSpeedMenu(disabled = false) {
             const active = key === normalizedSpeedMode(Aether.config.speedMode);
             return `
               <button class="speed-option ${active ? "active" : ""}" type="button" role="menuitemradio" aria-checked="${active ? "true" : "false"}" data-speed-mode="${escapeHtml(key)}">
-                <span class="speed-icon" aria-hidden="true">${key === "fast" ? `<img src="assets/fasticon.png" alt="">` : ""}</span>
+                <span class="speed-icon" aria-hidden="true"><img src="${escapeHtml(item.icon)}" alt=""></span>
                 <span>
                   <strong>${escapeHtml(item.title)}</strong>
                   <small>${escapeHtml(item.detail)}</small>
@@ -790,19 +794,11 @@ function renderMessage(message) {
 }
 
 function renderVoiceBubble(message) {
-  const duration = voiceMessageDuration(message.content);
-  const bars = VOICE_WAVE_BARS.map((height, index) => `<span style="--h:${height};--d:${index}"></span>`).join("");
   return `
     <div class="bubble voice-bubble" title="${escapeHtml(message.content || "Voice message")}">
-      <span class="voice-wave" aria-hidden="true">${bars}</span>
-      <span class="voice-time">${escapeHtml(duration)}</span>
+      <span class="voice-label">Voice Message</span>
     </div>
   `;
-}
-
-function voiceMessageDuration(text) {
-  const seconds = Math.max(2, Math.min(25, Math.round(String(text || "").split(/\s+/).filter(Boolean).length * 0.45)));
-  return `0:${String(seconds).padStart(2, "0")}`;
 }
 
 function renderThinking() {
@@ -1813,8 +1809,9 @@ function clearVoiceSilenceTimer() {
 
 function updateVoiceButtonDom() {
   const button = document.querySelector("[data-action='voice-input']");
-  if (!button) return;
   const listening = Boolean(Aether.state.voiceListening);
+  document.querySelector(".chat-page")?.classList.toggle("voice-listening", listening);
+  if (!button) return;
   button.classList.toggle("listening", listening);
   button.setAttribute("aria-pressed", listening ? "true" : "false");
   button.setAttribute("aria-label", listening ? "Stop voice input" : "Start voice input");
@@ -2678,7 +2675,7 @@ async function writeClipboard(text, button = null) {
   }
   if (button) {
     setTimeout(() => {
-      button.textContent = "📋";
+      button.textContent = "Copy";
     }, 1200);
   }
 }
