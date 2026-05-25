@@ -3401,9 +3401,14 @@ function observeMessageVisibility() {
   messageVisibilityObserver = new IntersectionObserver(
     (entries) => {
       for (const entry of entries) {
+        if (shouldKeepMessageFullyVisible(entry)) {
+          entry.target.style.opacity = "";
+          entry.target.classList.remove("is-faded");
+          continue;
+        }
         const opacity = Math.max(0.16, Math.min(1, entry.intersectionRatio * 1.25));
         entry.target.style.opacity = opacity.toFixed(2);
-        entry.target.classList.toggle("is-faded", opacity < 0);
+        entry.target.classList.toggle("is-faded", opacity < 0.98);
       }
     },
     {
@@ -3415,6 +3420,17 @@ function observeMessageVisibility() {
   messages.querySelectorAll(".message-row").forEach((row) => {
     messageVisibilityObserver.observe(row);
   });
+}
+
+function shouldKeepMessageFullyVisible(entry) {
+  const row = entry?.target;
+  if (!(row instanceof HTMLElement)) return true;
+  if (row.classList.contains("typing")) return true;
+
+  const messages = document.getElementById("messages");
+  const rootHeight = Math.max(1, entry.rootBounds?.height || messages?.clientHeight || window.innerHeight || 1);
+  const rowHeight = Math.max(0, entry.boundingClientRect?.height || row.getBoundingClientRect().height || 0);
+  return rowHeight >= rootHeight * 0.5;
 }
 
 function isMobileScrollFadeDisabled() {
