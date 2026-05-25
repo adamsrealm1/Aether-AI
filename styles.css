@@ -1127,7 +1127,19 @@ img.account-avatar {
     transform 180ms ease;
 }
 .copy-message {
-  min-width: 48px;
+  width: 28px;
+  min-width: 28px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+}
+.copy-message img {
+  display: block;
+  width: 14px;
+  height: 14px;
+  object-fit: contain;
+  filter: brightness(0) invert(1);
+  opacity: 0.96;
 }
 .report-message {
   width: 28px;
@@ -1159,7 +1171,17 @@ img.account-avatar {
 .message-row:focus-within .report-message {
   pointer-events: auto;
 }
-.copy-message:hover, .copy-message:focus-visible,
+.copy-message:hover, .copy-message:focus-visible {
+  color: #fff;
+  background: rgba(219, 234, 254, 0.16);
+  opacity: 1;
+  outline: none;
+  transform: translateY(-1px);
+}
+.copy-message:hover img,
+.copy-message:focus-visible img {
+  filter: brightness(0) invert(1);
+}
 .report-message:hover, .report-message:focus-visible {
   color: #07111f;
   background: #dbeafe;

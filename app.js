@@ -90,13 +90,13 @@ const SPEED_MODES = {
     label: "Default",
     title: "Standard",
     detail: "Higher reasoning, less usage",
-    icon: "assets/slow.png",
+    icon: "assets/icon_library/slow.png",
   },
   fast: {
     label: "Fast",
     title: "Fast",
     detail: "Low reasoning, increased usage",
-    icon: "assets/fasticon.png",
+    icon: "assets/icon_library/fast.png",
   },
 };
 const PROFANITY_PATTERNS = [
@@ -344,7 +344,7 @@ function renderAccountAvatar(account, large = false) {
 
 function renderVerifiedIcon(account) {
   if (!account?.isVerified) return "";
-  return `<img class="verified-icon" src="assets/Verified.png" alt="Verified" title="Verified">`;
+  return `<img class="verified-icon" src="assets/icon_library/Verified.png" alt="Verified" title="Verified">`;
 }
 
 function renderUsernameLabel(account, options = {}) {
@@ -400,7 +400,7 @@ function renderChatPage(chat) {
           <div class="composer-toolbar">
             <div class="composer-tools-left">
               <button class="voice-button ${Aether.state.voiceListening ? "listening" : ""}" type="button" data-action="voice-input" aria-label="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}" aria-pressed="${Aether.state.voiceListening ? "true" : "false"}" title="${Aether.state.voiceListening ? "Stop voice input" : "Start voice input"}"${voiceDisabled ? " disabled" : ""}>
-                <img src="assets/mic.png" alt="" aria-hidden="true">
+                <img src="assets/icon_library/mic.png" alt="" aria-hidden="true">
               </button>
             </div>
             <div class="composer-tools-right">
@@ -428,7 +428,7 @@ function renderSendButton(composerLocked = false) {
   if (stopping) {
     return `
       <button class="${classes}" type="button" data-action="stop-response" aria-label="Stop Aether response" title="Stop Aether response">
-        <img src="assets/pause.png" alt="" aria-hidden="true">
+        <img src="assets/icon_library/pause.png" alt="" aria-hidden="true">
       </button>
     `;
   }
@@ -852,12 +852,14 @@ function renderMessage(message) {
     : `<div class="bubble">${escapeHtml(content)}</div>`;
   const copyButton =
     message.role === "assistant" && !message.typing
-      ? `<button class="copy-message" data-copy-message="${escapeHtml(messageId)}" aria-label="Copy this message" title="Copy this message">Copy</button>`
+      ? `<button class="copy-message" data-copy-message="${escapeHtml(messageId)}" aria-label="Copy this message" title="Copy this message">
+          <img src="assets/icon_library/copy.png" alt="" aria-hidden="true">
+        </button>`
       : "";
   const reportButton =
     message.role === "assistant" && !message.typing && !message.reportedAt
       ? `<button class="report-message" data-report-message="${escapeHtml(messageId)}" aria-label="Report this message" title="Report this message">
-          <img src="assets/flag.png" alt="" aria-hidden="true">
+          <img src="assets/icon_library/flag.png" alt="" aria-hidden="true">
         </button>`
       : "";
   const thoughtTime =
@@ -930,7 +932,7 @@ function renderReportModal() {
       <section class="report-modal" tabindex="-1">
         <button class="modal-close report-close" type="button" data-action="close-report-modal" aria-label="Close report dialog">×</button>
         <div class="report-modal-head">
-          <span class="report-modal-icon" aria-hidden="true"><img src="assets/flag.png" alt=""></span>
+          <span class="report-modal-icon" aria-hidden="true"><img src="assets/icon_library/flag.png" alt=""></span>
           <div>
             <span class="report-eyebrow">Report a message</span>
             <h2 id="report-title">Report message</h2>
@@ -963,7 +965,7 @@ function renderReportFixedPopup() {
   return `
     <div class="report-fixed-overlay" role="dialog" aria-modal="true" aria-labelledby="report-fixed-title">
       <section class="report-fixed-modal" tabindex="-1">
-        <span class="report-fixed-icon" aria-hidden="true"><img src="assets/flag.png" alt=""></span>
+        <span class="report-fixed-icon" aria-hidden="true"><img src="assets/icon_library/flag.png" alt=""></span>
         <span class="report-eyebrow">Thank you for your contribution to Aether AI.</span>
         <h2 id="report-fixed-title">Reported message</h2>
         <p>You reported a message recently and the Aether AI team has fixed/acknowledged it!</p>
@@ -3024,15 +3026,8 @@ async function writeClipboard(text, button = null) {
   try {
     await navigator.clipboard.writeText(text);
     showToast("Copied to clipboard.");
-    if (button) button.textContent = "Copied";
   } catch {
     showToast("Copy failed.");
-    if (button) button.textContent = "Copy failed";
-  }
-  if (button) {
-    setTimeout(() => {
-      button.textContent = "Copy";
-    }, 1200);
   }
 }
 
