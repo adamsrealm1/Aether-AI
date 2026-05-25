@@ -579,8 +579,32 @@ def ensure_admin_db() -> None:
               updated_at VARCHAR(40) NOT NULL
             ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
             """,
+            """
+            CREATE TABLE IF NOT EXISTS message_reports (
+              id BIGINT AUTO_INCREMENT PRIMARY KEY,
+              created_at VARCHAR(40) NOT NULL,
+              reporter_account_id BIGINT,
+              reporter_client_id VARCHAR(120),
+              reporter_username VARCHAR(32),
+              reporter_ip VARCHAR(80),
+              chat_id VARCHAR(120),
+              chat_title VARCHAR(120),
+              message_id VARCHAR(120) NOT NULL,
+              message_role VARCHAR(20) NOT NULL,
+              message_content TEXT NOT NULL,
+              report_note TEXT,
+              context_json TEXT NOT NULL,
+              status VARCHAR(20) NOT NULL DEFAULT 'open',
+              resolved_at VARCHAR(40),
+              resolved_by_account_id BIGINT,
+              notification_seen_at VARCHAR(40)
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+            """,
             "CREATE INDEX idx_request_events_created_at ON request_events (created_at)",
             "CREATE INDEX idx_blocked_attempts_created_at ON blocked_attempts (created_at)",
+            "CREATE INDEX idx_message_reports_status_created_at ON message_reports (status, created_at)",
+            "CREATE INDEX idx_message_reports_reporter_account ON message_reports (reporter_account_id, status, notification_seen_at)",
+            "CREATE INDEX idx_message_reports_reporter_client ON message_reports (reporter_client_id, status, notification_seen_at)",
         ]
     else:
         statements = [
@@ -682,8 +706,32 @@ def ensure_admin_db() -> None:
               updated_at TEXT NOT NULL
             )
             """,
+            """
+            CREATE TABLE IF NOT EXISTS message_reports (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              created_at TEXT NOT NULL,
+              reporter_account_id INTEGER,
+              reporter_client_id TEXT,
+              reporter_username TEXT,
+              reporter_ip TEXT,
+              chat_id TEXT,
+              chat_title TEXT,
+              message_id TEXT NOT NULL,
+              message_role TEXT NOT NULL,
+              message_content TEXT NOT NULL,
+              report_note TEXT,
+              context_json TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'open',
+              resolved_at TEXT,
+              resolved_by_account_id INTEGER,
+              notification_seen_at TEXT
+            )
+            """,
             "CREATE INDEX IF NOT EXISTS idx_request_events_created_at ON request_events (created_at)",
             "CREATE INDEX IF NOT EXISTS idx_blocked_attempts_created_at ON blocked_attempts (created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_message_reports_status_created_at ON message_reports (status, created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_message_reports_reporter_account ON message_reports (reporter_account_id, status, notification_seen_at)",
+            "CREATE INDEX IF NOT EXISTS idx_message_reports_reporter_client ON message_reports (reporter_client_id, status, notification_seen_at)",
         ]
 
     for statement in statements:
@@ -1118,6 +1166,201 @@ def delete_blocked_attempt(attempt_id: object) -> None:
     db_execute(f"DELETE FROM blocked_attempts WHERE id = {placeholder}", (attempt_id,))
 
 
+def normalize_reporter_client_id(value: object) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.:-]", "", str(value or "").strip())
+    return cleaned[:120]
+
+
+def request_reporter_client_id(payload: dict | None = None) -> str:
+    header_value = request.headers.get("X-Aether-Reporter-Id", "")
+    if header_value:
+        return normalize_reporter_client_id(header_value)
+    if isinstance(payload, dict):
+        return normalize_reporter_client_id(payload.get("reporterClientId"))
+    return ""
+
+
+def normalize_report_context(value: object) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    context = []
+    for item in value[:8]:
+        if not isinstance(item, dict):
+            continue
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        role = "user" if item.get("role") == "user" else "assistant"
+        context.append(
+            {
+                "id": str(item.get("id") or "")[:120],
+                "role": role,
+                "content": content[:1200],
+                "createdAt": str(item.get("createdAt") or item.get("created_at") or "")[:40],
+            }
+        )
+    return context
+
+
+def create_message_report(payload: dict, ip_address: str, account: dict | None = None) -> None:
+    content = str(payload.get("messageContent") or "").strip()
+    if not content:
+        raise ValueError("Message content is required.")
+    message_id = str(payload.get("messageId") or "").strip()[:120]
+    if not message_id:
+        raise ValueError("Message ID is required.")
+    message_role = "assistant" if payload.get("messageRole") == "assistant" else "user"
+    reporter_client_id = request_reporter_client_id(payload)
+    reporter_account_id = account.get("id") if account else None
+    if not reporter_account_id and not reporter_client_id:
+        raise ValueError("Reporter ID is required.")
+    now = utc_iso()
+    placeholder = db_placeholder()
+    db_execute(
+        (
+            "INSERT INTO message_reports "
+            "(created_at, reporter_account_id, reporter_client_id, reporter_username, reporter_ip, chat_id, chat_title, "
+            "message_id, message_role, message_content, report_note, context_json, status) "
+            f"VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, "
+            f"{placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})"
+        ),
+        (
+            now,
+            reporter_account_id,
+            reporter_client_id,
+            account.get("username") if account else "",
+            str(ip_address or "")[:80],
+            str(payload.get("chatId") or "")[:120],
+            str(payload.get("chatTitle") or "")[:120],
+            message_id,
+            message_role,
+            content[:4000],
+            str(payload.get("note") or "").strip()[:1000],
+            json.dumps(normalize_report_context(payload.get("context")), separators=(",", ":")),
+            "open",
+        ),
+    )
+
+
+def message_reports(include_resolved: bool = False) -> list[dict]:
+    sql = (
+        "SELECT id, created_at, reporter_account_id, reporter_client_id, reporter_username, reporter_ip, "
+        "chat_id, chat_title, message_id, message_role, message_content, report_note, context_json, "
+        "status, resolved_at, resolved_by_account_id FROM message_reports"
+    )
+    if not include_resolved:
+        sql += " WHERE status = 'open'"
+    sql += " ORDER BY created_at DESC LIMIT 80"
+    rows = db_query(sql)
+    reports = []
+    for row in rows:
+        try:
+            context = json.loads(row.get("context_json") or "[]")
+        except Exception:
+            context = []
+        account = find_account_by_id(row.get("reporter_account_id")) if row.get("reporter_account_id") is not None else None
+        resolved_by = find_account_by_id(row.get("resolved_by_account_id")) if row.get("resolved_by_account_id") is not None else None
+        reports.append(
+            {
+                "id": row.get("id"),
+                "createdAt": row.get("created_at"),
+                "reporterAccountId": row.get("reporter_account_id"),
+                "reporterUsername": (account or {}).get("username") or row.get("reporter_username") or "",
+                "reporterIsVerified": account_is_verified(account),
+                "reporterIp": row.get("reporter_ip") or "",
+                "chatId": row.get("chat_id") or "",
+                "chatTitle": row.get("chat_title") or "",
+                "messageId": row.get("message_id") or "",
+                "messageRole": row.get("message_role") or "assistant",
+                "messageContent": row.get("message_content") or "",
+                "note": row.get("report_note") or "",
+                "context": context if isinstance(context, list) else [],
+                "status": row.get("status") or "open",
+                "resolvedAt": row.get("resolved_at"),
+                "resolvedByUsername": (resolved_by or {}).get("username") or "",
+            }
+        )
+    return reports
+
+
+def message_report_by_id(report_id: object) -> dict | None:
+    placeholder = db_placeholder()
+    rows = db_query(
+        (
+            "SELECT id, reporter_account_id, reporter_client_id, status, notification_seen_at "
+            f"FROM message_reports WHERE id = {placeholder}"
+        ),
+        (report_id,),
+    )
+    return rows[0] if rows else None
+
+
+def resolve_message_report(report_id: object, status: str, admin_account_id: object) -> None:
+    if status not in {"fixed", "ignored"}:
+        raise ValueError("Report status is invalid.")
+    report = message_report_by_id(report_id)
+    if not report:
+        raise ValueError("Report was not found.")
+    now = utc_iso()
+    placeholder = db_placeholder()
+    notification_seen_at = None if status == "fixed" else now
+    db_execute(
+        (
+            f"UPDATE message_reports SET status = {placeholder}, resolved_at = {placeholder}, "
+            f"resolved_by_account_id = {placeholder}, notification_seen_at = {placeholder} "
+            f"WHERE id = {placeholder}"
+        ),
+        (status, now, admin_account_id, notification_seen_at, report_id),
+    )
+
+
+def report_notifications(account: dict | None = None, reporter_client_id: str = "") -> list[dict]:
+    reporter_client_id = normalize_reporter_client_id(reporter_client_id)
+    identity_clauses = []
+    params: list[object] = []
+    placeholder = db_placeholder()
+    if account and account.get("id") is not None:
+        identity_clauses.append(f"reporter_account_id = {placeholder}")
+        params.append(account.get("id"))
+    if reporter_client_id:
+        identity_clauses.append(f"reporter_client_id = {placeholder}")
+        params.append(reporter_client_id)
+    if not identity_clauses:
+        return []
+    sql = (
+        "SELECT id, created_at, resolved_at, message_content "
+        "FROM message_reports WHERE status = 'fixed' AND notification_seen_at IS NULL "
+        f"AND ({' OR '.join(identity_clauses)}) ORDER BY resolved_at DESC LIMIT 5"
+    )
+    rows = db_query(sql, tuple(params))
+    return [
+        {
+            "id": row.get("id"),
+            "reportedAt": row.get("created_at"),
+            "fixedAt": row.get("resolved_at"),
+            "messageContent": row.get("message_content") or "",
+        }
+        for row in rows
+    ]
+
+
+def mark_report_notification_seen(report_id: object, account: dict | None = None, reporter_client_id: str = "") -> bool:
+    report = message_report_by_id(report_id)
+    if not report or str(report.get("status") or "") != "fixed":
+        return False
+    reporter_client_id = normalize_reporter_client_id(reporter_client_id)
+    matches_account = bool(account and str(report.get("reporter_account_id") or "") == str(account.get("id") or ""))
+    matches_client = bool(reporter_client_id and reporter_client_id == str(report.get("reporter_client_id") or ""))
+    if not matches_account and not matches_client:
+        return False
+    placeholder = db_placeholder()
+    db_execute(
+        f"UPDATE message_reports SET notification_seen_at = {placeholder} WHERE id = {placeholder}",
+        (utc_iso(), report_id),
+    )
+    return True
+
+
 def normalize_username(username: object) -> str:
     return re.sub(r"\s+", "", str(username or "").strip())[:32]
 
@@ -1409,6 +1652,9 @@ def normalize_chat_message(value: object) -> dict | None:
     }
     if voice:
         message["voice"] = True
+    reported_at = str(value.get("reportedAt") or value.get("reported_at") or "")[:40]
+    if reported_at:
+        message["reportedAt"] = reported_at
     return message
 
 
@@ -1749,6 +1995,7 @@ def admin_status(include_all_blocked: bool = False) -> dict:
         "bannedIps": banned_ips(),
         "bannedAccounts": banned_accounts(),
         "blockedAttempts": blocked_attempts(include_all_blocked),
+        "messageReports": message_reports(),
         "accounts": account_summaries(),
         "admins": admin_summaries(),
         "pendingProfilePictures": pending_profile_pictures(),
@@ -2228,7 +2475,7 @@ def add_cors_headers(response):
     elif not origin:
         response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Aether-Reporter-Id"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(self), geolocation=(self)"
@@ -2311,6 +2558,10 @@ def api_status():
         rate_limit = rate_limit_status(ip_address, account.get("id") if account else None)
     except Exception:
         rate_limit = default_rate_limit_status(account.get("id") if account else None)
+    try:
+        notifications = report_notifications(account, request_reporter_client_id())
+    except Exception:
+        notifications = []
     return jsonify(
         {
             "aetherAvailable": available,
@@ -2319,6 +2570,7 @@ def api_status():
             "signedIn": bool(public_account),
             "account": public_account,
             "rateLimit": rate_limit,
+            "reportNotifications": notifications,
         }
     )
 
@@ -2463,6 +2715,35 @@ def api_account_chats_put():
     if not isinstance(payload, dict):
         payload = {}
     return jsonify(save_account_chat_state(account.get("id"), payload.get("chats"), payload.get("activeChatId")))
+
+
+@app.post("/api/reports")
+def api_reports_create():
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    try:
+        create_message_report(payload, client_ip(), current_account())
+        return jsonify({"message": "Report sent to admins."})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.get("/api/reports/notifications")
+def api_report_notifications():
+    account = current_account()
+    return jsonify({"reportNotifications": report_notifications(account, request_reporter_client_id())})
+
+
+@app.post("/api/reports/notifications/seen")
+def api_report_notification_seen():
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    seen = mark_report_notification_seen(payload.get("reportId"), current_account(), request_reporter_client_id(payload))
+    if not seen:
+        return jsonify({"error": "Report notification was not found."}), 404
+    return jsonify({"message": "Report notification acknowledged."})
 
 
 @app.delete("/api/account")
@@ -2630,6 +2911,40 @@ def api_admin_blocked_attempt_ignore():
         return jsonify({"error": "Blocked attempt was not found."}), 404
     delete_blocked_attempt(attempt_id)
     return jsonify(admin_status())
+
+
+@app.post("/api/admin/report/fixed")
+def api_admin_report_fixed():
+    denied = require_admin()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    try:
+        resolve_message_report(payload.get("reportId"), "fixed", current_account().get("id"))
+        status = admin_status()
+        status["message"] = "Report marked fixed."
+        return jsonify(status)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/admin/report/ignore")
+def api_admin_report_ignore():
+    denied = require_admin()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    try:
+        resolve_message_report(payload.get("reportId"), "ignored", current_account().get("id"))
+        status = admin_status()
+        status["message"] = "Report ignored."
+        return jsonify(status)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
 
 @app.post("/api/admin/verify-account")

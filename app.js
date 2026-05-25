@@ -49,6 +49,11 @@
     blockedAttemptsExpanded: false,
     banStatus: null,
     speedMenuOpen: false,
+    reportModal: null,
+    reportLoading: false,
+    reportError: "",
+    reportNotifications: [],
+    reportFixedNotice: null,
   },
 };
 
@@ -74,6 +79,7 @@ const BAN_POPUP_BODY = "You can not use Aether AI because you were banned by an 
 const VOICE_AUTO_SEND_DELAY_MS = 1800;
 const SAFETY_LOCK_DELAY_MS = 3000;
 const ACCOUNT_SESSION_TOKEN_KEY = "aether.accountSessionToken";
+const REPORTER_CLIENT_ID_KEY = "aether.reporterClientId";
 const MOBILE_SCROLL_FADE_QUERY = "(max-width: 860px), (pointer: coarse)";
 const MAX_PROFILE_PICTURE_FILE_SIZE = 560000;
 const ACCOUNT_CHATS_SAVE_DELAY_MS = 700;
@@ -234,6 +240,7 @@ function normalizeChat(chat) {
     content: String(message?.content || ""),
     createdAt: message?.createdAt || normalized.createdAt,
     voice: Boolean(message?.voice),
+    reportedAt: String(message?.reportedAt || ""),
   }));
   if (!normalized.messages.length) {
     normalized.messages = createChat(normalized.title).messages;
@@ -288,6 +295,8 @@ function render() {
         ${showAdminView ? renderAdminPage() : renderChatPage(chat)}
         ${renderProfanityPopup()}
         ${renderRateLimitPopup()}
+        ${renderReportModal()}
+        ${renderReportFixedPopup()}
         ${renderAuthModal()}
         ${renderAccountModal()}
         ${renderToast()}
@@ -467,6 +476,7 @@ function renderAdminPage() {
   const accounts = status.accounts || [];
   const admins = status.admins || [];
   const pendingProfilePictures = status.pendingProfilePictures || [];
+  const messageReports = status.messageReports || [];
   const available = status.aetherAvailable !== false;
   const canManageAdmins = Boolean(status.canManageAdmins || Aether.state.account?.isOwnerAdmin);
 
@@ -510,6 +520,10 @@ function renderAdminPage() {
             <span>Last day</span>
             <strong>${Number(counts.day || 0)}</strong>
           </div>
+          <div class="admin-metric">
+            <span>Open reports</span>
+            <strong>${Number(messageReports.length || 0)}</strong>
+          </div>
         </section>
         <section class="admin-actions">
           <form class="admin-rate-form" data-action="admin-rate-limit">
@@ -525,6 +539,7 @@ function renderAdminPage() {
           </form>
           <button class="danger-button" data-action="admin-reset-rate"${Aether.state.adminLoading ? " disabled" : ""}>Reset all user limits</button>
         </section>
+        ${renderMessageReportsPanel(messageReports)}
         <section class="admin-two-column">
           ${renderBanIpPanel(status.bannedIps || [], status.bannedAccounts || [])}
           ${renderBlockedAttemptsPanel(status.blockedAttempts || [])}
@@ -581,6 +596,59 @@ function renderBanIpPanel(bannedIps, bannedAccounts = []) {
           `;
         }).join("")}
         ${totalBans ? "" : `<div class="admin-empty">No banned users/IPs.</div>`}
+      </div>
+    </section>
+  `;
+}
+
+function renderMessageReportsPanel(reports) {
+  return `
+    <section class="admin-panel reports-panel">
+      <div class="admin-panel-head reports-panel-head">
+        <div>
+          <h2>Reports</h2>
+          <small>Messages users flagged for admin review</small>
+        </div>
+        <span>${reports.length} open</span>
+      </div>
+      <div class="admin-list report-list">
+        ${reports.map((report) => {
+          const reportId = escapeHtml(report.id || "");
+          const reporter = report.reporterUsername
+            ? renderUsernameLabel({ username: report.reporterUsername, isVerified: report.reporterIsVerified })
+            : (report.reporterIp ? escapeHtml(report.reporterIp) : "Anonymous browser");
+          const context = Array.isArray(report.context) ? report.context : [];
+          return `
+            <article class="admin-report">
+              <div class="admin-report-topline">
+                <div>
+                  <strong>${reporter}</strong>
+                  <small>${escapeHtml(report.chatTitle || "Conversation")} - ${escapeHtml(formatAdminDate(report.createdAt))}</small>
+                </div>
+                <span class="report-status-pill">${escapeHtml(report.messageRole || "assistant")}</span>
+              </div>
+              <p class="admin-report-message">${escapeHtml(report.messageContent || "")}</p>
+              ${report.note ? `<p class="admin-report-note">${escapeHtml(report.note)}</p>` : ""}
+              ${context.length ? `
+                <details class="admin-report-context">
+                  <summary>Context</summary>
+                  <ol>
+                    ${context.map((message) => `
+                      <li>
+                        <span>${escapeHtml(message.role === "user" ? "User" : "Aether")}</span>
+                        ${escapeHtml(message.content || "")}
+                      </li>
+                    `).join("")}
+                  </ol>
+                </details>
+              ` : ""}
+              <div class="report-actions">
+                <button class="primary-button report-fixed-button" data-report-fixed="${reportId}"${Aether.state.adminLoading ? " disabled" : ""}>Fixed</button>
+                <button class="secondary-button" data-report-ignore="${reportId}"${Aether.state.adminLoading ? " disabled" : ""}>Ignore</button>
+              </div>
+            </article>
+          `;
+        }).join("") || `<div class="admin-empty">No message reports waiting for review.</div>`}
       </div>
     </section>
   `;
@@ -745,6 +813,12 @@ function chatPreview(chat) {
   return last?.content ? last.content.slice(0, 72) : "Fresh conversation";
 }
 
+function reportSnippet(value, maxLength = 260) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
+
 function renderToast() {
   const visible = Aether.state.toast ? " show" : "";
   return `<div class="toast${visible}" role="status" aria-live="polite">${escapeHtml(Aether.state.toast)}</div>`;
@@ -779,11 +853,17 @@ function renderMessage(message) {
     message.role === "assistant" && !message.typing
       ? `<button class="copy-message" data-copy-message="${escapeHtml(messageId)}" aria-label="Copy this message" title="Copy this message">Copy</button>`
       : "";
+  const reportButton =
+    message.role === "assistant" && !message.typing
+      ? `<button class="report-message${message.reportedAt ? " reported" : ""}" data-report-message="${escapeHtml(messageId)}" aria-label="${message.reportedAt ? "Message reported" : "Report this message"}" title="${message.reportedAt ? "Message reported" : "Report this message"}"${message.reportedAt ? " disabled" : ""}>
+          <img src="assets/flag.png" alt="" aria-hidden="true">
+        </button>`
+      : "";
   const thoughtTime =
     message.role === "assistant" && !message.typing && Number.isFinite(message.thoughtTimeMs)
       ? `<span class="thought-time">Thought for ${escapeHtml(formatThoughtTime(message.thoughtTimeMs))}</span>`
       : "";
-  const messageControls = copyButton || thoughtTime ? `<div class="message-controls">${copyButton}${thoughtTime}</div>` : "";
+  const messageControls = copyButton || reportButton || thoughtTime ? `<div class="message-controls">${copyButton}${reportButton}${thoughtTime}</div>` : "";
   return `
     <div class="message-row ${roleClass}${typingClass}${voiceClass}" data-message-id="${escapeHtml(messageId)}">
       <div class="message-stack">
@@ -841,6 +921,55 @@ function renderRateLimitPopup() {
   `;
 }
 
+function renderReportModal() {
+  const report = Aether.state.reportModal;
+  if (!report) return "";
+  return `
+    <div class="report-overlay" role="dialog" aria-modal="true" aria-labelledby="report-title" data-action="close-report-modal">
+      <section class="report-modal" tabindex="-1">
+        <button class="modal-close report-close" type="button" data-action="close-report-modal" aria-label="Close report dialog">×</button>
+        <div class="report-modal-head">
+          <span class="report-modal-icon" aria-hidden="true"><img src="assets/flag.png" alt=""></span>
+          <div>
+            <span class="report-eyebrow">Admin review</span>
+            <h2 id="report-title">Report message</h2>
+          </div>
+        </div>
+        <p class="report-modal-copy">Send this message to admins so they can review and fix it.</p>
+        <blockquote class="report-preview">${escapeHtml(reportSnippet(report.messageContent))}</blockquote>
+        ${Aether.state.reportError ? `<div class="report-error">${escapeHtml(Aether.state.reportError)}</div>` : ""}
+        <form class="report-form" data-action="submit-report">
+          <label>
+            <span>Optional note</span>
+            <textarea name="note" rows="3" maxlength="1000" placeholder="What should admins look at?"></textarea>
+          </label>
+          <div class="report-modal-actions">
+            <button class="secondary-button" type="button" data-action="close-report-modal"${Aether.state.reportLoading ? " disabled" : ""}>Cancel</button>
+            <button class="primary-button report-submit-button" type="submit"${Aether.state.reportLoading ? " disabled" : ""}>${Aether.state.reportLoading ? "Sending..." : "Send report"}</button>
+          </div>
+        </form>
+      </section>
+    </div>
+  `;
+}
+
+function renderReportFixedPopup() {
+  const notice = Aether.state.reportFixedNotice;
+  if (!notice) return "";
+  return `
+    <div class="report-fixed-overlay" role="dialog" aria-modal="true" aria-labelledby="report-fixed-title">
+      <section class="report-fixed-modal" tabindex="-1">
+        <span class="report-fixed-icon" aria-hidden="true"><img src="assets/flag.png" alt=""></span>
+        <span class="report-eyebrow">Thank you for your contribution to Aether AI.</span>
+        <h2 id="report-fixed-title">Reported message</h2>
+        <p>You reported a message recently and the Aether AI team has fixed/acknowledged it!</p>
+        ${notice.messageContent ? `<blockquote class="report-preview fixed">${escapeHtml(reportSnippet(notice.messageContent))}</blockquote>` : ""}
+        <button class="warning-understand report-fixed-action" data-action="close-report-fixed">Got it</button>
+      </section>
+    </div>
+  `;
+}
+
 function renderBanOverlay() {
   if (!isUserBanned()) return "";
   const ban = Aether.state.banStatus || {};
@@ -852,7 +981,7 @@ function renderBanOverlay() {
     <div class="ban-lock-overlay" role="dialog" aria-modal="true" aria-labelledby="ban-title" aria-describedby="ban-body">
       <section class="ban-lock-card" tabindex="-1">
         <div class="ban-lock-icon" aria-hidden="true">!</div>
-        <span class="ban-lock-eyebrow">Access blocked</span>
+        <span class="ban-lock-eyebrow">Oops!</span>
         <h2 id="ban-title">You are banned from Aether AI</h2>
         <p id="ban-body">${escapeHtml(BAN_POPUP_BODY)}</p>
         <div class="ban-lock-details">
@@ -1076,6 +1205,17 @@ function bindEvents(root) {
   root.querySelectorAll("[data-copy-message]").forEach((button) => {
     button.addEventListener("click", () => copyAssistantMessage(button.dataset.copyMessage, button));
   });
+  root.querySelectorAll("[data-report-message]").forEach((button) => {
+    button.addEventListener("click", () => openReportModal(button.dataset.reportMessage || ""));
+  });
+  root.querySelectorAll("[data-action='close-report-modal']").forEach((element) => {
+    element.addEventListener("click", (event) => {
+      if (element.classList.contains("report-overlay") && event.target !== element) return;
+      closeReportModal();
+    });
+  });
+  root.querySelector("[data-action='submit-report']")?.addEventListener("submit", submitReport);
+  root.querySelector("[data-action='close-report-fixed']")?.addEventListener("click", closeReportFixedNotice);
   bindAccountEvents(root);
   bindAdminEvents(root);
 }
@@ -1272,7 +1412,7 @@ async function runAccountAction(path, payload, successMessage) {
   try {
     const result = await accountRequest(path, {
       method: "POST",
-      body: JSON.stringify(payload),
+      body: JSON.stringify(payload),  
     });
     applyAccountStatus(result);
     showToast(result.message || successMessage);
@@ -1387,6 +1527,24 @@ function bindAdminEvents(root) {
         body: JSON.stringify({ attemptId: button.dataset.blockedIgnore || "" }),
       });
       if (ignored) showToast("Blocked attempt ignored.");
+    });
+  });
+  root.querySelectorAll("[data-report-fixed]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const fixed = await adminRequest("/api/admin/report/fixed", {
+        method: "POST",
+        body: JSON.stringify({ reportId: button.dataset.reportFixed || "" }),
+      });
+      if (fixed) showToast("Report marked fixed.");
+    });
+  });
+  root.querySelectorAll("[data-report-ignore]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const ignored = await adminRequest("/api/admin/report/ignore", {
+        method: "POST",
+        body: JSON.stringify({ reportId: button.dataset.reportIgnore || "" }),
+      });
+      if (ignored) showToast("Report ignored.");
     });
   });
   root.querySelectorAll("[data-admin-delete-account]").forEach((button) => {
@@ -2008,7 +2166,51 @@ function applyServerStatus(data) {
   if (data.rateLimit) {
     updateRateLimit(data.rateLimit);
   }
+  if (Array.isArray(data.reportNotifications)) {
+    changed = applyReportNotifications(data.reportNotifications) || changed;
+  }
   return changed;
+}
+
+function applyReportNotifications(notifications) {
+  const normalized = notifications
+    .map(normalizeReportNotification)
+    .filter((notice) => notice.id);
+  const previousKey = Aether.state.reportNotifications.map((notice) => notice.id).join("|");
+  Aether.state.reportNotifications = normalized;
+  let changed = previousKey !== normalized.map((notice) => notice.id).join("|");
+  if (!Aether.state.reportFixedNotice && normalized.length) {
+    Aether.state.reportFixedNotice = normalized[0];
+    changed = true;
+  }
+  return changed;
+}
+
+function normalizeReportNotification(value) {
+  return {
+    id: String(value?.id || ""),
+    reportedAt: String(value?.reportedAt || ""),
+    fixedAt: String(value?.fixedAt || ""),
+    messageContent: String(value?.messageContent || ""),
+  };
+}
+
+async function closeReportFixedNotice() {
+  const notice = Aether.state.reportFixedNotice;
+  if (!notice) return;
+  Aether.state.reportNotifications = Aether.state.reportNotifications.filter((item) => item.id !== notice.id);
+  Aether.state.reportFixedNotice = Aether.state.reportNotifications[0] || null;
+  render();
+  try {
+    await fetch(apiUrl("/api/reports/notifications/seen"), {
+      method: "POST",
+      headers: await authHeaders({ "Content-Type": "application/json;charset=UTF-8" }),
+      cache: "no-store",
+      body: JSON.stringify({ reportId: notice.id, reporterClientId: reporterClientId() }),
+    });
+  } catch {
+    // The next status refresh will retry if the acknowledgement did not reach the server.
+  }
 }
 
 function isUserBanned() {
@@ -2027,6 +2229,8 @@ function applyBanStatus(data) {
     Aether.state.accountModal = false;
     Aether.state.profanityPopup = false;
     Aether.state.rateLimitPopup = false;
+    Aether.state.reportModal = null;
+    Aether.state.reportFixedNotice = null;
     Aether.state.adminView = false;
     Aether.state.mobileSidebarOpen = false;
     stopVoiceInput({ keepDraft: true, silent: true });
@@ -2138,6 +2342,18 @@ function accountRenderKey(account) {
 function accountSessionToken() {
   try {
     return localStorage.getItem(ACCOUNT_SESSION_TOKEN_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function reporterClientId() {
+  try {
+    const existing = localStorage.getItem(REPORTER_CLIENT_ID_KEY);
+    if (existing) return existing;
+    const created = crypto.randomUUID ? crypto.randomUUID() : createId();
+    localStorage.setItem(REPORTER_CLIENT_ID_KEY, created);
+    return created;
   } catch {
     return "";
   }
@@ -2265,6 +2481,7 @@ function accountChatsPayload() {
         content: message.content,
         createdAt: message.createdAt,
         voice: Boolean(message.voice),
+        reportedAt: message.reportedAt || "",
       })),
   }));
 }
@@ -2461,7 +2678,12 @@ async function checkServerStatus() {
 
 async function authHeaders(base = {}) {
   const token = accountSessionToken();
-  return token ? { ...base, Authorization: `Bearer ${token}` } : { ...base };
+  const reporterId = reporterClientId();
+  return {
+    ...base,
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(reporterId ? { "X-Aether-Reporter-Id": reporterId } : {}),
+  };
 }
 
 function formatRateLimitResetTime(rate) {
@@ -2687,6 +2909,104 @@ function createMessage(role, content, extras = {}) {
 function createId() {
   if (crypto.randomUUID) return crypto.randomUUID();
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function openReportModal(messageId) {
+  const chat = activeChat();
+  const message = chat?.messages.find((item) => item.id === messageId);
+  if (!chat || !message || message.typing) return;
+  if (message.reportedAt) {
+    showToast("This message is already reported.");
+    return;
+  }
+  Aether.state.reportModal = {
+    chatId: chat.id,
+    chatTitle: chat.title,
+    messageId: message.id,
+    messageRole: message.role,
+    messageContent: message.content,
+  };
+  Aether.state.reportError = "";
+  Aether.state.speedMenuOpen = false;
+  render();
+  requestAnimationFrame(() => {
+    document.querySelector(".report-modal")?.focus({ preventScroll: true });
+  });
+}
+
+function closeReportModal() {
+  if (Aether.state.reportLoading) return;
+  Aether.state.reportModal = null;
+  Aether.state.reportError = "";
+  render();
+}
+
+async function submitReport(event) {
+  event.preventDefault();
+  if (Aether.state.reportLoading) return;
+  const report = Aether.state.reportModal;
+  const chat = activeChat();
+  const message = chat?.messages.find((item) => item.id === report?.messageId);
+  if (!report || !chat || !message) {
+    Aether.state.reportError = "Message could not be found.";
+    render();
+    return;
+  }
+
+  Aether.state.reportLoading = true;
+  Aether.state.reportError = "";
+  render();
+  try {
+    const data = new FormData(event.currentTarget);
+    const response = await fetch(apiUrl("/api/reports"), {
+      method: "POST",
+      headers: await authHeaders({ "Content-Type": "application/json;charset=UTF-8" }),
+      cache: "no-store",
+      body: JSON.stringify({
+        reporterClientId: reporterClientId(),
+        chatId: chat.id,
+        chatTitle: chat.title,
+        messageId: message.id,
+        messageRole: message.role,
+        messageContent: message.content,
+        note: String(data.get("note") || "").trim(),
+        context: reportContext(chat, message.id),
+      }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (result.banned || result.ban) {
+      applyServerStatus(result);
+      render();
+      return;
+    }
+    if (!response.ok) {
+      throw new Error(result.error || `Report failed with HTTP ${response.status}`);
+    }
+    message.reportedAt = new Date().toISOString();
+    storage.save();
+    Aether.state.reportModal = null;
+    showToast(result.message || "Report sent to admins.");
+  } catch (error) {
+    Aether.state.reportError = error?.message || "Report could not be sent.";
+  } finally {
+    Aether.state.reportLoading = false;
+    render();
+  }
+}
+
+function reportContext(chat, messageId) {
+  const messages = Array.isArray(chat?.messages) ? chat.messages : [];
+  const index = messages.findIndex((item) => item.id === messageId);
+  if (index < 0) return [];
+  return messages
+    .slice(Math.max(0, index - 3), Math.min(messages.length, index + 2))
+    .filter((message) => !message.typing && message.content)
+    .map((message) => ({
+      id: message.id,
+      role: message.role,
+      content: message.content,
+      createdAt: message.createdAt,
+    }));
 }
 
 async function copyAssistantMessage(messageId, button) {
@@ -3095,7 +3415,7 @@ function isMobileScrollFadeDisabled() {
   return Boolean(window.matchMedia?.(MOBILE_SCROLL_FADE_QUERY).matches);
 }
 
-function clearMessageFadeState(root = document) {
+function clearMessageFadeState(root = document) { 
   root.querySelectorAll(".message-row").forEach((row) => {
     row.style.opacity = "";
     row.classList.remove("is-faded");

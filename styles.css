@@ -116,7 +116,7 @@ button { cursor: pointer; }
   backdrop-filter: blur(18px);
   min-width: 0;
 }
-.brand, .new-chat, .account-tab, .admin-tab, .chat-item, .delete-chat, .copy-message, .composer button, .primary-button, .secondary-button, .danger-button, .modal-close, .auth-mode-switch button, .speed-trigger, .speed-option { border: 0; }
+.brand, .new-chat, .account-tab, .admin-tab, .chat-item, .delete-chat, .copy-message, .report-message, .composer button, .primary-button, .secondary-button, .danger-button, .modal-close, .auth-mode-switch button, .speed-trigger, .speed-option { border: 0; }
 .brand {
   display: flex;
   align-items: center;
@@ -752,7 +752,7 @@ img.account-avatar {
 }
 .admin-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
 }
 .admin-metric {
@@ -827,7 +827,8 @@ img.account-avatar {
 .admin-ban-form input,
 .admin-rate-form input,
 .auth-card input,
-.account-form input {
+.account-form input,
+.report-form textarea {
   width: 100%;
   min-height: 40px;
   border: 1px solid rgba(191, 219, 254, 0.18);
@@ -840,7 +841,8 @@ img.account-avatar {
 .admin-ban-form input:focus,
 .admin-rate-form input:focus,
 .auth-card input:focus,
-.account-form input:focus {
+.account-form input:focus,
+.report-form textarea:focus {
   border-color: rgba(45, 212, 191, 0.56);
   box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.12);
 }
@@ -935,6 +937,122 @@ img.account-avatar {
 .show-all-button {
   justify-self: start;
 }
+.reports-panel {
+  overflow: visible;
+}
+.reports-panel-head {
+  align-items: flex-start;
+}
+.reports-panel-head small {
+  display: block;
+  margin-top: 4px;
+  color: #93c5fd;
+  font-size: 12px;
+  font-weight: 720;
+  line-height: 1.35;
+}
+.report-list {
+  height: max-content;
+  max-height: min(58vh, 620px);
+  padding-right: 6px;
+}
+.admin-report {
+  display: grid;
+  gap: 12px;
+  padding: 15px;
+  border: 1px solid rgba(191, 219, 254, 0.15);
+  border-radius: 8px;
+  background:
+    linear-gradient(165deg, rgba(8, 14, 28, 0.74), rgba(2, 6, 23, 0.56)),
+    linear-gradient(90deg, rgba(45, 212, 191, 0.08), transparent 42%);
+}
+.admin-report-topline {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+.report-status-pill {
+  flex: 0 0 auto;
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(167, 243, 208, 0.2);
+  border-radius: 999px;
+  padding: 0 9px;
+  color: #bbf7d0;
+  background: rgba(6, 78, 59, 0.28);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+.admin-report-message {
+  max-height: 180px;
+  margin: 0;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  border: 1px solid rgba(191, 219, 254, 0.12);
+  border-radius: 8px;
+  padding: 12px;
+  color: #e0f2fe;
+  background: rgba(2, 6, 23, 0.52);
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+.admin-report-note {
+  margin: 0;
+  border-left: 3px solid rgba(167, 243, 208, 0.62);
+  padding: 8px 10px;
+  color: #d1fae5;
+  background: rgba(6, 78, 59, 0.2);
+  border-radius: 0 8px 8px 0;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.admin-report-context {
+  border: 1px solid rgba(191, 219, 254, 0.12);
+  border-radius: 8px;
+  background: rgba(2, 6, 23, 0.36);
+}
+.admin-report-context summary {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  padding: 0 11px;
+  color: #bfdbfe;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 820;
+}
+.admin-report-context ol {
+  margin: 0;
+  padding: 0 12px 12px 30px;
+  color: #dbeafe;
+  line-height: 1.4;
+}
+.admin-report-context li {
+  margin-top: 7px;
+  overflow-wrap: anywhere;
+}
+.admin-report-context li span {
+  display: inline-flex;
+  margin-right: 6px;
+  color: #a7f3d0;
+  font-size: 12px;
+  font-weight: 900;
+}
+.report-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.report-actions button {
+  min-width: 92px;
+}
+.report-fixed-button {
+  background: #a7f3d0;
+}
 .messages {
   position: relative;
   z-index: 1;
@@ -989,6 +1107,7 @@ img.account-avatar {
   min-height: 22px;
 }
 .copy-message,
+.report-message,
 .thought-time {
   height: 22px;
   padding: 0 8px;
@@ -1010,23 +1129,61 @@ img.account-avatar {
 .copy-message {
   min-width: 48px;
 }
+.report-message {
+  width: 28px;
+  min-width: 28px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+}
+.report-message img {
+  display: block;
+  width: 13px;
+  height: 13px;
+  object-fit: contain;
+  filter: invert(91%) sepia(17%) saturate(416%) hue-rotate(184deg) brightness(104%) contrast(96%);
+  opacity: 0.9;
+}
+.report-message.reported {
+  color: #07111f;
+  background: rgba(167, 243, 208, 0.95);
+  opacity: 0.92;
+  pointer-events: none;
+  transform: translateY(0);
+}
+.report-message.reported img {
+  filter: none;
+}
 .message-row:hover .copy-message,
 .message-row:focus-within .copy-message,
+.message-row:hover .report-message,
+.message-row:focus-within .report-message,
 .message-row:hover .thought-time,
 .message-row:focus-within .thought-time {
   opacity: 0.76;
   transform: translateY(0);
 }
 .message-row:hover .copy-message,
-.message-row:focus-within .copy-message {
+.message-row:focus-within .copy-message,
+.message-row:hover .report-message,
+.message-row:focus-within .report-message {
   pointer-events: auto;
 }
-.copy-message:hover, .copy-message:focus-visible {
+.copy-message:hover, .copy-message:focus-visible,
+.report-message:hover, .report-message:focus-visible {
   color: #07111f;
   background: #dbeafe;
   opacity: 1;
   outline: none;
   transform: translateY(-1px);
+}
+.report-message:hover img,
+.report-message:focus-visible img {
+  filter: none;
+}
+.report-message:disabled {
+  cursor: default;
+  pointer-events: none;
 }
 .thought-time {
   display: inline-flex;
@@ -1601,6 +1758,151 @@ img.account-avatar {
   scrollbar-width: thin;
   scrollbar-color: rgba(219, 234, 254, 0.26) transparent;
 }
+.report-overlay,
+.report-fixed-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 78;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  background:
+    linear-gradient(180deg, rgba(2, 6, 23, 0.68), rgba(2, 6, 23, 0.78)),
+    rgba(0, 0, 0, 0.48);
+  backdrop-filter: blur(18px) saturate(0.86);
+  animation: warningFade 180ms ease-out both;
+}
+.report-fixed-overlay {
+  z-index: 86;
+}
+.report-modal,
+.report-fixed-modal {
+  position: relative;
+  width: min(520px, 100%);
+  display: grid;
+  gap: 14px;
+  padding: 24px;
+  border: 1px solid rgba(191, 219, 254, 0.18);
+  border-radius: 12px;
+  color: #f8fbff;
+  background:
+    linear-gradient(158deg, rgba(10, 18, 33, 0.98), rgba(2, 6, 23, 0.97)),
+    radial-gradient(circle at 14% 0%, rgba(167, 243, 208, 0.14), transparent 34%),
+    radial-gradient(circle at 100% 100%, rgba(96, 165, 250, 0.12), transparent 35%);
+  box-shadow: 0 30px 100px rgba(0, 0, 0, 0.58);
+  outline: none;
+  animation: warningPop 220ms ease-out both;
+}
+.report-fixed-modal {
+  width: min(460px, 100%);
+  justify-items: start;
+}
+.report-modal-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding-right: 40px;
+}
+.report-modal-icon,
+.report-fixed-icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: linear-gradient(145deg, #dbeafe, #a7f3d0);
+  box-shadow: 0 16px 36px rgba(45, 212, 191, 0.18);
+}
+.report-fixed-icon {
+  width: 50px;
+  height: 50px;
+}
+.report-modal-icon img,
+.report-fixed-icon img {
+  display: block;
+  width: 21px;
+  height: 21px;
+  object-fit: contain;
+}
+.report-eyebrow {
+  display: inline-flex;
+  margin-bottom: 5px;
+  color: #a7f3d0;
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.report-modal h2,
+.report-fixed-modal h2 {
+  margin: 0;
+  font-size: 28px;
+  line-height: 1.05;
+  letter-spacing: 0;
+}
+.report-modal-copy,
+.report-fixed-modal p {
+  margin: 0;
+  color: #dbeafe;
+  line-height: 1.5;
+}
+.report-preview {
+  max-height: 170px;
+  margin: 0;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  border: 1px solid rgba(191, 219, 254, 0.16);
+  border-radius: 10px;
+  padding: 12px;
+  color: #e0f2fe;
+  background: rgba(2, 6, 23, 0.52);
+  line-height: 1.45;
+}
+.report-preview.fixed {
+  width: 100%;
+}
+.report-form {
+  display: grid;
+  gap: 12px;
+}
+.report-form label {
+  display: grid;
+  gap: 6px;
+  color: #bfdbfe;
+  font-size: 12px;
+  font-weight: 820;
+}
+.report-form textarea {
+  min-height: 88px;
+  padding: 10px 12px;
+  resize: vertical;
+  line-height: 1.4;
+}
+.report-error {
+  padding: 10px 12px;
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  border-radius: 10px;
+  color: #fecaca;
+  background: rgba(127, 29, 29, 0.24);
+  font-size: 13px;
+  font-weight: 760;
+}
+.report-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.report-submit-button {
+  min-width: 122px;
+}
+.report-fixed-action {
+  justify-self: start;
+  margin-top: 4px;
+  background: #16a34a;
+  animation: none;
+}
 .modal-close {
   position: absolute;
   top: 12px;
@@ -2133,6 +2435,32 @@ img.account-avatar {
   .admin-list-item {
     grid-template-columns: 1fr;
   }
+  .admin-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .admin-report-topline {
+    display: grid;
+  }
+  .report-actions {
+    justify-content: stretch;
+  }
+  .report-actions button {
+    flex: 1 1 120px;
+  }
+  .report-overlay,
+  .report-fixed-overlay {
+    padding: 14px;
+  }
+  .report-modal,
+  .report-fixed-modal {
+    padding: 20px;
+    max-height: calc(100dvh - 28px);
+    overflow-y: auto;
+  }
+  .report-modal-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
   .admin-row-actions {
     justify-content: flex-start;
   }
@@ -2284,6 +2612,9 @@ img.account-avatar {
   .chat-page {
     padding-left: 10px;
     padding-right: 10px;
+  }
+  .admin-grid {
+    grid-template-columns: 1fr;
   }
   .topbar-actions {
     gap: 6px;
