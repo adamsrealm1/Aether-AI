@@ -1690,6 +1690,17 @@ img.account-avatar {
   color: #fff;
   background: rgba(255, 255, 255, 0.08);
 }
+.composer .speed-option:hover,
+.composer .speed-option:focus-visible {
+  color: #fff;
+  background: rgba(239, 68, 68, 0.72);
+  outline: none;
+  transform: translateY(-1px);
+}
+.composer .speed-option:hover small,
+.composer .speed-option:focus-visible small {
+  color: rgba(255, 255, 255, 0.78);
+}
 .composer .speed-trigger:disabled:hover,
 .composer .speed-trigger:disabled:focus-visible {
   color: #d4d4d8;
