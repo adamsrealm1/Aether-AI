@@ -2311,7 +2311,7 @@ def groq_reply(message: str, chat: list[dict], speed_mode: str = "default") -> s
 
 
 def looks_like_weather_request(message: str) -> bool:
-    return bool(re.search(r"\b(weather|forecast|temperature|rain|snow|humidity|wind|storm|hot|cold)\b", message, re.I))
+    return bool(re.search(r"\b(weather|forecast|temperature)\b", message, re.I))
 
 
 def looks_like_location_time_request(message: str) -> bool:

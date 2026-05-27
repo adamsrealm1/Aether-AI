@@ -60,6 +60,12 @@
     changelogError: "",
     changelogCommits: [],
     changelogFetchedAt: "",
+    adminDirectorySearch: {
+      adminsOpen: false,
+      adminsQuery: "",
+      accountsOpen: false,
+      accountsQuery: "",
+    },
     updateAvailable: false,
     updateCheckLoading: false,
     loadedCommitSha: "",
@@ -90,7 +96,7 @@ const SAFETY_LOCK_PLACEHOLDER = "Aether can not continue this conversation. Crea
 const BAN_POPUP_BODY = "You can not use Aether AI because you were banned by an admin.";
 const VOICE_AUTO_SEND_DELAY_MS = 1800;
 const SAFETY_LOCK_DELAY_MS = 3000;
-const DEFAULT_MODE_EXTRA_THINK_DELAY_MS = 2000;
+const DEFAULT_MODE_EXTRA_THINK_DELAY_MS = 1000;
 const ACCOUNT_SESSION_TOKEN_KEY = "aether.accountSessionToken";
 const REPORTER_CLIENT_ID_KEY = "aether.reporterClientId";
 const MOBILE_SCROLL_FADE_QUERY = "(max-width: 860px), (pointer: coarse)";
@@ -101,6 +107,18 @@ const DEFAULT_CHAT_TITLE = "New conversation";
 const CHANGELOG_COMMIT_LIMIT = 5;
 const CHANGELOG_REFRESH_MS = 2 * 60 * 1000;
 const UPDATE_CHECK_INTERVAL_MS = 2 * 60 * 1000;
+const ADMIN_DIRECTORY_SEARCH_CONFIG = {
+  admins: {
+    title: "Admins",
+    singular: "admin",
+    placeholder: "Search admins",
+  },
+  accounts: {
+    title: "Accounts",
+    singular: "account",
+    placeholder: "Search accounts",
+  },
+};
 const SPEED_MODES = {
   default: {
     label: "Standard",
@@ -724,54 +742,150 @@ function renderBlockedAttemptsPanel(attempts) {
 }
 
 function renderAdminsPanel(admins, canManageAdmins) {
+  const filteredAdmins = filteredAdminDirectoryItems("admins", admins);
+  const searching = Boolean(adminDirectorySearchQuery("admins"));
   return `
-    <section class="admin-panel account-admin-panel">
+    <section class="admin-panel account-admin-panel" data-admin-directory-panel="admins">
       <div class="admin-panel-head">
-        <h2>Admins</h2>
-        <span>${admins.length}</span>
+        <div class="admin-panel-title">
+          <h2>Admins</h2>
+          <span data-admin-directory-count="admins">${escapeHtml(adminDirectoryCountLabel("admins", filteredAdmins.length, admins.length))}</span>
+        </div>
+        ${renderAdminDirectorySearch("admins")}
       </div>
-      <div class="admin-list account-admin-list">
-        ${admins.map((admin) => `
-          <div class="admin-list-item account-admin-item">
-            <div>
-              <strong>${renderUsernameLabel(admin, { suffix: admin.isOwnerAdmin ? " (owner)" : "" })}</strong>
-              <small>Admin since ${escapeHtml(formatAdminDate(admin.adminSince || admin.createdAt))}</small>
-            </div>
-            ${canManageAdmins && !admin.isOwnerAdmin ? `<button class="secondary-button" data-admin-revoke="${escapeHtml(admin.id || "")}"${Aether.state.adminLoading ? " disabled" : ""}>Remove admin</button>` : ""}
-          </div>
-        `).join("") || `<div class="admin-empty">No admins yet.</div>`}
+      <div class="admin-list account-admin-list" data-admin-directory-list="admins">
+        ${renderAdminsList(filteredAdmins, canManageAdmins, { searching })}
       </div>
     </section>
   `;
 }
 
 function renderAdminAccountsPanel(accounts, canManageAdmins) {
+  const filteredAccounts = filteredAdminDirectoryItems("accounts", accounts);
+  const searching = Boolean(adminDirectorySearchQuery("accounts"));
   return `
-    <section class="admin-panel account-admin-panel">
+    <section class="admin-panel account-admin-panel" data-admin-directory-panel="accounts">
       <div class="admin-panel-head">
-        <h2>Accounts</h2>
-        <span>${accounts.length}</span>
+        <div class="admin-panel-title">
+          <h2>Accounts</h2>
+          <span data-admin-directory-count="accounts">${escapeHtml(adminDirectoryCountLabel("accounts", filteredAccounts.length, accounts.length))}</span>
+        </div>
+        ${renderAdminDirectorySearch("accounts")}
       </div>
-      <div class="admin-list account-admin-list">
-        ${accounts.map((account) => `
-          <div class="admin-list-item account-admin-item">
-            <div class="account-admin-profile">
-              ${renderAccountAvatar(account)}
-              <div>
-                <strong>${renderUsernameLabel(account)}</strong>
-                <small>Created ${escapeHtml(formatAdminDate(account.createdAt))} - Last login ${escapeHtml(formatAdminDate(account.lastLoginAt))}${account.isAdmin ? " - Admin" : ""}${account.isBanned ? " - Banned" : ""}</small>
-              </div>
-            </div>
-            <div class="admin-row-actions">
-              ${canManageAdmins && !account.isAdmin ? `<button class="secondary-button" data-admin-grant="${escapeHtml(account.id || "")}"${Aether.state.adminLoading ? " disabled" : ""}>Give admin</button>` : ""}
-              <button class="secondary-button" data-admin-verify="${escapeHtml(account.id || "")}" data-verified-next="${account.isVerified ? "false" : "true"}"${Aether.state.adminLoading ? " disabled" : ""}>${account.isVerified ? "Unverify" : "Verify"}</button>
-              <button class="danger-button" data-admin-delete-account="${escapeHtml(account.id || "")}"${Aether.state.adminLoading || account.isOwnerAdmin ? " disabled" : ""}>Delete</button>
-            </div>
-          </div>
-        `).join("") || `<div class="admin-empty">No accounts yet.</div>`}
+      <div class="admin-list account-admin-list" data-admin-directory-list="accounts">
+        ${renderAccountsList(filteredAccounts, canManageAdmins, { searching })}
       </div>
     </section>
   `;
+}
+
+function renderAdminDirectorySearch(kind) {
+  const config = ADMIN_DIRECTORY_SEARCH_CONFIG[kind] || ADMIN_DIRECTORY_SEARCH_CONFIG.accounts;
+  const open = adminDirectorySearchOpen(kind);
+  const query = adminDirectorySearchQuery(kind);
+  return `
+    <div class="admin-search-control ${open ? "open" : ""}" data-admin-search-shell="${escapeHtml(kind)}">
+      <input class="admin-search-input" data-admin-search-input="${escapeHtml(kind)}" type="search" autocomplete="off" spellcheck="false" placeholder="${escapeHtml(config.placeholder)}" value="${escapeHtml(query)}" aria-label="${escapeHtml(config.placeholder)}" tabindex="${open ? "0" : "-1"}">
+      <button class="admin-search-button" type="button" data-admin-search-toggle="${escapeHtml(kind)}" aria-label="Search ${escapeHtml(config.title)}" aria-expanded="${open ? "true" : "false"}" title="Search ${escapeHtml(config.title)}">
+        <img src="assets/icon_library/search.png" alt="" aria-hidden="true">
+      </button>
+    </div>
+  `;
+}
+
+function renderAdminsList(admins, canManageAdmins, options = {}) {
+  if (!admins.length) {
+    return `<div class="admin-empty">${options.searching ? "No admins match your search." : "No admins yet."}</div>`;
+  }
+  return admins.map((admin) => `
+    <div class="admin-list-item account-admin-item">
+      <div>
+        <strong>${renderUsernameLabel(admin, { suffix: admin.isOwnerAdmin ? " (owner)" : "" })}</strong>
+        <small>Admin since ${escapeHtml(formatAdminDate(admin.adminSince || admin.createdAt))}</small>
+      </div>
+      ${canManageAdmins && !admin.isOwnerAdmin ? `<button class="secondary-button" data-admin-revoke="${escapeHtml(admin.id || "")}"${Aether.state.adminLoading ? " disabled" : ""}>Remove admin</button>` : ""}
+    </div>
+  `).join("");
+}
+
+function renderAccountsList(accounts, canManageAdmins, options = {}) {
+  if (!accounts.length) {
+    return `<div class="admin-empty">${options.searching ? "No accounts match your search." : "No accounts yet."}</div>`;
+  }
+  return accounts.map((account) => `
+    <div class="admin-list-item account-admin-item">
+      <div class="account-admin-profile">
+        ${renderAccountAvatar(account)}
+        <div>
+          <strong>${renderUsernameLabel(account)}</strong>
+          <small>Created ${escapeHtml(formatAdminDate(account.createdAt))} - Last login ${escapeHtml(formatAdminDate(account.lastLoginAt))}${account.isAdmin ? " - Admin" : ""}${account.isBanned ? " - Banned" : ""}</small>
+        </div>
+      </div>
+      <div class="admin-row-actions">
+        ${canManageAdmins && !account.isAdmin ? `<button class="secondary-button" data-admin-grant="${escapeHtml(account.id || "")}"${Aether.state.adminLoading ? " disabled" : ""}>Give admin</button>` : ""}
+        <button class="secondary-button" data-admin-verify="${escapeHtml(account.id || "")}" data-verified-next="${account.isVerified ? "false" : "true"}"${Aether.state.adminLoading ? " disabled" : ""}>${account.isVerified ? "Unverify" : "Verify"}</button>
+        <button class="danger-button" data-admin-delete-account="${escapeHtml(account.id || "")}"${Aether.state.adminLoading || account.isOwnerAdmin ? " disabled" : ""}>Delete</button>
+      </div>
+    </div>
+  `).join("");
+}
+
+function filteredAdminDirectoryItems(kind, items) {
+  const query = adminDirectorySearchQuery(kind).toLowerCase();
+  const values = Array.isArray(items) ? items : [];
+  if (!query) return values;
+  return values.filter((item) => adminDirectorySearchText(kind, item).includes(query));
+}
+
+function adminDirectorySearchText(kind, item) {
+  const common = [
+    item?.id,
+    item?.username,
+    item?.createdAt,
+    item?.lastLoginAt,
+    item?.adminSince,
+    item?.isVerified ? "verified" : "unverified",
+    item?.isOwnerAdmin ? "owner" : "",
+    item?.isAdmin ? "admin" : "",
+    item?.isBanned ? "banned" : "",
+  ];
+  if (kind === "admins") {
+    common.push("admin", item?.isOwnerAdmin ? "owner admin" : "");
+  }
+  if (kind === "accounts") {
+    common.push("account");
+  }
+  return common
+    .filter((value) => value !== undefined && value !== null)
+    .join(" ")
+    .toLowerCase();
+}
+
+function adminDirectoryCountLabel(kind, filteredCount, totalCount) {
+  const query = adminDirectorySearchQuery(kind);
+  if (!query) return String(totalCount);
+  return `${filteredCount}/${totalCount}`;
+}
+
+function adminDirectorySearchOpen(kind) {
+  return Boolean(Aether.state.adminDirectorySearch?.[`${kind}Open`]);
+}
+
+function adminDirectorySearchQuery(kind) {
+  return String(Aether.state.adminDirectorySearch?.[`${kind}Query`] || "").trim();
+}
+
+function setAdminDirectorySearch(kind, updates) {
+  if (!ADMIN_DIRECTORY_SEARCH_CONFIG[kind]) return;
+  if (!Aether.state.adminDirectorySearch) {
+    Aether.state.adminDirectorySearch = {};
+  }
+  if (Object.prototype.hasOwnProperty.call(updates, "open")) {
+    Aether.state.adminDirectorySearch[`${kind}Open`] = Boolean(updates.open);
+  }
+  if (Object.prototype.hasOwnProperty.call(updates, "query")) {
+    Aether.state.adminDirectorySearch[`${kind}Query`] = String(updates.query || "");
+  }
 }
 
 function renderProfilePictureReviewPanel(requests) {
@@ -1729,9 +1843,118 @@ function bindAdminEvents(root) {
       if (declined) showToast("Profile picture declined.");
     });
   });
+  bindAdminDirectorySearchEvents(root);
   root.querySelector("[data-action='admin-show-all']")?.addEventListener("click", () => {
     Aether.state.blockedAttemptsExpanded = true;
     loadAdminStatus({ all: true });
+  });
+}
+
+function bindAdminDirectorySearchEvents(root) {
+  root.querySelectorAll("[data-admin-search-toggle]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const kind = button.dataset.adminSearchToggle || "";
+      const opening = !adminDirectorySearchOpen(kind);
+      setAdminDirectorySearch(kind, {
+        open: opening,
+        query: opening ? adminDirectorySearchQuery(kind) : "",
+      });
+      render();
+      if (opening) focusAdminDirectorySearch(kind);
+    });
+  });
+
+  root.querySelectorAll("[data-admin-search-input]").forEach((input) => {
+    input.addEventListener("input", (event) => {
+      const kind = event.currentTarget.dataset.adminSearchInput || "";
+      setAdminDirectorySearch(kind, { query: event.currentTarget.value });
+      updateAdminDirectoryPanelDom(kind);
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      const kind = event.currentTarget.dataset.adminSearchInput || "";
+      event.preventDefault();
+      if (adminDirectorySearchQuery(kind)) {
+        event.currentTarget.value = "";
+        setAdminDirectorySearch(kind, { query: "" });
+        updateAdminDirectoryPanelDom(kind);
+        return;
+      }
+      setAdminDirectorySearch(kind, { open: false, query: "" });
+      render();
+    });
+  });
+}
+
+function bindAdminAccountActionEvents(root) {
+  root.querySelectorAll("[data-admin-delete-account]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const accountId = button.dataset.adminDeleteAccount || "";
+      if (!accountId) return;
+      const deleted = await adminRequest("/api/admin/delete-account", {
+        method: "POST",
+        body: JSON.stringify({ accountId }),
+      });
+      if (deleted) showToast("Account deleted.");
+    });
+  });
+  root.querySelectorAll("[data-admin-grant]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const granted = await adminRequest("/api/admin/grant-admin", {
+        method: "POST",
+        body: JSON.stringify({ accountId: button.dataset.adminGrant || "" }),
+      });
+      if (granted) showToast("Admin access granted.");
+    });
+  });
+  root.querySelectorAll("[data-admin-verify]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const verified = button.dataset.verifiedNext !== "false";
+      const updated = await adminRequest("/api/admin/verify-account", {
+        method: "POST",
+        body: JSON.stringify({ accountId: button.dataset.adminVerify || "", verified }),
+      });
+      if (updated) showToast(verified ? "Account verified." : "Account unverified.");
+    });
+  });
+  root.querySelectorAll("[data-admin-revoke]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const revoked = await adminRequest("/api/admin/revoke-admin", {
+        method: "POST",
+        body: JSON.stringify({ accountId: button.dataset.adminRevoke || "" }),
+      });
+      if (revoked) showToast("Admin access removed.");
+    });
+  });
+}
+
+function updateAdminDirectoryPanelDom(kind) {
+  if (!ADMIN_DIRECTORY_SEARCH_CONFIG[kind]) return;
+  const panel = document.querySelector(`[data-admin-directory-panel="${CSS.escape(kind)}"]`);
+  const list = panel?.querySelector(`[data-admin-directory-list="${CSS.escape(kind)}"]`);
+  const count = panel?.querySelector(`[data-admin-directory-count="${CSS.escape(kind)}"]`);
+  if (!panel || !list) return;
+
+  const status = Aether.state.adminStatus || {};
+  const items = kind === "admins" ? (status.admins || []) : (status.accounts || []);
+  const canManageAdmins = Boolean(status.canManageAdmins || Aether.state.account?.isOwnerAdmin);
+  const filtered = filteredAdminDirectoryItems(kind, items);
+  const searching = Boolean(adminDirectorySearchQuery(kind));
+
+  list.innerHTML = kind === "admins"
+    ? renderAdminsList(filtered, canManageAdmins, { searching })
+    : renderAccountsList(filtered, canManageAdmins, { searching });
+  if (count) {
+    count.textContent = adminDirectoryCountLabel(kind, filtered.length, items.length);
+  }
+  bindAdminAccountActionEvents(panel);
+}
+
+function focusAdminDirectorySearch(kind) {
+  requestAnimationFrame(() => {
+    const input = document.querySelector(`[data-admin-search-input="${CSS.escape(kind)}"]`);
+    input?.focus({ preventScroll: true });
+    input?.select();
   });
 }
 
