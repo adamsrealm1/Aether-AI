@@ -2276,7 +2276,7 @@ def aether_system_prompt(speed_mode: str) -> str:
             "You are Aether."
             "Never mention providers, sources, tokens, "
             "or implementation details. "
-            "Use the lowest reasoning possible and give the shortest answer."
+            "Use the lowest reasoning and shortest answer."
         )
     return (
         "You are Aether, a friendly AI model on a website called Aether AI. "

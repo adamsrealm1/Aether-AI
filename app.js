@@ -60,6 +60,10 @@
     changelogError: "",
     changelogCommits: [],
     changelogFetchedAt: "",
+    updateAvailable: false,
+    updateCheckLoading: false,
+    loadedCommitSha: "",
+    latestCommitSha: "",
   },
 };
 
@@ -67,6 +71,8 @@ let messageVisibilityObserver = null;
 let rateMeterTimer = null;
 let rateLimitCountdownTimer = null;
 let serverStatusTimer = null;
+let updateCheckTimer = null;
+let updateCheckEventsBound = false;
 let accountChatsSaveTimer = null;
 let accountChatsSaving = false;
 let accountChatsSaveQueued = false;
@@ -94,6 +100,7 @@ const DEFAULT_ASSISTANT_GREETING = "Hi there! I'm Aether. What's on your mind?";
 const DEFAULT_CHAT_TITLE = "New conversation";
 const CHANGELOG_COMMIT_LIMIT = 5;
 const CHANGELOG_REFRESH_MS = 2 * 60 * 1000;
+const UPDATE_CHECK_INTERVAL_MS = 2 * 60 * 1000;
 const SPEED_MODES = {
   default: {
     label: "Standard",
@@ -269,6 +276,7 @@ function bootstrap() {
   render();
   checkServerStatus();
   startServerStatusPolling();
+  startUpdateWatcher();
 }
 
 function render() {
@@ -312,6 +320,7 @@ function render() {
         ${renderAccountModal()}
         ${renderToast()}
       </div>
+      ${renderUpdateBanner()}
       ${renderBanOverlay()}
     </div>
   `;
@@ -844,6 +853,18 @@ function renderToast() {
   return `<div class="toast${visible}" role="status" aria-live="polite">${escapeHtml(Aether.state.toast)}</div>`;
 }
 
+function renderUpdateBanner() {
+  if (!Aether.state.updateAvailable) return "";
+  return `
+    <div class="update-banner" role="status" aria-live="polite">
+      <div class="update-banner-inner">
+        <img src="assets/icon_library/flag.png" alt="" aria-hidden="true">
+        <span>A new update is available, refresh the site to see new changes.</span>
+      </div>
+    </div>
+  `;
+}
+
 function renderRateLimitMeter() {
   const rate = Aether.state.rateLimit || {};
   const limit = Math.max(1, Number(rate.limit || 300));
@@ -1014,7 +1035,7 @@ function renderChangelogModal() {
           </div>
         </div>
         <div class="changelog-toolbar">
-          <span>Latest ${CHANGELOG_COMMIT_LIMIT} commits</span>
+          <span>Last ${CHANGELOG_COMMIT_LIMIT} updates</span>
           <button class="secondary-button changelog-refresh" type="button" data-action="refresh-changelog"${Aether.state.changelogLoading ? " disabled" : ""}>
             ${Aether.state.changelogLoading ? "Refreshing..." : "Refresh"}
           </button>
@@ -1053,12 +1074,12 @@ function renderChangelogCommit(commit) {
       <div class="commit-avatar">${avatar}</div>
       <div class="commit-content">
         <div class="commit-name-row">
-          <span class="commit-label">Name</span>
+          <span class="commit-label"></span>
           <a class="commit-name"${url}>${escapeHtml(commit.name)}</a>
         </div>
         <div class="commit-facts">
-          <span><b>Publisher</b> ${escapeHtml(commit.publisher)}</span>
-          <span><b>Time</b> ${escapeHtml(formatCommitTime(commit.time))}</span>
+          <span><b>Publisher:</b> ${escapeHtml(commit.publisher)}</span>
+          <span><b>Time updated:</b> ${escapeHtml(formatCommitTime(commit.time))}</span>
         </div>
       </div>
       <span class="commit-sha">${escapeHtml(commit.sha.slice(0, 7))}</span>
@@ -3066,6 +3087,7 @@ async function loadChangelogCommits(options = {}) {
     if (!Array.isArray(data)) {
       throw new Error("GitHub returned an unexpected changelog response.");
     }
+    trackLatestCommit(data[0]);
     Aether.state.changelogCommits = data.slice(0, CHANGELOG_COMMIT_LIMIT).map(normalizeGithubCommit);
     Aether.state.changelogFetchedAt = new Date().toISOString();
   } catch (error) {
@@ -3079,8 +3101,65 @@ async function loadChangelogCommits(options = {}) {
   }
 }
 
-function githubCommitsUrl() {
-  return `https://api.github.com/repos/${encodeURIComponent(normalizedGithubRepo()).replace("%2F", "/")}/commits?per_page=${CHANGELOG_COMMIT_LIMIT}`;
+function startUpdateWatcher() {
+  checkForNewCommit({ establishBaseline: true });
+  if (!updateCheckTimer) {
+    updateCheckTimer = setInterval(checkForNewCommit, UPDATE_CHECK_INTERVAL_MS);
+  }
+  if (!updateCheckEventsBound) {
+    document.addEventListener("visibilitychange", handleUpdateVisibilityCheck);
+    window.addEventListener("focus", checkForNewCommit);
+    updateCheckEventsBound = true;
+  }
+}
+
+function handleUpdateVisibilityCheck() {
+  if (document.visibilityState === "visible") {
+    checkForNewCommit();
+  }
+}
+
+async function checkForNewCommit(options = {}) {
+  if (Aether.state.updateCheckLoading) return;
+  if (Aether.state.updateAvailable && !options.establishBaseline) return;
+
+  Aether.state.updateCheckLoading = true;
+  try {
+    const response = await fetch(githubCommitsUrl(1), {
+      headers: { Accept: "application/vnd.github+json" },
+      cache: "no-store",
+    });
+    const data = await response.json().catch(() => []);
+    if (!response.ok || !Array.isArray(data)) return;
+    trackLatestCommit(data[0], { establishBaseline: Boolean(options.establishBaseline) });
+  } catch {
+    // The update banner is opportunistic; network errors should not interrupt the app.
+  } finally {
+    Aether.state.updateCheckLoading = false;
+  }
+}
+
+function trackLatestCommit(item, options = {}) {
+  const sha = String(item?.sha || "").trim();
+  if (!sha) return;
+  const previousAvailable = Aether.state.updateAvailable;
+  Aether.state.latestCommitSha = sha;
+
+  if (options.establishBaseline || !Aether.state.loadedCommitSha) {
+    Aether.state.loadedCommitSha = sha;
+    return;
+  }
+
+  if (sha !== Aether.state.loadedCommitSha) {
+    Aether.state.updateAvailable = true;
+  }
+  if (Aether.state.updateAvailable !== previousAvailable) {
+    updateUpdateBannerDom();
+  }
+}
+
+function githubCommitsUrl(perPage = CHANGELOG_COMMIT_LIMIT) {
+  return `https://api.github.com/repos/${encodeURIComponent(normalizedGithubRepo()).replace("%2F", "/")}/commits?per_page=${Math.max(1, Number(perPage) || CHANGELOG_COMMIT_LIMIT)}`;
 }
 
 function normalizedGithubRepo() {
@@ -3285,6 +3364,19 @@ function updateToastDom() {
   }
   toast.textContent = Aether.state.toast;
   toast.classList.toggle("show", Boolean(Aether.state.toast));
+}
+
+function updateUpdateBannerDom() {
+  const shell = document.querySelector(".app-shell");
+  if (!shell) return;
+  const banner = document.querySelector(".update-banner");
+  if (!Aether.state.updateAvailable) {
+    banner?.remove();
+    return;
+  }
+  if (!banner) {
+    shell.insertAdjacentHTML("beforeend", renderUpdateBanner());
+  }
 }
 
 function focusComposer() {
