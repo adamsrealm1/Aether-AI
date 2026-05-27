@@ -833,16 +833,15 @@ function renderAccountsList(accounts, canManageAdmins, options = {}) {
 
 function renderAccountRateLimit(rate) {
   const normalized = normalizedAccountRate(rate);
-  const used = normalized.used;
   const limit = normalized.limit;
   const remaining = normalized.remaining;
-  const percent = normalized.percentUsed;
+  const percent = normalized.percentRemaining;
   return `
     <div class="account-rate-limit" style="--account-rate: ${percent}%; --account-rate-color: ${accountRateColor(percent)}">
       <div class="account-rate-copy">
         <span>Rate limit</span>
-        <strong>${escapeHtml(`${used}/${limit}`)}</strong>
-        <small>${escapeHtml(`${remaining} left`)}</small>
+        <strong>${escapeHtml(`${percent}%`)}</strong>
+        <small>${escapeHtml(`${remaining}/${limit} left`)}</small>
       </div>
       <div class="account-rate-track" aria-hidden="true"><span></span></div>
     </div>
@@ -859,14 +858,14 @@ function normalizedAccountRate(rate) {
     limit,
     used,
     remaining,
-    percentUsed: Math.round((used / limit) * 100),
+    percentRemaining: Math.round((remaining / limit) * 100),
   };
 }
 
-function accountRateColor(percentUsed) {
-  const percent = clampPercent(percentUsed);
-  if (percent >= 88) return "#fb7185";
-  if (percent >= 65) return "#facc15";
+function accountRateColor(percentRemaining) {
+  const percent = clampPercent(percentRemaining);
+  if (percent <= 12) return "#fb7185";
+  if (percent <= 35) return "#facc15";
   return "#a7f3d0";
 }
 
