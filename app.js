@@ -1448,13 +1448,7 @@ function bindEvents(root) {
   });
   root.querySelector("[data-action='submit-report']")?.addEventListener("submit", submitReport);
   root.querySelector("[data-action='close-report-fixed']")?.addEventListener("click", closeReportFixedNotice);
-  root.querySelectorAll("[data-action='close-changelog-modal']").forEach((element) => {
-    element.addEventListener("click", (event) => {
-      if (element.classList.contains("changelog-overlay") && event.target !== element) return;
-      closeChangelogModal();
-    });
-  });
-  root.querySelector("[data-action='refresh-changelog']")?.addEventListener("click", () => loadChangelogCommits({ force: true }));
+  bindChangelogEvents(root);
   bindAccountEvents(root);
   bindAdminEvents(root);
 }
@@ -1463,6 +1457,16 @@ function focusBanOverlay(root = document) {
   requestAnimationFrame(() => {
     root.querySelector(".ban-lock-card")?.focus({ preventScroll: true });
   });
+}
+
+function bindChangelogEvents(root) {
+  root.querySelectorAll("[data-action='close-changelog-modal']").forEach((element) => {
+    element.addEventListener("click", (event) => {
+      if (element.classList.contains("changelog-overlay") && event.target !== element) return;
+      closeChangelogModal();
+    });
+  });
+  root.querySelector("[data-action='refresh-changelog']")?.addEventListener("click", () => loadChangelogCommits({ force: true }));
 }
 
 function bindAccountEvents(root) {
@@ -1951,6 +1955,28 @@ function updateAdminDirectoryPanelDom(kind) {
     count.textContent = adminDirectoryCountLabel(kind, filtered.length, items.length);
   }
   bindAdminAccountActionEvents(panel);
+}
+
+function updateAdminPageDom() {
+  const page = document.querySelector(".admin-page");
+  const currentScroll = page?.querySelector(".admin-scroll");
+  if (!page || !currentScroll || !Aether.state.adminView) {
+    render();
+    return;
+  }
+
+  const scrollTop = currentScroll.scrollTop;
+  const template = document.createElement("template");
+  template.innerHTML = renderAdminPage().trim();
+  const nextScroll = template.content.querySelector(".admin-scroll");
+  if (!nextScroll) {
+    render();
+    return;
+  }
+
+  currentScroll.innerHTML = nextScroll.innerHTML;
+  currentScroll.scrollTop = scrollTop;
+  bindAdminEvents(currentScroll);
 }
 
 function applyAdminDirectorySearchDomState(kind) {
@@ -3104,7 +3130,6 @@ async function loadAdminStatus(options = {}) {
   if (!isCurrentAdmin()) return;
   Aether.state.adminLoading = true;
   Aether.state.adminError = "";
-  if (Aether.state.adminView) render();
   try {
     const all = options.all || Aether.state.blockedAttemptsExpanded;
     const response = await fetch(apiUrl(`/api/admin/status${all ? "?all=1" : ""}`), {
@@ -3132,19 +3157,24 @@ async function loadAdminStatus(options = {}) {
     Aether.state.adminError = error?.message || "Admin request failed.";
   } finally {
     Aether.state.adminLoading = false;
-    if (Aether.state.adminView) render();
+    if (Aether.state.adminView) {
+      updateAdminPageDom();
+    }
   }
 }
 
 async function adminRequest(path, options = {}) {
   if (!isCurrentAdmin()) {
     Aether.state.adminError = "Sign in with an admin account first.";
-    render();
+    if (Aether.state.adminView) {
+      updateAdminPageDom();
+    } else {
+      render();
+    }
     return null;
   }
   Aether.state.adminLoading = true;
   Aether.state.adminError = "";
-  render();
   try {
     const response = await fetch(apiUrl(path), {
       ...options,
@@ -3174,7 +3204,11 @@ async function adminRequest(path, options = {}) {
     return null;
   } finally {
     Aether.state.adminLoading = false;
-    render();
+    if (Aether.state.adminView) {
+      updateAdminPageDom();
+    } else {
+      render();
+    }
   }
 }
 
@@ -3316,7 +3350,7 @@ async function loadChangelogCommits(options = {}) {
 
   Aether.state.changelogLoading = true;
   Aether.state.changelogError = "";
-  render();
+  updateChangelogModalDom();
   try {
     const response = await fetch(githubCommitsUrl(), {
       headers: { Accept: "application/vnd.github+json" },
@@ -3336,11 +3370,30 @@ async function loadChangelogCommits(options = {}) {
     Aether.state.changelogError = error?.message || "Could not load the change log.";
   } finally {
     Aether.state.changelogLoading = false;
-    render();
+    updateChangelogModalDom();
     requestAnimationFrame(() => {
       document.querySelector(".changelog-modal")?.focus({ preventScroll: true });
     });
   }
+}
+
+function updateChangelogModalDom() {
+  const modal = document.querySelector(".changelog-modal");
+  if (!modal || !Aether.state.changelogModal) {
+    if (Aether.state.changelogModal) render();
+    return;
+  }
+
+  const template = document.createElement("template");
+  template.innerHTML = renderChangelogModal().trim();
+  const nextModal = template.content.querySelector(".changelog-modal");
+  if (!nextModal) {
+    render();
+    return;
+  }
+
+  modal.innerHTML = nextModal.innerHTML;
+  bindChangelogEvents(modal);
 }
 
 function startUpdateWatcher() {
