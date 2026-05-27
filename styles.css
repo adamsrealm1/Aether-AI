@@ -116,7 +116,7 @@ button { cursor: pointer; }
   backdrop-filter: blur(18px);
   min-width: 0;
 }
-.brand, .new-chat, .account-tab, .admin-tab, .chat-item, .delete-chat, .copy-message, .report-message, .composer button, .primary-button, .secondary-button, .danger-button, .modal-close, .auth-mode-switch button, .speed-trigger, .speed-option { border: 0; }
+.brand, .new-chat, .account-tab, .admin-tab, .changelog-tab, .chat-item, .delete-chat, .copy-message, .report-message, .composer button, .primary-button, .secondary-button, .danger-button, .modal-close, .auth-mode-switch button, .speed-trigger, .speed-option { border: 0; }
 .brand {
   display: flex;
   align-items: center;
@@ -200,7 +200,8 @@ button { cursor: pointer; }
   outline: none;
 }
 .account-tab,
-.admin-tab {
+.admin-tab,
+.changelog-tab {
   display: grid;
   place-items: center;
   height: 38px;
@@ -218,6 +219,50 @@ button { cursor: pointer; }
   min-height: 48px;
   padding: 8px 10px;
   text-align: left;
+}
+.changelog-tab {
+  grid-template-columns: auto minmax(0, 1fr);
+  place-items: center stretch;
+  gap: 10px;
+  height: 42px;
+  padding: 0 11px;
+  text-align: left;
+}
+.changelog-mark {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 9px;
+  background:
+    linear-gradient(145deg, rgba(219, 234, 254, 0.95), rgba(167, 243, 208, 0.95));
+  box-shadow: 0 10px 24px rgba(45, 212, 191, 0.16);
+}
+.changelog-mark::before,
+.changelog-mark::after,
+.changelog-mark i {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  height: 2px;
+  border-radius: 999px;
+  background: #07111f;
+}
+.changelog-mark::before {
+  top: 8px;
+}
+.changelog-mark i {
+  top: 12px;
+}
+.changelog-mark::after {
+  top: 16px;
+}
+.changelog-tab span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .account-avatar {
   display: grid;
@@ -288,11 +333,23 @@ img.account-avatar {
   font-size: 11px;
   font-weight: 760;
 }
-.account-tab:hover, .account-tab:focus-visible, .admin-tab:hover, .admin-tab:focus-visible, .admin-tab.active {
+.account-tab:hover, .account-tab:focus-visible, .admin-tab:hover, .admin-tab:focus-visible, .admin-tab.active, .changelog-tab:hover, .changelog-tab:focus-visible {
   color: #07111f;
   background: #a7f3d0;
   outline: none;
   transform: translateY(-1px);
+}
+.changelog-tab:hover .changelog-mark,
+.changelog-tab:focus-visible .changelog-mark {
+  background: #07111f;
+}
+.changelog-tab:hover .changelog-mark::before,
+.changelog-tab:hover .changelog-mark::after,
+.changelog-tab:hover .changelog-mark i,
+.changelog-tab:focus-visible .changelog-mark::before,
+.changelog-tab:focus-visible .changelog-mark::after,
+.changelog-tab:focus-visible .changelog-mark i {
+  background: #a7f3d0;
 }
 .account-tab:hover .account-tab-copy small,
 .account-tab:focus-visible .account-tab-copy small {
@@ -1796,6 +1853,294 @@ img.account-avatar {
   scrollbar-width: thin;
   scrollbar-color: rgba(219, 234, 254, 0.26) transparent;
 }
+.changelog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 82;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  background:
+    linear-gradient(180deg, rgba(2, 6, 23, 0.66), rgba(2, 6, 23, 0.82)),
+    rgba(0, 0, 0, 0.46);
+  backdrop-filter: blur(20px) saturate(0.92);
+  animation: warningFade 180ms ease-out both;
+}
+.changelog-modal {
+  position: relative;
+  width: min(720px, 100%);
+  max-height: min(780px, calc(100dvh - 34px));
+  display: grid;
+  gap: 16px;
+  overflow-y: auto;
+  padding: 24px;
+  border: 1px solid rgba(191, 219, 254, 0.18);
+  border-radius: 12px;
+  color: #f8fbff;
+  background:
+    linear-gradient(156deg, rgba(8, 15, 30, 0.99), rgba(2, 6, 23, 0.98)),
+    radial-gradient(circle at 16% 0%, rgba(45, 212, 191, 0.16), transparent 36%),
+    radial-gradient(circle at 100% 20%, rgba(251, 191, 36, 0.1), transparent 30%),
+    radial-gradient(circle at 92% 100%, rgba(96, 165, 250, 0.13), transparent 34%);
+  box-shadow: 0 34px 110px rgba(0, 0, 0, 0.6);
+  outline: none;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(219, 234, 254, 0.28) transparent;
+  animation: warningPop 220ms ease-out both;
+}
+.changelog-modal-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  padding-right: 42px;
+}
+.changelog-modal-icon {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: linear-gradient(145deg, #dbeafe, #a7f3d0);
+  box-shadow: 0 16px 38px rgba(45, 212, 191, 0.18);
+}
+.changelog-modal-icon::before,
+.changelog-modal-icon::after,
+.changelog-modal-icon i {
+  content: "";
+  position: absolute;
+  left: 15px;
+  right: 15px;
+  height: 3px;
+  border-radius: 999px;
+  background: #07111f;
+}
+.changelog-modal-icon::before {
+  top: 15px;
+}
+.changelog-modal-icon i {
+  top: 22px;
+}
+.changelog-modal-icon::after {
+  top: 29px;
+}
+.changelog-eyebrow {
+  display: inline-flex;
+  margin-bottom: 5px;
+  color: #a7f3d0;
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.changelog-modal h2 {
+  margin: 0;
+  font-size: 30px;
+  line-height: 1.05;
+  letter-spacing: 0;
+}
+.changelog-modal p {
+  margin: 5px 0 0;
+  color: #93c5fd;
+  font-size: 13px;
+  font-weight: 720;
+}
+.changelog-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid rgba(191, 219, 254, 0.14);
+  border-radius: 12px;
+  background: rgba(2, 6, 23, 0.46);
+}
+.changelog-toolbar span {
+  color: #dbeafe;
+  font-size: 13px;
+  font-weight: 820;
+}
+.changelog-refresh {
+  min-width: 96px;
+}
+.changelog-error,
+.changelog-empty {
+  padding: 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.45;
+  font-weight: 760;
+}
+.changelog-error {
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  color: #fecaca;
+  background: rgba(127, 29, 29, 0.24);
+}
+.changelog-empty {
+  border: 1px solid rgba(191, 219, 254, 0.14);
+  color: #bfdbfe;
+  background: rgba(2, 6, 23, 0.42);
+}
+.changelog-list {
+  display: grid;
+  gap: 10px;
+}
+.changelog-commit {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 13px;
+  border: 1px solid rgba(191, 219, 254, 0.14);
+  border-radius: 12px;
+  background:
+    linear-gradient(140deg, rgba(15, 23, 42, 0.72), rgba(2, 6, 23, 0.58)),
+    rgba(255, 255, 255, 0.02);
+  transition: border-color 160ms ease, transform 160ms ease, background 160ms ease;
+}
+.changelog-commit:hover,
+.changelog-commit:focus-within {
+  border-color: rgba(167, 243, 208, 0.36);
+  background:
+    linear-gradient(140deg, rgba(15, 23, 42, 0.86), rgba(2, 6, 23, 0.68)),
+    rgba(167, 243, 208, 0.04);
+  transform: translateY(-1px);
+}
+.commit-avatar {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  overflow: hidden;
+  border-radius: 12px;
+  color: #07111f;
+  background: linear-gradient(135deg, #bfdbfe, #a7f3d0);
+  font-size: 13px;
+  font-weight: 900;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.28);
+}
+.commit-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.commit-content {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.commit-name-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.commit-label,
+.commit-facts b {
+  color: #a7f3d0;
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.commit-name {
+  min-width: 0;
+  color: #f8fbff;
+  font-size: 15px;
+  font-weight: 820;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-decoration: none;
+}
+.commit-name:hover,
+.commit-name:focus-visible {
+  color: #a7f3d0;
+  outline: none;
+}
+.commit-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.commit-facts span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid rgba(191, 219, 254, 0.12);
+  border-radius: 999px;
+  color: #dbeafe;
+  background: rgba(2, 6, 23, 0.42);
+  font-size: 12px;
+  font-weight: 760;
+}
+.commit-facts span:last-child {
+  color: #bfdbfe;
+}
+.commit-sha {
+  align-self: start;
+  padding: 5px 7px;
+  border-radius: 8px;
+  color: #93c5fd;
+  background: rgba(96, 165, 250, 0.1);
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  font-weight: 780;
+}
+.changelog-skeleton {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 13px;
+  border: 1px solid rgba(191, 219, 254, 0.1);
+  border-radius: 12px;
+  background: rgba(2, 6, 23, 0.42);
+}
+.changelog-skeleton span,
+.changelog-skeleton i {
+  display: block;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(191, 219, 254, 0.1), rgba(191, 219, 254, 0.25), rgba(191, 219, 254, 0.1));
+  background-size: 240% 100%;
+  animation: changelogShimmer 1.15s ease-in-out infinite;
+  animation-delay: var(--delay);
+}
+.changelog-skeleton > span {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+}
+.changelog-skeleton div {
+  display: grid;
+  gap: 8px;
+}
+.changelog-skeleton i {
+  height: 12px;
+}
+.changelog-skeleton i:first-child {
+  width: 78%;
+}
+.changelog-skeleton i:nth-child(2) {
+  width: 48%;
+}
+.changelog-skeleton i:last-child {
+  width: 36%;
+}
+@keyframes changelogShimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
 .report-overlay,
 .report-fixed-overlay {
   position: fixed;
@@ -2390,6 +2735,7 @@ img.account-avatar {
   .brand,
   .account-tab,
   .admin-tab,
+  .changelog-tab,
   .chat-list,
   .sidebar-search,
   .rate-card {
@@ -2486,14 +2832,39 @@ img.account-avatar {
     flex: 1 1 120px;
   }
   .report-overlay,
-  .report-fixed-overlay {
+  .report-fixed-overlay,
+  .changelog-overlay {
     padding: 14px;
   }
   .report-modal,
-  .report-fixed-modal {
+  .report-fixed-modal,
+  .changelog-modal {
     padding: 20px;
     max-height: calc(100dvh - 28px);
     overflow-y: auto;
+  }
+  .changelog-modal-head {
+    grid-template-columns: 1fr;
+    gap: 10px;
+    padding-right: 38px;
+  }
+  .changelog-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .changelog-refresh {
+    width: 100%;
+  }
+  .changelog-commit {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .commit-sha {
+    grid-column: 2;
+    justify-self: start;
+    align-self: auto;
+  }
+  .commit-name {
+    white-space: normal;
   }
   .report-modal-actions {
     display: grid;

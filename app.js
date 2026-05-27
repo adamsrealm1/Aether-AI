@@ -2,6 +2,7 @@
   config: {
     appName: "Aether",
     apiEndpoint: defaultApiEndpoint(),
+    githubRepo: String(window.AETHER_GITHUB_REPO || "adamsrealm1/Aether-AI").trim(),
     speedMode: "default",
   },
   state: {
@@ -54,6 +55,11 @@
     reportError: "",
     reportNotifications: [],
     reportFixedNotice: null,
+    changelogModal: false,
+    changelogLoading: false,
+    changelogError: "",
+    changelogCommits: [],
+    changelogFetchedAt: "",
   },
 };
 
@@ -86,6 +92,8 @@ const MAX_PROFILE_PICTURE_FILE_SIZE = 560000;
 const ACCOUNT_CHATS_SAVE_DELAY_MS = 700;
 const DEFAULT_ASSISTANT_GREETING = "Hi there! I'm Aether. What's on your mind?";
 const DEFAULT_CHAT_TITLE = "New conversation";
+const CHANGELOG_COMMIT_LIMIT = 5;
+const CHANGELOG_REFRESH_MS = 2 * 60 * 1000;
 const SPEED_MODES = {
   default: {
     label: "Standard",
@@ -286,6 +294,7 @@ function render() {
           <button class="new-chat" data-action="new-chat">+ New conversation</button>
           ${renderAccountSidebarButton()}
           ${renderAdminSidebarButton()}
+          ${renderChangelogSidebarButton()}
           <input class="sidebar-search" data-action="sidebar-search" autocomplete="off" placeholder="Search conversations" value="${escapeHtml(Aether.state.sidebarSearch)}">
           <div class="chat-list">
             ${filteredChats().map(chatListItem).join("") || `<div class="sidebar-empty">No conversations found.</div>`}
@@ -298,6 +307,7 @@ function render() {
         ${renderRateLimitPopup()}
         ${renderReportModal()}
         ${renderReportFixedPopup()}
+        ${renderChangelogModal()}
         ${renderAuthModal()}
         ${renderAccountModal()}
         ${renderToast()}
@@ -314,6 +324,15 @@ function render() {
 function renderAdminSidebarButton() {
   if (!isCurrentAdmin()) return "";
   return `<button class="admin-tab ${Aether.state.adminView ? "active" : ""}" data-action="admin-tab">Admin Portal</button>`;
+}
+
+function renderChangelogSidebarButton() {
+  return `
+    <button class="changelog-tab" data-action="changelog-tab" aria-haspopup="dialog">
+      <span class="changelog-mark" aria-hidden="true"><i></i></span>
+      <span>Change log</span>
+    </button>
+  `;
 }
 
 function isCurrentAdmin() {
@@ -977,6 +996,76 @@ function renderReportFixedPopup() {
   `;
 }
 
+function renderChangelogModal() {
+  if (!Aether.state.changelogModal) return "";
+  const repo = normalizedGithubRepo();
+  const commits = Array.isArray(Aether.state.changelogCommits) ? Aether.state.changelogCommits : [];
+  const fetchedAt = Aether.state.changelogFetchedAt ? `Updated ${formatCommitTime(Aether.state.changelogFetchedAt)}` : "Connected to GitHub";
+  return `
+    <div class="changelog-overlay" role="dialog" aria-modal="true" aria-labelledby="changelog-title" data-action="close-changelog-modal">
+      <section class="changelog-modal" tabindex="-1">
+        <button class="modal-close" type="button" data-action="close-changelog-modal" aria-label="Close change log">×</button>
+        <div class="changelog-modal-head">
+          <span class="changelog-modal-icon" aria-hidden="true"><i></i></span>
+          <div>
+            <span class="changelog-eyebrow">${escapeHtml(repo)}</span>
+            <h2 id="changelog-title">Change log</h2>
+            <p>${escapeHtml(fetchedAt)}</p>
+          </div>
+        </div>
+        <div class="changelog-toolbar">
+          <span>Latest ${CHANGELOG_COMMIT_LIMIT} commits</span>
+          <button class="secondary-button changelog-refresh" type="button" data-action="refresh-changelog"${Aether.state.changelogLoading ? " disabled" : ""}>
+            ${Aether.state.changelogLoading ? "Refreshing..." : "Refresh"}
+          </button>
+        </div>
+        ${Aether.state.changelogError ? `<div class="changelog-error">${escapeHtml(Aether.state.changelogError)}</div>` : ""}
+        <div class="changelog-list" aria-live="polite">
+          ${renderChangelogCommitList(commits)}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderChangelogCommitList(commits) {
+  if (Aether.state.changelogLoading && !commits.length) {
+    return Array.from({ length: CHANGELOG_COMMIT_LIMIT }, (_, index) => `
+      <div class="changelog-skeleton" aria-hidden="true" style="--delay: ${index * 55}ms">
+        <span></span>
+        <div><i></i><i></i><i></i></div>
+      </div>
+    `).join("");
+  }
+  if (!commits.length) {
+    return `<div class="changelog-empty">No commits could be loaded yet.</div>`;
+  }
+  return commits.map(renderChangelogCommit).join("");
+}
+
+function renderChangelogCommit(commit) {
+  const url = commit.url ? ` href="${escapeHtml(commit.url)}" target="_blank" rel="noreferrer"` : "";
+  const avatar = commit.avatarUrl
+    ? `<img src="${escapeHtml(commit.avatarUrl)}" alt="${escapeHtml(commit.publisher)}">`
+    : `<span>${escapeHtml(accountInitials(commit.publisher))}</span>`;
+  return `
+    <article class="changelog-commit">
+      <div class="commit-avatar">${avatar}</div>
+      <div class="commit-content">
+        <div class="commit-name-row">
+          <span class="commit-label">Name</span>
+          <a class="commit-name"${url}>${escapeHtml(commit.name)}</a>
+        </div>
+        <div class="commit-facts">
+          <span><b>Publisher</b> ${escapeHtml(commit.publisher)}</span>
+          <span><b>Time</b> ${escapeHtml(formatCommitTime(commit.time))}</span>
+        </div>
+      </div>
+      <span class="commit-sha">${escapeHtml(commit.sha.slice(0, 7))}</span>
+    </article>
+  `;
+}
+
 function renderBanOverlay() {
   if (!isUserBanned()) return "";
   const ban = Aether.state.banStatus || {};
@@ -1148,6 +1237,7 @@ function bindEvents(root) {
     render();
     loadAdminStatus();
   });
+  root.querySelector("[data-action='changelog-tab']")?.addEventListener("click", openChangelogModal);
   root.querySelector("[data-action='toggle-speed-menu']")?.addEventListener("click", () => {
     Aether.state.speedMenuOpen = !Aether.state.speedMenuOpen;
     render();
@@ -1223,6 +1313,13 @@ function bindEvents(root) {
   });
   root.querySelector("[data-action='submit-report']")?.addEventListener("submit", submitReport);
   root.querySelector("[data-action='close-report-fixed']")?.addEventListener("click", closeReportFixedNotice);
+  root.querySelectorAll("[data-action='close-changelog-modal']").forEach((element) => {
+    element.addEventListener("click", (event) => {
+      if (element.classList.contains("changelog-overlay") && event.target !== element) return;
+      closeChangelogModal();
+    });
+  });
+  root.querySelector("[data-action='refresh-changelog']")?.addEventListener("click", () => loadChangelogCommits({ force: true }));
   bindAccountEvents(root);
   bindAdminEvents(root);
 }
@@ -2922,6 +3019,112 @@ function createMessage(role, content, extras = {}) {
 function createId() {
   if (crypto.randomUUID) return crypto.randomUUID();
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function openChangelogModal() {
+  Aether.state.changelogModal = true;
+  Aether.state.changelogError = "";
+  Aether.state.speedMenuOpen = false;
+  Aether.state.mobileSidebarOpen = false;
+  render();
+  if (changelogNeedsRefresh()) {
+    loadChangelogCommits();
+  }
+  requestAnimationFrame(() => {
+    document.querySelector(".changelog-modal")?.focus({ preventScroll: true });
+  });
+}
+
+function closeChangelogModal() {
+  Aether.state.changelogModal = false;
+  Aether.state.changelogError = "";
+  render();
+}
+
+function changelogNeedsRefresh() {
+  if (!Aether.state.changelogCommits?.length) return true;
+  const fetchedAtMs = Date.parse(Aether.state.changelogFetchedAt || "");
+  return !Number.isFinite(fetchedAtMs) || Date.now() - fetchedAtMs > CHANGELOG_REFRESH_MS;
+}
+
+async function loadChangelogCommits(options = {}) {
+  if (Aether.state.changelogLoading) return;
+  if (!options.force && !changelogNeedsRefresh()) return;
+
+  Aether.state.changelogLoading = true;
+  Aether.state.changelogError = "";
+  render();
+  try {
+    const response = await fetch(githubCommitsUrl(), {
+      headers: { Accept: "application/vnd.github+json" },
+      cache: "no-store",
+    });
+    const data = await response.json().catch(() => []);
+    if (!response.ok) {
+      throw new Error(data?.message || `GitHub request failed with HTTP ${response.status}`);
+    }
+    if (!Array.isArray(data)) {
+      throw new Error("GitHub returned an unexpected changelog response.");
+    }
+    Aether.state.changelogCommits = data.slice(0, CHANGELOG_COMMIT_LIMIT).map(normalizeGithubCommit);
+    Aether.state.changelogFetchedAt = new Date().toISOString();
+  } catch (error) {
+    Aether.state.changelogError = error?.message || "Could not load the change log.";
+  } finally {
+    Aether.state.changelogLoading = false;
+    render();
+    requestAnimationFrame(() => {
+      document.querySelector(".changelog-modal")?.focus({ preventScroll: true });
+    });
+  }
+}
+
+function githubCommitsUrl() {
+  return `https://api.github.com/repos/${encodeURIComponent(normalizedGithubRepo()).replace("%2F", "/")}/commits?per_page=${CHANGELOG_COMMIT_LIMIT}`;
+}
+
+function normalizedGithubRepo() {
+  const cleaned = String(Aether.config.githubRepo || "")
+    .trim()
+    .replace(/^https:\/\/github\.com\//i, "")
+    .replace(/\.git$/i, "")
+    .replace(/^\/+|\/+$/g, "");
+  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(cleaned) ? cleaned : "adamsrealm1/Aether-AI";
+}
+
+function normalizeGithubCommit(item) {
+  const details = item?.commit || {};
+  const author = details.author || {};
+  const committer = details.committer || {};
+  const publisher = String(item?.author?.login || item?.committer?.login || author.name || committer.name || "Unknown");
+  const name = String(details.message || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean) || "Untitled commit";
+  return {
+    sha: String(item?.sha || ""),
+    name,
+    publisher,
+    time: author.date || committer.date || "",
+    avatarUrl: String(item?.author?.avatar_url || item?.committer?.avatar_url || ""),
+    url: String(item?.html_url || ""),
+  };
+}
+
+function formatCommitTime(value) {
+  if (!value) return "Unknown";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  const options = {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  };
+  if (date.getFullYear() !== new Date().getFullYear()) {
+    options.year = "numeric";
+  }
+  return date.toLocaleString([], options);
 }
 
 function openReportModal(messageId) {
