@@ -819,6 +819,7 @@ function renderAccountsList(accounts, canManageAdmins, options = {}) {
         <div>
           <strong>${renderUsernameLabel(account)}</strong>
           <small>Created ${escapeHtml(formatAdminDate(account.createdAt))} - Last login ${escapeHtml(formatAdminDate(account.lastLoginAt))}${account.isAdmin ? " - Admin" : ""}${account.isBanned ? " - Banned" : ""}</small>
+          ${renderAccountRateLimit(account.rateLimit)}
         </div>
       </div>
       <div class="admin-row-actions">
@@ -828,6 +829,45 @@ function renderAccountsList(accounts, canManageAdmins, options = {}) {
       </div>
     </div>
   `).join("");
+}
+
+function renderAccountRateLimit(rate) {
+  const normalized = normalizedAccountRate(rate);
+  const used = normalized.used;
+  const limit = normalized.limit;
+  const remaining = normalized.remaining;
+  const percent = normalized.percentUsed;
+  return `
+    <div class="account-rate-limit" style="--account-rate: ${percent}%; --account-rate-color: ${accountRateColor(percent)}">
+      <div class="account-rate-copy">
+        <span>Rate limit</span>
+        <strong>${escapeHtml(`${used}/${limit}`)}</strong>
+        <small>${escapeHtml(`${remaining} left`)}</small>
+      </div>
+      <div class="account-rate-track" aria-hidden="true"><span></span></div>
+    </div>
+  `;
+}
+
+function normalizedAccountRate(rate) {
+  const limit = Math.max(1, Number(rate?.limit || 0) || Number(Aether.state.adminStatus?.rateLimit?.limit || Aether.state.rateLimit?.limit || 300));
+  const rawUsed = Number(rate?.used ?? 0);
+  const used = Math.max(0, Math.min(limit, Number.isFinite(rawUsed) ? rawUsed : 0));
+  const rawRemaining = Number(rate?.remaining ?? (limit - used));
+  const remaining = Math.max(0, Math.min(limit, Number.isFinite(rawRemaining) ? rawRemaining : limit - used));
+  return {
+    limit,
+    used,
+    remaining,
+    percentUsed: Math.round((used / limit) * 100),
+  };
+}
+
+function accountRateColor(percentUsed) {
+  const percent = clampPercent(percentUsed);
+  if (percent >= 88) return "#fb7185";
+  if (percent >= 65) return "#facc15";
+  return "#a7f3d0";
 }
 
 function filteredAdminDirectoryItems(kind, items) {

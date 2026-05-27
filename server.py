@@ -1849,6 +1849,7 @@ def account_summaries() -> list[dict]:
             "isOwnerAdmin": is_owner_account(row),
             "isBanned": is_account_banned(row.get("id")),
             "isVerified": account_is_verified(row),
+            "rateLimit": rate_limit_status(account_id=row.get("id")),
         }
         for row in rows
     ]
