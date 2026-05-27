@@ -1859,7 +1859,8 @@ function bindAdminDirectorySearchEvents(root) {
         open: opening,
         query: opening ? adminDirectorySearchQuery(kind) : "",
       });
-      render();
+      applyAdminDirectorySearchDomState(kind);
+      updateAdminDirectoryPanelDom(kind);
       if (opening) focusAdminDirectorySearch(kind);
     });
   });
@@ -1881,7 +1882,9 @@ function bindAdminDirectorySearchEvents(root) {
         return;
       }
       setAdminDirectorySearch(kind, { open: false, query: "" });
-      render();
+      applyAdminDirectorySearchDomState(kind);
+      updateAdminDirectoryPanelDom(kind);
+      document.querySelector(`[data-admin-search-toggle="${CSS.escape(kind)}"]`)?.focus({ preventScroll: true });
     });
   });
 }
@@ -1948,6 +1951,22 @@ function updateAdminDirectoryPanelDom(kind) {
     count.textContent = adminDirectoryCountLabel(kind, filtered.length, items.length);
   }
   bindAdminAccountActionEvents(panel);
+}
+
+function applyAdminDirectorySearchDomState(kind) {
+  if (!ADMIN_DIRECTORY_SEARCH_CONFIG[kind]) return;
+  const open = adminDirectorySearchOpen(kind);
+  const query = adminDirectorySearchQuery(kind);
+  const shell = document.querySelector(`[data-admin-search-shell="${CSS.escape(kind)}"]`);
+  const input = document.querySelector(`[data-admin-search-input="${CSS.escape(kind)}"]`);
+  const button = document.querySelector(`[data-admin-search-toggle="${CSS.escape(kind)}"]`);
+
+  shell?.classList.toggle("open", open);
+  input?.setAttribute("tabindex", open ? "0" : "-1");
+  if (input && input.value !== query) {
+    input.value = query;
+  }
+  button?.setAttribute("aria-expanded", open ? "true" : "false");
 }
 
 function focusAdminDirectorySearch(kind) {
