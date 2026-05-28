@@ -1110,7 +1110,7 @@ function renderRateLimitPopup() {
   return `
     <div class="warning-overlay compact" role="dialog" aria-modal="true">
       <div class="warning-modal compact-modal">
-        <h2>Oops!</h2>
+        <h2>Oops! You reached your rate limit!</h2>
         <p>${escapeHtml(rateResetLabel(resetTime))}.</p>
         <button class="warning-understand" data-action="close-rate-limit">Okay.</button>
       </div>
