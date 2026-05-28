@@ -21,6 +21,7 @@ from groq import APIConnectionError, APIStatusError, APITimeoutError, Groq
 
 ROOT = Path(__file__).resolve().parent
 PROFANITY_BLOCK_MESSAGE = "You cant send Aether a message with profanity in it. You can try again without profanity in your message."
+REQUEST_BACKOFF_MESSAGE = "Try again in 5 minutes, too many messages are being sent right now."
 DEFAULT_RATE_LIMIT = 200
 DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 86400
 DEFAULT_RATE_LIMIT_TIMEZONE = "America/New_York"
@@ -2436,7 +2437,7 @@ def chat_response(payload: dict, ip_address: str, account: dict | None = None) -
     scan_limit = consume_safety_scan_rate_limit(ip_address, account_id)
     if not scan_limit["allowed"]:
         return {
-            "reply": "Your rate limit has been reached, try again later.",
+            "reply": REQUEST_BACKOFF_MESSAGE,
             "rateLimited": True,
             "rateLimit": rate_limit_status(ip_address, account_id),
         }
@@ -2453,7 +2454,7 @@ def chat_response(payload: dict, ip_address: str, account: dict | None = None) -
     rate = consume_rate_limit(ip_address, account_id, rate_limit_cost)
     if not rate["allowed"]:
         return {
-            "reply": "Your rate limit has been reached, try again later.",
+            "reply": REQUEST_BACKOFF_MESSAGE,
             "rateLimited": True,
             "rateLimit": rate["rateLimit"],
         }
@@ -2537,7 +2538,7 @@ def index():
 
 @app.errorhandler(RequestEntityTooLarge)
 def request_entity_too_large(_exc):
-    return jsonify({"error": "Request is too large."}), 413
+    return jsonify({"error": REQUEST_BACKOFF_MESSAGE}), 413
 
 
 @app.get("/api/status")
@@ -3096,13 +3097,27 @@ def http_error_message(exc: urllib.error.HTTPError) -> str:
     except Exception:
         detail = ""
 
+    if is_backoff_error_message(detail) or exc.code in {413, 429}:
+        return REQUEST_BACKOFF_MESSAGE
     if exc.code in {401, 403}:
         return "Internal server error"
     if exc.code == 404:
         return "Internal server error"
-    if exc.code == 429:
-        return "Something went wrong, please try again later. :("
     return detail or f"The request failed with HTTP {exc.code}."
+
+
+def is_backoff_error_message(message: str) -> bool:
+    text = str(message or "").lower()
+    return any(
+        marker in text
+        for marker in (
+            "rate limit",
+            "rate_limit",
+            "request too large",
+            "request is too large",
+            "too large for model",
+        )
+    )
 
 
 def groq_error_message(exc: APIStatusError) -> str:
@@ -3118,8 +3133,8 @@ def groq_error_message(exc: APIStatusError) -> str:
         return "Internal server error"
     if status_code == 404:
         return "Internal server error"
-    if status_code == 429:
-        return "Something went wrong, please try again later. :("
+    if is_backoff_error_message(detail) or status_code in {413, 429}:
+        return REQUEST_BACKOFF_MESSAGE
     return detail or f"The request failed with HTTP {status_code}."
 
 
