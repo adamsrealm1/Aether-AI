@@ -123,7 +123,6 @@ const CHANGELOG_REFRESH_MS = 2 * 60 * 1000;
 const UPDATE_CHECK_INTERVAL_MS = 2 * 60 * 1000;
 const MESSAGE_CAPTCHA_LIMIT = 5;
 const MESSAGE_CAPTCHA_WINDOW_MS = 35 * 1000;
-const INTRO_VIDEO_FADE_MS = 720;
 const ADMIN_DIRECTORY_SEARCH_CONFIG = {
   admins: {
     title: "Admins",
@@ -309,7 +308,6 @@ function activeChat() {
 }
 
 function bootstrap() {
-  setupIntroVideo();
   storage.load();
   bindScrollFadePreferenceChanges();
   bindRateLimitClockEvents();
@@ -318,53 +316,6 @@ function bootstrap() {
   checkServerStatus();
   startServerStatusPolling();
   startUpdateWatcher();
-}
-
-function setupIntroVideo() {
-  const overlay = document.getElementById("intro-video-overlay");
-  const video = document.getElementById("intro-video");
-  const startButton = document.getElementById("intro-video-start");
-  if (!overlay || !(video instanceof HTMLVideoElement)) {
-    document.body.classList.remove("intro-playing");
-    return;
-  }
-
-  let finished = false;
-  const finishIntro = () => {
-    if (finished) return;
-    finished = true;
-    startButton?.setAttribute("hidden", "");
-    overlay.classList.add("fading");
-    window.setTimeout(() => {
-      overlay.remove();
-      document.body.classList.remove("intro-playing");
-    }, INTRO_VIDEO_FADE_MS);
-  };
-
-  const playIntro = () => {
-    video.muted = false;
-    video.volume = 1;
-    const playResult = video.play();
-    if (playResult?.then) {
-      playResult
-        .then(() => {
-          startButton?.setAttribute("hidden", "");
-        })
-        .catch(() => {
-          if (!finished) startButton?.removeAttribute("hidden");
-        });
-    }
-  };
-
-  video.addEventListener("ended", finishIntro, { once: true });
-  video.addEventListener("error", finishIntro, { once: true });
-  startButton?.addEventListener("click", playIntro);
-  if (video.readyState >= 2) {
-    playIntro();
-  } else {
-    video.addEventListener("canplay", playIntro, { once: true });
-    playIntro();
-  }
 }
 
 function render() {
