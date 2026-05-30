@@ -92,16 +92,16 @@ let voiceAutoSending = false;
 let activeAssistantReveal = null;
 const LOCATION_TIME_PERMISSION_MESSAGE = "Aether needs your permission to see your location to give your location.";
 const PROFANITY_BLOCK_MESSAGE = "You cant send Aether a message with profanity in it. You can try again without profanity in your message.";
-const SAFETY_LOCK_PLACEHOLDER = "Aether can not continue this conversation. Create a new conversation to keep using Aether.";
+const SAFETY_LOCK_PLACEHOLDER = "Oops! Aether's safety agent identified something unusual in your messages. You'll need to create a new conversation to continue using Aether AI.";
 const BAN_POPUP_BODY = "You can not use Aether AI because you were banned by an admin.";
 const VOICE_AUTO_SEND_DELAY_MS = 1800;
-const SAFETY_LOCK_DELAY_MS = 3000;
-const DEFAULT_MODE_EXTRA_THINK_DELAY_MS = 1000;
+const SAFETY_LOCK_DELAY_MS = 2000;
+const DEFAULT_MODE_EXTRA_THINK_DELAY_MS = 2100;
 const ACCOUNT_SESSION_TOKEN_KEY = "aether.accountSessionToken";
 const REPORTER_CLIENT_ID_KEY = "aether.reporterClientId";
 const MOBILE_SCROLL_FADE_QUERY = "(max-width: 860px), (pointer: coarse)";
 const MAX_PROFILE_PICTURE_FILE_SIZE = 560000;
-const ACCOUNT_CHATS_SAVE_DELAY_MS = 700;
+const ACCOUNT_CHATS_SAVE_DELAY_MS = 3000;
 const DEFAULT_ASSISTANT_GREETING = "Hi there! I'm Aether. What's on your mind?";
 const DEFAULT_CHAT_TITLE = "New conversation";
 const CHANGELOG_COMMIT_LIMIT = 5;
@@ -122,7 +122,7 @@ const ADMIN_DIRECTORY_SEARCH_CONFIG = {
 const SPEED_MODES = {
   default: {
     label: "Standard",
-    title: "Standard",
+    title: "Default",
     detail: "Higher reasoning but slower (Less usage)",
     icon: "assets/icon_library/slow.png",
   },
