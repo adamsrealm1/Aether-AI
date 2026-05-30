@@ -296,7 +296,7 @@ function normalizeChat(chat) {
     ...message,
     id: message?.id || createId(),
     role: message?.role === "user" ? "user" : "assistant",
-    content: maskProfanity(message?.content || ""),
+    content: String(message?.content || ""),
     createdAt: message?.createdAt || normalized.createdAt,
     voice: Boolean(message?.voice),
     reportedAt: String(message?.reportedAt || ""),
@@ -455,7 +455,7 @@ function renderChatPage(chat) {
             <span></span>
             <span></span>
           </button>
-          <h1>${escapeHtml(chat.title)}</h1>
+          <h1>${escapeHtml(maskProfanity(chat.title))}</h1>
         </div>
         <div class="topbar-actions">
           <button class="secondary-button" data-action="rename-chat">Rename</button>
@@ -651,7 +651,7 @@ function renderBanIpPanel(bannedIps, bannedAccounts = []) {
             <div>
               <strong>${renderUsernameLabel(item)}</strong>
               <small>User ban - ${escapeHtml(item.reason || "No reason")} - ${escapeHtml(formatAdminDate(item.createdAt))}</small>
-              ${item.sourceMessage ? `<p>${escapeHtml(item.sourceMessage)}</p>` : ""}
+              ${item.sourceMessage ? `<p>${escapeHtml(maskProfanity(item.sourceMessage))}</p>` : ""}
             </div>
             <button class="secondary-button" data-unban-user="${escapeHtml(item.accountId || "")}">Unban user</button>
           </div>
@@ -664,7 +664,7 @@ function renderBanIpPanel(bannedIps, bannedAccounts = []) {
               <div>
                 <strong>${escapeHtml(item.ipAddress || "")}</strong>
                 <small>IP ban${username ? ` for ${renderUsernameLabel(item)}` : ""} - ${escapeHtml(item.reason || "No reason")} - ${escapeHtml(formatAdminDate(item.createdAt))}</small>
-                ${sourceMessage ? `<p>${escapeHtml(sourceMessage)}</p>` : ""}
+                ${sourceMessage ? `<p>${escapeHtml(maskProfanity(sourceMessage))}</p>` : ""}
               </div>
               <button class="secondary-button" data-unban-ip="${escapeHtml(item.ipAddress || "")}">Unban IP</button>
             </div>
@@ -698,12 +698,12 @@ function renderMessageReportsPanel(reports) {
               <div class="admin-report-topline">
                 <div>
                   <strong>${reporter}</strong>
-                  <small>${escapeHtml(report.chatTitle || "Conversation")} - ${escapeHtml(formatAdminDate(report.createdAt))}</small>
+                  <small>${escapeHtml(maskProfanity(report.chatTitle || "Conversation"))} - ${escapeHtml(formatAdminDate(report.createdAt))}</small>
                 </div>
                 <span class="report-status-pill">${escapeHtml(report.messageRole || "assistant")}</span>
               </div>
-              <p class="admin-report-message">${escapeHtml(report.messageContent || "")}</p>
-              ${report.note ? `<p class="admin-report-note">${escapeHtml(report.note)}</p>` : ""}
+              <p class="admin-report-message">${escapeHtml(maskProfanity(report.messageContent || ""))}</p>
+              ${report.note ? `<p class="admin-report-note">${escapeHtml(maskProfanity(report.note))}</p>` : ""}
               ${context.length ? `
                 <details class="admin-report-context">
                   <summary>Context</summary>
@@ -711,7 +711,7 @@ function renderMessageReportsPanel(reports) {
                     ${context.map((message) => `
                       <li>
                         <span>${escapeHtml(message.role === "user" ? "User" : "Aether")}</span>
-                        ${escapeHtml(message.content || "")}
+                        ${escapeHtml(maskProfanity(message.content || ""))}
                       </li>
                     `).join("")}
                   </ol>
@@ -752,9 +752,9 @@ function renderBlockedAttemptsPanel(attempts) {
                 </div>
                 <small>${escapeHtml(formatAdminDate(attempt.createdAt))}</small>
               </div>
-              <p>${escapeHtml(attempt.message || "")}</p>
+              <p>${escapeHtml(maskProfanity(attempt.message || ""))}</p>
               <ol>
-                ${(attempt.context || []).map((message) => `<li>${escapeHtml(message)}</li>`).join("")}
+                ${(attempt.context || []).map((message) => `<li>${escapeHtml(maskProfanity(message))}</li>`).join("")}
               </ol>
               <div class="blocked-actions">
                 <button class="danger-button" data-blocked-ban="${attemptId}"${Aether.state.adminLoading ? " disabled" : ""}>${username ? "Ban User" : "Ban IP"}</button>
@@ -996,10 +996,10 @@ function chatListItem(chat) {
   return `
     <div class="chat-item-row ${active}">
       <button class="chat-item" data-chat-id="${chat.id}">
-        <span>${escapeHtml(chat.title)}</span>
+        <span>${escapeHtml(maskProfanity(chat.title))}</span>
         <small>${escapeHtml(chatPreview(chat))}</small>
       </button>
-      <button class="delete-chat" data-delete-chat="${chat.id}" aria-label="Delete ${escapeHtml(chat.title)}">X</button>
+      <button class="delete-chat" data-delete-chat="${chat.id}" aria-label="Delete ${escapeHtml(maskProfanity(chat.title))}">X</button>
     </div>
   `;
 }
@@ -1020,11 +1020,11 @@ function filteredChats() {
 function chatPreview(chat) {
   if (chat?.safetyLocked) return "Conversation locked";
   const last = [...chat.messages].reverse().find((message) => message.content && message.role === "user") || chat.messages.at(-1);
-  return last?.content ? last.content.slice(0, 72) : "Fresh conversation";
+  return last?.content ? maskProfanity(last.content).slice(0, 72) : "Fresh conversation";
 }
 
 function reportSnippet(value, maxLength = 260) {
-  const text = String(value || "").replace(/\s+/g, " ").trim();
+  const text = maskProfanity(String(value || "")).replace(/\s+/g, " ").trim();
   if (text.length <= maxLength) return text;
   return `${text.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
 }
@@ -1068,7 +1068,7 @@ function renderMessage(message) {
   const voiceClass = message.voice ? " voice-message-row" : "";
   const reportedClass = message.reportedAt ? " reported-message" : "";
   const messageId = message.id || "";
-  const content = message.role === "assistant" ? normalizeAssistantText(message.content) : message.content;
+  const content = message.role === "assistant" ? maskProfanity(normalizeAssistantText(message.content)) : maskProfanity(message.content);
   const bubble = message.role === "assistant"
     ? `<div class="bubble formatted">${renderAssistantMarkdown(content)}</div>`
     : `<div class="bubble">${escapeHtml(content)}</div>`;
@@ -1101,7 +1101,7 @@ function renderMessage(message) {
 
 function renderVoiceBubble(message) {
   return `
-    <div class="bubble voice-bubble" title="${escapeHtml(message.content || "Voice message")}">
+    <div class="bubble voice-bubble" title="${escapeHtml(maskProfanity(message.content || "Voice message"))}">
       <span class="voice-label">Voice Message</span>
     </div>
   `;
@@ -1314,7 +1314,7 @@ function renderBanOverlay() {
         ${sourceMessage ? `
           <div class="ban-evidence">
             <span>What you said</span>
-            <p>${escapeHtml(sourceMessage)}</p>
+            <p>${escapeHtml(maskProfanity(sourceMessage))}</p>
           </div>
         ` : ""}
       </section>
@@ -2428,7 +2428,7 @@ async function sendMessage(event) {
 
   const form = event.currentTarget;
   const input = form.elements.message;
-  const text = maskProfanity(input.value.trim());
+  const text = input.value.trim();
   Aether.state.composerDraft = input.value;
   if (!text) return;
   if (isRateLimited()) {
@@ -2436,10 +2436,6 @@ async function sendMessage(event) {
     render();
     return;
   }
-  input.value = text;
-  Aether.state.composerDraft = text;
-  syncComposerHeight(input);
-  updateProfanityHighlightDom(input);
   const fromVoice = voiceAutoSending;
   if (maybeOpenMessageCaptchaGate(text, { voice: fromVoice })) {
     return;
@@ -2455,32 +2451,32 @@ async function sendMessage(event) {
 }
 
 async function sendTextMessage(text, options = {}) {
-  const safeText = maskProfanity(String(text || "").trim());
+  const rawText = String(text || "").trim();
   if (isUserBanned()) return;
   if (Aether.state.thinking || Aether.state.assistantTyping) return;
   if (!isAetherAvailable()) return;
   const chat = activeChat();
   if (!chat || chat.safetyLocked) return;
-  if (!safeText) return;
+  if (!rawText) return;
   if (isRateLimited()) {
     Aether.state.rateLimitPopup = true;
     render();
     return;
   }
   if (options.addUser !== false) {
-    if (!options.skipMessageCaptchaGate && maybeOpenMessageCaptchaGate(safeText, options)) {
+    if (!options.skipMessageCaptchaGate && maybeOpenMessageCaptchaGate(rawText, options)) {
       return;
     }
     noteMessageCaptchaSendAttempt();
   }
 
   if (options.addUser !== false) {
-    const userMessage = createMessage("user", safeText, options.voice ? { voice: true } : {});
+    const userMessage = createMessage("user", rawText, options.voice ? { voice: true } : {});
     chat.messages.push(userMessage);
   }
-  if (!options.voice && isDefaultChatTitle(chat.title)) chat.title = conversationTitleFromText(safeText);
+  if (!options.voice && isDefaultChatTitle(chat.title)) chat.title = conversationTitleFromText(maskProfanity(rawText));
   touchChat(chat);
-  const safetyReason = Aether.config.apiEndpoint ? "" : safetyLockReason(safeText);
+  const safetyReason = Aether.config.apiEndpoint ? "" : safetyLockReason(rawText);
   if (safetyReason) {
     Aether.state.thinking = true;
     storage.save();
@@ -2495,7 +2491,7 @@ async function sendTextMessage(text, options = {}) {
 
   const responseSpeedMode = normalizedSpeedMode(Aether.config.speedMode);
   const thinkingStartedAt = performance.now();
-  const answer = await getAssistantReply(safeText, { speedMode: responseSpeedMode });
+  const answer = await getAssistantReply(rawText, { speedMode: responseSpeedMode });
   if (answer && responseSpeedMode === "default") {
     await wait(DEFAULT_MODE_EXTRA_THINK_DELAY_MS);
   }
@@ -3621,7 +3617,7 @@ function createMessage(role, content, extras = {}) {
     role,
     createdAt: new Date().toISOString(),
     ...extras,
-    content: maskProfanity(content),
+    content,
   };
 }
 

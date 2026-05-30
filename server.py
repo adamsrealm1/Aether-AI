@@ -121,22 +121,6 @@ def mask_profanity(message: object) -> str:
     return PROFANITY_TOKEN_RE.sub(replace, text)
 
 
-def contains_profanity(message: object) -> bool:
-    text = str(message or "")
-    return mask_profanity(text) != text
-
-
-def mask_chat_profanity(chat: list) -> list:
-    sanitized = []
-    for item in chat:
-        if not isinstance(item, dict):
-            continue
-        next_item = dict(item)
-        next_item["content"] = mask_profanity(next_item.get("content", ""))
-        sanitized.append(next_item)
-    return sanitized
-
-
 def safety_lock_reason(message: str) -> str:
     return ""
 
@@ -2557,7 +2541,7 @@ def chat_response(payload: dict, ip_address: str, account: dict | None = None) -
     message = str(payload.get("message", "")).strip()[:MAX_CHAT_MESSAGE_CONTENT_LENGTH]
     masked_message = mask_profanity(message)
     chat = payload.get("chat") if isinstance(payload.get("chat"), list) else []
-    chat = mask_chat_profanity(chat[:MAX_CHAT_MESSAGES_PER_CHAT])
+    chat = chat[:MAX_CHAT_MESSAGES_PER_CHAT]
     location = payload.get("location")
     speed_mode = normalized_speed_mode(payload.get("speedMode"))
     rate_limit_cost = speed_mode_rate_limit_cost(speed_mode)
@@ -2593,7 +2577,7 @@ def chat_response(payload: dict, ip_address: str, account: dict | None = None) -
         }
     safety = classify_message_safety(message, chat)
     if safety.get("lock"):
-        safe_record_blocked_attempt(ip_address, masked_message, chat, account)
+        safe_record_blocked_attempt(ip_address, message, chat, account)
         return {
             "safetyLocked": True,
             "safetyReason": safety.get("reason") or "safety",
@@ -2617,7 +2601,7 @@ def chat_response(payload: dict, ip_address: str, account: dict | None = None) -
         latitude, longitude = coordinates_from_location(location)
         reply = weather_reply(latitude, longitude)
         return {"reply": reply, "rateLimit": rate["rateLimit"], "maskedMessage": masked_message}
-    reply = groq_reply(masked_message, chat, speed_mode)
+    reply = groq_reply(message, chat, speed_mode)
     return {"reply": reply, "rateLimit": rate["rateLimit"], "maskedMessage": masked_message}
 
 
