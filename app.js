@@ -3,6 +3,7 @@
     appName: "Aether",
     apiEndpoint: defaultApiEndpoint(),
     githubRepo: String(window.AETHER_GITHUB_REPO || "adamsrealm1/Aether-AI").trim(),
+    hcaptchaSiteKey: String(window.AETHER_HCAPTCHA_SITE_KEY || "").trim(),
     speedMode: "default",
   },
   state: {
@@ -38,6 +39,9 @@
     authMode: "signin",
     authLoading: false,
     authError: "",
+    authCaptchaToken: "",
+    authCaptchaError: "",
+    authCaptchaWidgetId: null,
     accountModal: false,
     accountLoading: false,
     accountError: "",
@@ -60,6 +64,15 @@
     changelogError: "",
     changelogCommits: [],
     changelogFetchedAt: "",
+    messageCaptcha: {
+      open: false,
+      pending: null,
+      token: "",
+      error: "",
+      verifying: false,
+      widgetId: null,
+    },
+    recentMessageTimestamps: [],
     adminDirectorySearch: {
       adminsOpen: false,
       adminsQuery: "",
@@ -90,6 +103,7 @@ let voiceFinalResultIndexes = new Set();
 let voiceTranscript = "";
 let voiceAutoSending = false;
 let activeAssistantReveal = null;
+let hcaptchaReady = false;
 const LOCATION_TIME_PERMISSION_MESSAGE = "Aether needs your permission to see your location to give your location.";
 const PROFANITY_BLOCK_MESSAGE = "You cant send Aether a message with profanity in it. You can try again without profanity in your message.";
 const SAFETY_LOCK_PLACEHOLDER = "Oops! Aether's safety agent identified something unusual in your messages. You'll need to create a new conversation to continue using Aether AI.";
@@ -107,6 +121,8 @@ const DEFAULT_CHAT_TITLE = "New conversation";
 const CHANGELOG_COMMIT_LIMIT = 5;
 const CHANGELOG_REFRESH_MS = 2 * 60 * 1000;
 const UPDATE_CHECK_INTERVAL_MS = 2 * 60 * 1000;
+const MESSAGE_CAPTCHA_LIMIT = 5;
+const MESSAGE_CAPTCHA_WINDOW_MS = 35 * 1000;
 const ADMIN_DIRECTORY_SEARCH_CONFIG = {
   admins: {
     title: "Admins",
@@ -118,6 +134,11 @@ const ADMIN_DIRECTORY_SEARCH_CONFIG = {
     singular: "account",
     placeholder: "Search accounts",
   },
+};
+
+window.onAetherHCaptchaLoaded = function onAetherHCaptchaLoaded() {
+  hcaptchaReady = true;
+  renderHCaptchaWidgets();
 };
 const SPEED_MODES = {
   default: {
@@ -303,10 +324,12 @@ function render() {
   const mobileSidebarClass = Aether.state.mobileSidebarOpen ? " mobile-sidebar-open" : "";
   const showAdminView = Aether.state.adminView && isCurrentAdmin();
   const banLocked = isUserBanned();
-  const lockableAttrs = banLocked ? ` inert aria-hidden="true"` : "";
+  const captchaLocked = isMessageCaptchaOpen();
+  const shellLocked = banLocked || captchaLocked;
+  const lockableAttrs = shellLocked ? ` inert aria-hidden="true"` : "";
 
   root.innerHTML = `
-    <div class="app-shell${mobileSidebarClass}${banLocked ? " ban-locked-shell" : ""}">
+    <div class="app-shell${mobileSidebarClass}${shellLocked ? " ban-locked-shell" : ""}">
       <div class="app-content"${lockableAttrs}>
         <button class="mobile-sidebar-scrim" type="button" data-action="close-mobile-sidebar" aria-label="Close sidebar"></button>
         <aside class="sidebar">
@@ -339,11 +362,13 @@ function render() {
         ${renderToast()}
       </div>
       ${renderUpdateBanner()}
+      ${renderMessageCaptchaPopup()}
       ${renderBanOverlay()}
     </div>
   `;
 
   bindEvents(root);
+  renderHCaptchaWidgets();
   observeMessageVisibility();
   scrollChatToBottom();
 }
@@ -1118,6 +1143,30 @@ function renderRateLimitPopup() {
   `;
 }
 
+function renderMessageCaptchaPopup() {
+  const captcha = Aether.state.messageCaptcha || {};
+  if (!captcha.open || isUserBanned()) return "";
+  const status = captchaStatusText("message");
+  return `
+    <div class="captcha-lock-overlay" role="dialog" aria-modal="true" aria-labelledby="message-captcha-title" aria-describedby="message-captcha-copy">
+      <section class="captcha-lock-modal" tabindex="-1">
+        <div class="captcha-lock-head">
+          <span class="captcha-lock-icon" aria-hidden="true">✓</span>
+          <div>
+            <span class="captcha-eyebrow">Quick verification</span>
+            <h2 id="message-captcha-title">Confirm you are human</h2>
+          </div>
+        </div>
+        <p id="message-captcha-copy">Aether paused this message because several messages were sent quickly. Complete the captcha and the message will continue automatically.</p>
+        <div class="captcha-panel message-captcha-panel${captcha.token ? " captcha-verified" : ""}">
+          <div class="hcaptcha-mount" data-hcaptcha-widget="message" aria-label="hCaptcha challenge"></div>
+          <p class="captcha-status" data-captcha-status="message">${escapeHtml(status)}</p>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
 function renderReportModal() {
   const report = Aether.state.reportModal;
   if (!report) return "";
@@ -1286,9 +1335,11 @@ function renderBanOverlay() {
 function renderAuthModal() {
   if (!Aether.state.authModal) return "";
   const creating = Aether.state.authMode === "create";
+  const captchaSolved = Boolean(Aether.state.authCaptchaToken);
+  const captchaDisabled = Aether.state.authLoading || !captchaSolved;
   return `
     <div class="account-overlay" role="dialog" aria-modal="true" aria-labelledby="auth-title" data-action="close-auth-modal">
-      <form class="auth-card" data-action="auth-submit">
+      <form class="auth-card${captchaSolved ? " captcha-verified" : ""}" data-action="auth-submit">
         <button class="modal-close" type="button" data-action="close-auth-modal" aria-label="Close">×</button>
         <div class="auth-card-head">
           <span class="auth-badge">${creating ? "New account" : "Welcome back"}</span>
@@ -1307,7 +1358,11 @@ function renderAuthModal() {
           <span>Password</span>
           <input name="password" type="password" autocomplete="${creating ? "new-password" : "current-password"}" minlength="8" maxlength="128" required placeholder="At least 8 characters">
         </label>
-        <button class="primary-button" type="submit"${Aether.state.authLoading ? " disabled" : ""}>${creating ? "Create account" : "Sign in"}</button>
+        <div class="captcha-panel auth-captcha-panel${captchaSolved ? " captcha-verified" : ""}">
+          <div class="hcaptcha-mount" data-hcaptcha-widget="auth" aria-label="hCaptcha challenge"></div>
+          <p class="captcha-status" data-captcha-status="auth">${escapeHtml(captchaStatusText("auth"))}</p>
+        </div>
+        <button class="primary-button captcha-gated-button" type="submit"${captchaDisabled ? " disabled" : ""} aria-disabled="${captchaDisabled ? "true" : "false"}">${creating ? "Create account" : "Sign in"}</button>
       </form>
     </div>
   `;
@@ -1498,6 +1553,226 @@ function focusBanOverlay(root = document) {
   });
 }
 
+function hcaptchaSiteKey() {
+  return String(Aether.config.hcaptchaSiteKey || window.AETHER_HCAPTCHA_SITE_KEY || "").trim();
+}
+
+function isHCaptchaReady() {
+  return hcaptchaReady || Boolean(window.hcaptcha?.render);
+}
+
+function isMessageCaptchaOpen() {
+  return Boolean(Aether.state.messageCaptcha?.open);
+}
+
+function captchaStatusText(kind) {
+  const siteKey = hcaptchaSiteKey();
+  if (!siteKey) return "Captcha is not configured yet.";
+  const captcha = kind === "message" ? Aether.state.messageCaptcha : null;
+  const error = kind === "auth" ? Aether.state.authCaptchaError : captcha?.error;
+  if (error) return error;
+  if (!isHCaptchaReady()) return "Captcha is loading...";
+  if (kind === "auth" && Aether.state.authCaptchaToken) return "Captcha verified. You can continue.";
+  if (kind === "message") {
+    if (captcha?.verifying) return "Verifying captcha...";
+    if (captcha?.token) return "Captcha verified. Continuing message...";
+  }
+  return "Complete the captcha to continue.";
+}
+
+function renderHCaptchaWidgets() {
+  const siteKey = hcaptchaSiteKey();
+  if (!siteKey || !window.hcaptcha?.render) {
+    updateCaptchaDom("auth");
+    updateCaptchaDom("message");
+    return;
+  }
+  hcaptchaReady = true;
+  document.querySelectorAll("[data-hcaptcha-widget]").forEach((container) => {
+    if (container.dataset.hcaptchaRendered === "true") return;
+    const kind = container.dataset.hcaptchaWidget || "";
+    try {
+      const widgetId = window.hcaptcha.render(container, {
+        sitekey: siteKey,
+        theme: "dark",
+        callback: (token) => handleCaptchaSolved(kind, token),
+        "expired-callback": () => handleCaptchaExpired(kind),
+        "error-callback": () => handleCaptchaError(kind),
+      });
+      container.dataset.hcaptchaRendered = "true";
+      container.dataset.hcaptchaWidgetId = String(widgetId);
+      if (kind === "auth") Aether.state.authCaptchaWidgetId = widgetId;
+      if (kind === "message") Aether.state.messageCaptcha.widgetId = widgetId;
+    } catch {
+      handleCaptchaError(kind);
+    }
+  });
+  updateCaptchaDom("auth");
+  updateCaptchaDom("message");
+}
+
+function handleCaptchaSolved(kind, token) {
+  const value = String(token || "");
+  if (kind === "auth") {
+    Aether.state.authCaptchaToken = value;
+    Aether.state.authCaptchaError = "";
+    updateCaptchaDom("auth");
+    return;
+  }
+  if (kind === "message") {
+    continuePendingMessageAfterCaptcha(value);
+  }
+}
+
+function handleCaptchaExpired(kind) {
+  if (kind === "auth") {
+    Aether.state.authCaptchaToken = "";
+    Aether.state.authCaptchaError = "Captcha expired. Complete it again.";
+  } else if (kind === "message") {
+    Aether.state.messageCaptcha.token = "";
+    Aether.state.messageCaptcha.verifying = false;
+    Aether.state.messageCaptcha.error = "Captcha expired. Complete it again.";
+  }
+  updateCaptchaDom(kind);
+}
+
+function handleCaptchaError(kind) {
+  if (kind === "auth") {
+    Aether.state.authCaptchaToken = "";
+    Aether.state.authCaptchaError = "Captcha could not load. Try again.";
+  } else if (kind === "message") {
+    Aether.state.messageCaptcha.token = "";
+    Aether.state.messageCaptcha.verifying = false;
+    Aether.state.messageCaptcha.error = "Captcha could not load. Try again.";
+  }
+  updateCaptchaDom(kind);
+}
+
+function updateCaptchaDom(kind) {
+  const status = document.querySelector(`[data-captcha-status="${CSS.escape(kind)}"]`);
+  if (status) status.textContent = captchaStatusText(kind);
+  if (kind === "auth") {
+    const solved = Boolean(Aether.state.authCaptchaToken);
+    const disabled = Aether.state.authLoading || !solved;
+    document.querySelector(".auth-card")?.classList.toggle("captcha-verified", solved);
+    document.querySelector(".auth-captcha-panel")?.classList.toggle("captcha-verified", solved);
+    const button = document.querySelector("[data-action='auth-submit'] .captcha-gated-button");
+    if (button) {
+      button.disabled = disabled;
+      button.setAttribute("aria-disabled", disabled ? "true" : "false");
+    }
+  }
+  if (kind === "message") {
+    document.querySelector(".message-captcha-panel")?.classList.toggle("captcha-verified", Boolean(Aether.state.messageCaptcha?.token));
+  }
+}
+
+function resetCaptcha(kind) {
+  if (kind === "auth") {
+    Aether.state.authCaptchaToken = "";
+    Aether.state.authCaptchaError = "";
+    resetHCaptchaWidget(Aether.state.authCaptchaWidgetId);
+    updateCaptchaDom("auth");
+    return;
+  }
+  if (kind === "message") {
+    resetHCaptchaWidget(Aether.state.messageCaptcha?.widgetId);
+    Aether.state.messageCaptcha.token = "";
+    Aether.state.messageCaptcha.error = "";
+    Aether.state.messageCaptcha.verifying = false;
+    updateCaptchaDom("message");
+  }
+}
+
+function resetHCaptchaWidget(widgetId) {
+  if (widgetId === null || widgetId === undefined || !window.hcaptcha?.reset) return;
+  try {
+    window.hcaptcha.reset(widgetId);
+  } catch {}
+}
+
+function pruneMessageCaptchaTimestamps(now = Date.now()) {
+  Aether.state.recentMessageTimestamps = Aether.state.recentMessageTimestamps.filter((value) => now - Number(value) < MESSAGE_CAPTCHA_WINDOW_MS);
+}
+
+function shouldRequireMessageCaptcha() {
+  pruneMessageCaptchaTimestamps();
+  return Aether.state.recentMessageTimestamps.length >= MESSAGE_CAPTCHA_LIMIT - 1;
+}
+
+function noteMessageCaptchaSendAttempt() {
+  const now = Date.now();
+  pruneMessageCaptchaTimestamps(now);
+  Aether.state.recentMessageTimestamps.push(now);
+}
+
+function maybeOpenMessageCaptchaGate(text, options = {}) {
+  if (!shouldRequireMessageCaptcha()) return false;
+  stopVoiceInput({ keepDraft: true, silent: true });
+  Aether.state.messageCaptcha = {
+    open: true,
+    pending: {
+      text: String(text || ""),
+      options: {
+        voice: Boolean(options.voice),
+      },
+    },
+    token: "",
+    error: "",
+    verifying: false,
+    widgetId: null,
+  };
+  render();
+  requestAnimationFrame(() => {
+    document.querySelector(".captcha-lock-modal")?.focus({ preventScroll: true });
+  });
+  return true;
+}
+
+async function continuePendingMessageAfterCaptcha(token) {
+  const captcha = Aether.state.messageCaptcha;
+  if (!captcha?.open || !captcha.pending) return;
+  captcha.token = String(token || "");
+  captcha.error = "";
+  captcha.verifying = true;
+  updateCaptchaDom("message");
+  try {
+    await verifyCaptchaToken(captcha.token, "message-rate");
+    const pending = captcha.pending;
+    Aether.state.messageCaptcha = {
+      open: false,
+      pending: null,
+      token: "",
+      error: "",
+      verifying: false,
+      widgetId: null,
+    };
+    Aether.state.composerDraft = "";
+    render();
+    await sendTextMessage(pending.text, { ...pending.options, skipMessageCaptchaGate: true });
+  } catch (error) {
+    captcha.token = "";
+    captcha.verifying = false;
+    captcha.error = error?.message || "Captcha verification failed. Try again.";
+    resetHCaptchaWidget(captcha.widgetId);
+    updateCaptchaDom("message");
+  }
+}
+
+async function verifyCaptchaToken(token, purpose) {
+  const response = await fetch(apiUrl("/api/captcha/verify"), {
+    method: "POST",
+    headers: await authHeaders({ "Content-Type": "application/json;charset=UTF-8" }),
+    cache: "no-store",
+    body: JSON.stringify({ captchaToken: token, purpose }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.verified) {
+    throw new Error(data.error || `Captcha verification failed with HTTP ${response.status}`);
+  }
+  return data;
+}
+
 function bindChangelogEvents(root) {
   root.querySelectorAll("[data-action='close-changelog-modal']").forEach((element) => {
     element.addEventListener("click", (event) => {
@@ -1514,6 +1789,7 @@ function bindAccountEvents(root) {
       if (element.classList.contains("account-overlay") && event.target !== element) return;
       Aether.state.authModal = false;
       Aether.state.authError = "";
+      resetCaptcha("auth");
       render();
     });
   });
@@ -1529,6 +1805,7 @@ function bindAccountEvents(root) {
     button.addEventListener("click", () => {
       Aether.state.authMode = button.dataset.authMode || "signin";
       Aether.state.authError = "";
+      resetCaptcha("auth");
       render();
     });
   });
@@ -1547,7 +1824,14 @@ async function submitAuthForm(event) {
   const data = new FormData(form);
   const username = String(data.get("username") || "").trim();
   const password = String(data.get("password") || "");
+  const captchaToken = String(Aether.state.authCaptchaToken || "");
   const path = Aether.state.authMode === "create" ? "/api/account/create" : "/api/account/signin";
+  if (!captchaToken) {
+    Aether.state.authError = "Complete the captcha before continuing.";
+    Aether.state.authCaptchaError = "Complete the captcha before continuing.";
+    updateCaptchaDom("auth");
+    return;
+  }
 
   Aether.state.authLoading = true;
   Aether.state.authError = "";
@@ -1555,13 +1839,15 @@ async function submitAuthForm(event) {
   try {
     const result = await accountRequest(path, {
       method: "POST",
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ username, password, captchaToken }),
     });
     applyAccountStatus(result);
     Aether.state.authModal = false;
+    resetCaptcha("auth");
     showToast(result.message || (Aether.state.authMode === "create" ? "Account created." : "Signed in."));
   } catch (error) {
     Aether.state.authError = error?.message || "Account request failed.";
+    resetCaptcha("auth");
   } finally {
     Aether.state.authLoading = false;
     render();
@@ -2171,11 +2457,15 @@ async function sendMessage(event) {
     return;
   }
 
+  const fromVoice = voiceAutoSending;
+  if (maybeOpenMessageCaptchaGate(text, { voice: fromVoice })) {
+    return;
+  }
+
   input.value = "";
   Aether.state.composerDraft = "";
-  const fromVoice = voiceAutoSending;
   try {
-    await sendTextMessage(text, { voice: fromVoice });
+    await sendTextMessage(text, { voice: fromVoice, skipMessageCaptchaGate: true });
   } finally {
     voiceAutoSending = false;
   }
@@ -2193,6 +2483,12 @@ async function sendTextMessage(text, options = {}) {
     return;
   }
   if (handleLocalProfanity(text)) return;
+  if (options.addUser !== false) {
+    if (!options.skipMessageCaptchaGate && maybeOpenMessageCaptchaGate(text, options)) {
+      return;
+    }
+    noteMessageCaptchaSendAttempt();
+  }
 
   if (options.addUser !== false) {
     const userMessage = createMessage("user", text, options.voice ? { voice: true } : {});
@@ -2603,6 +2899,13 @@ function applyServerStatus(data) {
   }
   if (data.rateLimit) {
     updateRateLimit(data.rateLimit);
+  }
+  if (data.hcaptcha || Object.prototype.hasOwnProperty.call(data, "hcaptchaSiteKey")) {
+    const nextSiteKey = String(data.hcaptcha?.siteKey || data.hcaptchaSiteKey || "").trim();
+    if (nextSiteKey && nextSiteKey !== Aether.config.hcaptchaSiteKey) {
+      Aether.config.hcaptchaSiteKey = nextSiteKey;
+      changed = true;
+    }
   }
   if (Array.isArray(data.reportNotifications)) {
     changed = applyReportNotifications(data.reportNotifications) || changed;

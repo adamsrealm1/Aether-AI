@@ -42,6 +42,7 @@ AUTH_RATE_LIMIT_WINDOW_SECONDS = 15 * 60
 SAFETY_SCAN_RATE_LIMIT = 600
 SAFETY_SCAN_WINDOW_SECONDS = 60 * 60
 SAFETY_CLASSIFIER_CONFIDENCE_THRESHOLD = 0.72
+HCAPTCHA_VERIFY_URL = "https://api.hcaptcha.com/siteverify"
 RATE_LIMITS: dict[str, dict] = {}
 DB_INITIALIZED = False
 app = Flask(__name__, static_folder=str(ROOT), static_url_path="")
@@ -294,6 +295,9 @@ def load_dotenv() -> None:
         value = value.strip().strip('"').strip("'")
         if key and key not in os.environ:
             os.environ[key] = value
+
+
+load_dotenv()
 
 
 def utc_now() -> datetime:
@@ -1961,6 +1965,8 @@ def clear_session_cookie(response) -> None:
 
 def account_response(account: dict | None = None, extra: dict | None = None):
     payload = account_auth_status() if account is None else {"signedIn": True, "account": account_public(account)}
+    payload["hcaptcha"] = hcaptcha_public_config()
+    payload["hcaptchaSiteKey"] = hcaptcha_site_key()
     if extra:
         payload.update(extra)
     return jsonify(payload)
@@ -2410,6 +2416,68 @@ def client_ip() -> str:
     return value[:80] or "127.0.0.1"
 
 
+def hcaptcha_site_key() -> str:
+    return (os.getenv("HCAPTCHA_SITE_KEY") or os.getenv("AETHER_HCAPTCHA_SITE_KEY") or "").strip()
+
+
+def hcaptcha_secret_key() -> str:
+    return (os.getenv("HCAPTCHA_SECRET") or os.getenv("HCAPTCHA_SECRET_KEY") or os.getenv("AETHER_HCAPTCHA_SECRET") or "").strip()
+
+
+def hcaptcha_public_config() -> dict:
+    site_key = hcaptcha_site_key()
+    return {
+        "enabled": bool(site_key),
+        "siteKey": site_key,
+    }
+
+
+def captcha_token_from_payload(payload: dict) -> str:
+    for key in ("captchaToken", "hcaptchaToken", "h-captcha-response"):
+        token = str(payload.get(key) or "").strip()
+        if token:
+            return token
+    return ""
+
+
+def verify_hcaptcha_token(token: str, ip_address: str) -> tuple[bool, str]:
+    site_key = hcaptcha_site_key()
+    secret_key = hcaptcha_secret_key()
+    token = str(token or "").strip()
+    if not site_key or not secret_key:
+        return False, "Captcha is not configured."
+    if not token:
+        return False, "Complete the captcha before continuing."
+
+    form = {
+        "secret": secret_key,
+        "response": token,
+        "remoteip": ip_address,
+        "sitekey": site_key,
+    }
+    data = urllib.parse.urlencode(form).encode("utf-8")
+    req = urllib.request.Request(
+        HCAPTCHA_VERIFY_URL,
+        data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as response:
+            body = response.read().decode("utf-8", "replace")
+        result = json.loads(body)
+    except Exception:
+        return False, "Captcha verification is unavailable. Try again."
+
+    if result.get("success") is True:
+        return True, ""
+    return False, "Captcha verification failed. Try again."
+
+
+def require_hcaptcha(payload: dict, ip_address: str) -> tuple[bool, str]:
+    return verify_hcaptcha_token(captcha_token_from_payload(payload), ip_address)
+
+
 def chat_response(payload: dict, ip_address: str, account: dict | None = None) -> dict:
     account_id = account.get("id") if account else None
     message = str(payload.get("message", "")).strip()[:MAX_CHAT_MESSAGE_CONTENT_LENGTH]
@@ -2577,6 +2645,8 @@ def api_status():
             "account": public_account,
             "rateLimit": rate_limit,
             "reportNotifications": notifications,
+            "hcaptcha": hcaptcha_public_config(),
+            "hcaptchaSiteKey": hcaptcha_site_key(),
         }
     )
 
@@ -2586,18 +2656,33 @@ def api_account_session():
     return account_response()
 
 
-@app.post("/api/account/create")
-def api_account_create():
-    auth_limit = consume_auth_rate_limit(client_ip())
-    if not auth_limit["allowed"]:
-        return jsonify({"error": "Too many account attempts. Try again later."}), 429
+@app.post("/api/captcha/verify")
+def api_captcha_verify():
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
         payload = {}
+    verified, error = require_hcaptcha(payload, client_ip())
+    if not verified:
+        return jsonify({"verified": False, "error": error, "captchaRequired": True}), 400
+    return jsonify({"verified": True})
+
+
+@app.post("/api/account/create")
+def api_account_create():
+    ip_address = client_ip()
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    verified, error = require_hcaptcha(payload, ip_address)
+    if not verified:
+        return jsonify({"error": error, "captchaRequired": True}), 400
+    auth_limit = consume_auth_rate_limit(ip_address)
+    if not auth_limit["allowed"]:
+        return jsonify({"error": "Too many account attempts. Try again later."}), 429
     try:
         account = create_account(payload.get("username"), payload.get("password"))
-        bind_anonymous_rate_limit_to_account(client_ip(), account.get("id"))
-        token = create_account_session(account.get("id"), client_ip(), request.headers.get("User-Agent", ""))
+        bind_anonymous_rate_limit_to_account(ip_address, account.get("id"))
+        token = create_account_session(account.get("id"), ip_address, request.headers.get("User-Agent", ""))
         response = account_response(account, {"message": "Account created.", "sessionToken": token})
         set_session_cookie(response, token)
         return response
@@ -2607,12 +2692,16 @@ def api_account_create():
 
 @app.post("/api/account/signin")
 def api_account_signin():
-    auth_limit = consume_auth_rate_limit(client_ip())
-    if not auth_limit["allowed"]:
-        return jsonify({"error": "Too many sign-in attempts. Try again later."}), 429
+    ip_address = client_ip()
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
         payload = {}
+    verified, error = require_hcaptcha(payload, ip_address)
+    if not verified:
+        return jsonify({"error": error, "captchaRequired": True}), 400
+    auth_limit = consume_auth_rate_limit(ip_address)
+    if not auth_limit["allowed"]:
+        return jsonify({"error": "Too many sign-in attempts. Try again later."}), 429
     username = normalize_username(payload.get("username"))
     password = str(payload.get("password") or "")
     account = find_account_by_username(username) if username else None
@@ -2623,8 +2712,8 @@ def api_account_signin():
     if ban_record:
         return banned_api_response(ban_record)
 
-    bind_anonymous_rate_limit_to_account(client_ip(), account.get("id"))
-    token = create_account_session(account.get("id"), client_ip(), request.headers.get("User-Agent", ""))
+    bind_anonymous_rate_limit_to_account(ip_address, account.get("id"))
+    token = create_account_session(account.get("id"), ip_address, request.headers.get("User-Agent", ""))
     response = account_response(account, {"message": "Signed in.", "sessionToken": token})
     set_session_cookie(response, token)
     return response
