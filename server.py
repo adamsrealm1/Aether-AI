@@ -20,7 +20,6 @@ from flask import Flask, jsonify, request, send_from_directory
 from groq import APIConnectionError, APIStatusError, APITimeoutError, Groq
 
 ROOT = Path(__file__).resolve().parent
-PROFANITY_BLOCK_MESSAGE = "You cant send Aether a message with profanity in it. You can try again without profanity in your message."
 REQUEST_BACKOFF_MESSAGE = "Try again in 5 minutes, too many messages are being sent right now."
 DEFAULT_RATE_LIMIT = 200
 DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 86400
@@ -43,33 +42,32 @@ SAFETY_SCAN_RATE_LIMIT = 600
 SAFETY_SCAN_WINDOW_SECONDS = 60 * 60
 SAFETY_CLASSIFIER_CONFIDENCE_THRESHOLD = 0.72
 HCAPTCHA_VERIFY_URL = "https://api.hcaptcha.com/siteverify"
+MESSAGE_CAPTCHA_LIMIT = 5
+MESSAGE_CAPTCHA_WINDOW_SECONDS = 35
+MESSAGE_CAPTCHA_PASS_SECONDS = 5 * 60
 RATE_LIMITS: dict[str, dict] = {}
+MESSAGE_CAPTCHA_PASSES: dict[str, datetime] = {}
 DB_INITIALIZED = False
 app = Flask(__name__, static_folder=str(ROOT), static_url_path="")
 app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BODY_BYTES
-PROFANITY_PATTERNS = [
-    re.compile(pattern, re.I)
-    for pattern in [
-        r"\bass\b",
-        r"\basshole\b",
-        r"\bbastard\b",
-        r"\bbitch\b",
-        r"\bcrap\b",
-        r"\bdamn\b",
-        r"\bfuck(?:er|ing)?\b",
-        r"\bshit(?:ty)?\b",
-        r"\bslut\b",
-        r"\bwhore\b",
-    ]
-]
-SAFETY_LOCK_PATTERNS = [
-    ("self-harm", re.compile(r"\b(?:kill myself|end my life|suicide|suicidal|self[-\s]?harm|hurt myself|cut myself|overdose on purpose)\b", re.I)),
-    ("harm", re.compile(r"\b(?:how (?:do i|to) (?:kill|murder|hurt) (?:someone|a person)|commit murder|school shooting|mass shooting)\b", re.I)),
-    ("weapons", re.compile(r"\b(?:build|make|assemble|detonate|plant)\s+(?:a\s+)?(?:bomb|explosive|pipe bomb|molotov|grenade)\b", re.I)),
-    ("child-safety", re.compile(r"\b(?:child sexual|sexualize (?:a )?minor|minor porn|cp\b|csam)\b", re.I)),
-    ("cyber-abuse", re.compile(r"\b(?:make|write|build|deploy|use)\s+(?:malware|ransomware|keylogger|token grabber|phishing kit|password stealer|ddos bot)\b", re.I)),
-    ("hard-drugs", re.compile(r"\b(?:make|cook|synthesize|manufacture)\s+(?:meth|fentanyl|heroin|cocaine|mdma)\b", re.I)),
-]
+PROFANITY_TOKEN_HASHES = {
+    "3272efda", "92a4ff90", "81602170", "91b887d3", "82405e59",
+    "dbafbd1d", "e6774d4a", "8814611d", "893dcdb6", "a856eb33",
+    "cf5447f4", "6cd5e87b", "b99bf986", "d9eb56dd", "a4705559",
+    "243c4bae", "18a40a3d", "6537d094", "d7337605", "d95c3b1f",
+}
+PROFANITY_TOKEN_RE = re.compile(r"[A-Za-z0-9_@$!]+")
+PROFANITY_CHAR_MAP = str.maketrans({
+    "@": "a",
+    "$": "s",
+    "!": "i",
+    "0": "o",
+    "1": "i",
+    "3": "e",
+    "4": "a",
+    "5": "s",
+    "7": "t",
+})
 WEATHER_CODES = {
     0: "clear sky",
     1: "mainly clear",
@@ -95,14 +93,51 @@ WEATHER_CODES = {
 }
 
 
-def contains_profanity(message: str) -> bool:
-    return any(pattern.search(message) for pattern in PROFANITY_PATTERNS)
+def fnv1a_32(value: str) -> str:
+    digest = 2166136261
+    for byte in value.encode("utf-8"):
+        digest ^= byte
+        digest = (digest * 16777619) & 0xFFFFFFFF
+    return f"{digest:08x}"
+
+
+def normalize_profanity_token(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value or "").lower().translate(PROFANITY_CHAR_MAP))
+
+
+def profanity_token_mask(value: str) -> str:
+    return "*" * max(4, len(value))
+
+
+def mask_profanity(message: object) -> str:
+    text = str(message or "")
+
+    def replace(match: re.Match) -> str:
+        normalized = normalize_profanity_token(match.group(0))
+        if normalized and fnv1a_32(normalized) in PROFANITY_TOKEN_HASHES:
+            return profanity_token_mask(match.group(0))
+        return match.group(0)
+
+    return PROFANITY_TOKEN_RE.sub(replace, text)
+
+
+def contains_profanity(message: object) -> bool:
+    text = str(message or "")
+    return mask_profanity(text) != text
+
+
+def mask_chat_profanity(chat: list) -> list:
+    sanitized = []
+    for item in chat:
+        if not isinstance(item, dict):
+            continue
+        next_item = dict(item)
+        next_item["content"] = mask_profanity(next_item.get("content", ""))
+        sanitized.append(next_item)
+    return sanitized
 
 
 def safety_lock_reason(message: str) -> str:
-    for reason, pattern in SAFETY_LOCK_PATTERNS:
-        if pattern.search(message or ""):
-            return reason
     return ""
 
 def rate_limit_key(ip_address: str | None = None, account_id: object = None) -> str:
@@ -894,6 +929,46 @@ def safe_record_request_event(ip_address: str, kind: str = "chat") -> None:
         record_request_event(ip_address, kind)
     except Exception:
         pass
+
+
+def recent_request_event_count(ip_address: str, kind: str = "chat", window_seconds: int = MESSAGE_CAPTCHA_WINDOW_SECONDS) -> int:
+    placeholder = db_placeholder()
+    since = (utc_now() - timedelta(seconds=max(1, int(window_seconds)))).isoformat()
+    try:
+        rows = db_query(
+            f"SELECT COUNT(*) AS count FROM request_events WHERE ip_address = {placeholder} AND kind = {placeholder} AND created_at >= {placeholder}",
+            ((ip_address or "")[:80], kind[:40], since),
+        )
+        return int(rows[0].get("count") or 0) if rows else 0
+    except Exception:
+        return 0
+
+
+def message_captcha_key(ip_address: str, account_id: object = None) -> str:
+    account_value = str(account_id or "").strip()
+    if account_value:
+        return f"account:{account_value[:120]}"
+    return f"anonymous:{str(ip_address or 'unknown').strip()[:120]}"
+
+
+def grant_message_captcha_pass(ip_address: str, account_id: object = None) -> None:
+    MESSAGE_CAPTCHA_PASSES[message_captcha_key(ip_address, account_id)] = utc_now() + timedelta(seconds=MESSAGE_CAPTCHA_PASS_SECONDS)
+
+
+def consume_message_captcha_pass(ip_address: str, account_id: object = None) -> bool:
+    key = message_captcha_key(ip_address, account_id)
+    expires_at = MESSAGE_CAPTCHA_PASSES.get(key)
+    if not expires_at:
+        return False
+    if expires_at <= utc_now():
+        MESSAGE_CAPTCHA_PASSES.pop(key, None)
+        return False
+    MESSAGE_CAPTCHA_PASSES.pop(key, None)
+    return True
+
+
+def message_captcha_required(ip_address: str, account_id: object = None) -> bool:
+    return recent_request_event_count(ip_address, "chat", MESSAGE_CAPTCHA_WINDOW_SECONDS) >= MESSAGE_CAPTCHA_LIMIT
 
 
 def request_counts() -> dict:
@@ -2139,9 +2214,8 @@ def safety_classifier_messages(message: str, chat: list[dict]) -> list[dict]:
             "content": (
                 "You are Aether's safety classifier. Classify whether the latest user message should lock the current conversation. "
                 "Return only one JSON object and no other text. "
-                "Lock only when the latest user message asks for, intends, threatens, or meaningfully enables: self-harm; harming people; "
-                "weapons or explosives construction/use; sexual content involving minors; malware, credential theft, phishing, DDoS, or other cyber abuse; "
-                "or manufacturing hard drugs. "
+                "Lock only when the latest user message asks for, intends, threatens, or meaningfully enables severe personal harm, "
+                "real-world violence, weaponized construction or use, exploitation, cyber abuse, or illicit manufacturing. "
                 "Do not lock benign, educational, fictional, prevention, recovery, news, moderation, or support-seeking discussion unless the latest message includes active intent, instructions, or enablement. "
                 "Schema: {\"safe\": boolean, \"action\": \"continue\" | \"lock_conversation\", \"category\": \"none\" | \"self_harm\" | \"violence\" | \"weapons\" | \"child_safety\" | \"cyber_abuse\" | \"hard_drugs\" | \"other\", \"confidence\": number, \"reason\": string}."
             ),
@@ -2481,8 +2555,9 @@ def require_hcaptcha(payload: dict, ip_address: str) -> tuple[bool, str]:
 def chat_response(payload: dict, ip_address: str, account: dict | None = None) -> dict:
     account_id = account.get("id") if account else None
     message = str(payload.get("message", "")).strip()[:MAX_CHAT_MESSAGE_CONTENT_LENGTH]
+    masked_message = mask_profanity(message)
     chat = payload.get("chat") if isinstance(payload.get("chat"), list) else []
-    chat = chat[:MAX_CHAT_MESSAGES_PER_CHAT]
+    chat = mask_chat_profanity(chat[:MAX_CHAT_MESSAGES_PER_CHAT])
     location = payload.get("location")
     speed_mode = normalized_speed_mode(payload.get("speedMode"))
     rate_limit_cost = speed_mode_rate_limit_cost(speed_mode)
@@ -2501,9 +2576,14 @@ def chat_response(payload: dict, ip_address: str, account: dict | None = None) -
             "banned": True,
             "ban": public_ban_details(ban_record),
         }
-    if contains_profanity(message):
-        safe_record_blocked_attempt(ip_address, message, chat, account)
-        return {"reply": PROFANITY_BLOCK_MESSAGE, "profanityBlocked": True}
+    if message_captcha_required(ip_address, account_id) and not consume_message_captcha_pass(ip_address, account_id):
+        return {
+            "reply": "Complete the captcha to continue.",
+            "captchaRequired": True,
+            "captchaPurpose": "message-rate",
+            "maskedMessage": masked_message,
+            "rateLimit": rate_limit_status(ip_address, account_id),
+        }
     scan_limit = consume_safety_scan_rate_limit(ip_address, account_id)
     if not scan_limit["allowed"]:
         return {
@@ -2513,11 +2593,12 @@ def chat_response(payload: dict, ip_address: str, account: dict | None = None) -
         }
     safety = classify_message_safety(message, chat)
     if safety.get("lock"):
-        safe_record_blocked_attempt(ip_address, message, chat, account)
+        safe_record_blocked_attempt(ip_address, masked_message, chat, account)
         return {
             "safetyLocked": True,
             "safetyReason": safety.get("reason") or "safety",
             "rateLimit": rate_limit_status(ip_address, account_id),
+            "maskedMessage": masked_message,
         }
     if looks_like_location_time_request(message) and not location:
         return {"reply": "Aether needs your permission to see your location to give your location."}
@@ -2531,13 +2612,13 @@ def chat_response(payload: dict, ip_address: str, account: dict | None = None) -
     if location and looks_like_location_time_request(message):
         latitude, longitude = coordinates_from_location(location)
         reply = location_time_reply(latitude, longitude)
-        return {"reply": reply, "rateLimit": rate["rateLimit"]}
+        return {"reply": reply, "rateLimit": rate["rateLimit"], "maskedMessage": masked_message}
     if location and looks_like_weather_request(message):
         latitude, longitude = coordinates_from_location(location)
         reply = weather_reply(latitude, longitude)
-        return {"reply": reply, "rateLimit": rate["rateLimit"]}
-    reply = groq_reply(message, chat, speed_mode)
-    return {"reply": reply, "rateLimit": rate["rateLimit"]}
+        return {"reply": reply, "rateLimit": rate["rateLimit"], "maskedMessage": masked_message}
+    reply = groq_reply(masked_message, chat, speed_mode)
+    return {"reply": reply, "rateLimit": rate["rateLimit"], "maskedMessage": masked_message}
 
 
 @app.after_request
@@ -2551,9 +2632,22 @@ def add_cors_headers(response):
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Aether-Reporter-Id"
     response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(self), geolocation=(self)"
     response.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "base-uri 'self'; "
+        "object-src 'none'; "
+        "frame-ancestors 'none'; "
+        "script-src 'self' https://js.hcaptcha.com; "
+        "frame-src https://*.hcaptcha.com; "
+        "connect-src 'self' https://*.hcaptcha.com https://api.hcaptcha.com https://aetherai.wasmer.app http://127.0.0.1:8765; "
+        "img-src 'self' data:; "
+        "media-src 'self'; "
+        "style-src 'self' 'unsafe-inline'"
+    )
     return response
 
 
@@ -2661,9 +2755,13 @@ def api_captcha_verify():
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
         payload = {}
-    verified, error = require_hcaptcha(payload, client_ip())
+    ip_address = client_ip()
+    account = current_account()
+    verified, error = require_hcaptcha(payload, ip_address)
     if not verified:
         return jsonify({"verified": False, "error": error, "captchaRequired": True}), 400
+    if str(payload.get("purpose") or "").strip() == "message-rate":
+        grant_message_captcha_pass(ip_address, account.get("id") if account else None)
     return jsonify({"verified": True})
 
 

@@ -15,7 +15,6 @@
     toast: "",
     thinking: false,
     assistantTyping: false,
-    profanityPopup: false,
     rateLimitPopup: false,
     voiceListening: false,
     rateLimit: {
@@ -105,7 +104,6 @@ let voiceAutoSending = false;
 let activeAssistantReveal = null;
 let hcaptchaReady = false;
 const LOCATION_TIME_PERMISSION_MESSAGE = "Aether needs your permission to see your location to give your location.";
-const PROFANITY_BLOCK_MESSAGE = "You cant send Aether a message with profanity in it. You can try again without profanity in your message.";
 const SAFETY_LOCK_PLACEHOLDER = "Oops! Aether's safety agent identified something unusual in your messages. You'll need to create a new conversation to continue using Aether AI.";
 const BAN_POPUP_BODY = "You can not use Aether AI because you were banned by an admin.";
 const VOICE_AUTO_SEND_DELAY_MS = 1800;
@@ -154,33 +152,39 @@ const SPEED_MODES = {
     icon: "assets/icon_library/fast.png",
   },
 };
-const PROFANITY_PATTERNS = [
-  /\bass\b/i,
-  /\basshole\b/i,
-  /\bbastard\b/i,
-  /\bbitch\b/i,
-  /\bcrap\b/i,
-  /\bdamn\b/i,
-  /\bfuck(?:er|ing)?\b/i,
-  /\bshit(?:ty)?\b/i,
-  /\bslut\b/i,
-  /\bwhore\b/i,
-  /\bnigga\b/i,
-  /\bnigger\b/i,
-  /\bnigg\b/i,
-  /\bnig\b/i,
-  /\bdick\b/i,
-  /\bcock\b/i,
-  /\bpussy\b/i,
-];
-const SAFETY_LOCK_PATTERNS = [
-  { reason: "self-harm", pattern: /\b(?:kill myself|end my life|suicide|suicidal|self[-\s]?harm|hurt myself|cut myself|overdose on purpose)\b/i },
-  { reason: "harm", pattern: /\b(?:how (?:do i|to) (?:kill|murder|hurt) (?:someone|a person)|commit murder|school shooting|mass shooting)\b/i },
-  { reason: "weapons", pattern: /\b(?:build|make|assemble|detonate|plant)\s+(?:a\s+)?(?:bomb|explosive|pipe bomb|molotov|grenade)\b/i },
-  { reason: "child-safety", pattern: /\b(?:child sexual|sexualize (?:a )?minor|minor porn|cp\b|csam)\b/i },
-  { reason: "cyber-abuse", pattern: /\b(?:make|write|build|deploy|use)\s+(?:malware|ransomware|keylogger|token grabber|phishing kit|password stealer|ddos bot)\b/i },
-  { reason: "hard-drugs", pattern: /\b(?:make|cook|synthesize|manufacture)\s+(?:meth|fentanyl|heroin|cocaine|mdma)\b/i },
-];
+const PROFANITY_TOKEN_HASHES = new Set([
+  "3272efda", "92a4ff90", "81602170", "91b887d3", "82405e59",
+  "dbafbd1d", "e6774d4a", "8814611d", "893dcdb6", "a856eb33",
+  "cf5447f4", "6cd5e87b", "b99bf986", "d9eb56dd", "a4705559",
+  "243c4bae", "18a40a3d", "6537d094", "d7337605", "d95c3b1f",
+]);
+const PROFANITY_TOKEN_RE = /[A-Za-z0-9_@$!]+/g;
+function fnv1a32(value) {
+  let hash = 2166136261;
+  const text = String(value || "");
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+function normalizeProfanityToken(value) {
+  const replacements = { "@": "a", "$": "s", "!": "i", "0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t" };
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[@$!013457]/g, (char) => replacements[char] || char)
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function maskProfanity(text) {
+  return String(text || "").replace(PROFANITY_TOKEN_RE, (token) => {
+    const normalized = normalizeProfanityToken(token);
+    if (!normalized || !PROFANITY_TOKEN_HASHES.has(fnv1a32(normalized))) return token;
+    return "*".repeat(Math.max(4, token.length));
+  });
+}
+
 const storage = {
   load() {
     const savedConfig = readJson("aether.config", {});
@@ -292,7 +296,7 @@ function normalizeChat(chat) {
     ...message,
     id: message?.id || createId(),
     role: message?.role === "user" ? "user" : "assistant",
-    content: String(message?.content || ""),
+    content: maskProfanity(message?.content || ""),
     createdAt: message?.createdAt || normalized.createdAt,
     voice: Boolean(message?.voice),
     reportedAt: String(message?.reportedAt || ""),
@@ -352,7 +356,6 @@ function render() {
         </aside>
 
         ${showAdminView ? renderAdminPage() : renderChatPage(chat)}
-        ${renderProfanityPopup()}
         ${renderRateLimitPopup()}
         ${renderReportModal()}
         ${renderReportFixedPopup()}
@@ -1115,19 +1118,6 @@ function renderThinking() {
   `;
 }
 
-function renderProfanityPopup() {
-  if (!Aether.state.profanityPopup) return "";
-  return `
-    <div class="warning-overlay" role="dialog" aria-modal="true" aria-labelledby="warning-title">
-      <div class="warning-modal">
-        <h2 id="warning-title">Oops!</h2>
-        <p>${escapeHtml(PROFANITY_BLOCK_MESSAGE)}</p>
-        <button class="warning-understand" data-action="close-profanity">I understand</button>
-      </div>
-    </div>
-  `;
-}
-
 function renderRateLimitPopup() {
   if (!Aether.state.rateLimitPopup) return "";
   const rate = Aether.state.rateLimit || {};
@@ -1501,9 +1491,6 @@ function bindEvents(root) {
   const composerInput = root.querySelector(".composer textarea[name='message']");
   composerInput?.addEventListener("input", (event) => {
     Aether.state.composerDraft = event.currentTarget.value;
-    if (!containsProfanity(Aether.state.composerDraft)) {
-      Aether.state.profanityPopup = false;
-    }
     syncComposerHeight(event.currentTarget);
     updateProfanityHighlightDom(event.currentTarget);
     updateSendButtonDom(event.currentTarget);
@@ -1520,10 +1507,6 @@ function bindEvents(root) {
     updateProfanityHighlightDom(composerInput);
     updateSendButtonDom(composerInput);
   }
-  root.querySelector("[data-action='close-profanity']")?.addEventListener("click", () => {
-    Aether.state.profanityPopup = false;
-    render();
-  });
   root.querySelector("[data-action='close-rate-limit']")?.addEventListener("click", () => {
     Aether.state.rateLimitPopup = false;
     render();
@@ -1708,12 +1691,18 @@ function noteMessageCaptchaSendAttempt() {
 
 function maybeOpenMessageCaptchaGate(text, options = {}) {
   if (!shouldRequireMessageCaptcha()) return false;
+  openMessageCaptchaGate(text, options);
+  return true;
+}
+
+function openMessageCaptchaGate(text, options = {}) {
   stopVoiceInput({ keepDraft: true, silent: true });
   Aether.state.messageCaptcha = {
     open: true,
     pending: {
       text: String(text || ""),
       options: {
+        addUser: options.addUser === false ? false : undefined,
         voice: Boolean(options.voice),
       },
     },
@@ -1726,7 +1715,6 @@ function maybeOpenMessageCaptchaGate(text, options = {}) {
   requestAnimationFrame(() => {
     document.querySelector(".captcha-lock-modal")?.focus({ preventScroll: true });
   });
-  return true;
 }
 
 async function continuePendingMessageAfterCaptcha(token) {
@@ -2407,10 +2395,7 @@ function updateProfanityHighlightDom(textarea) {
 }
 
 function renderHighlightedComposerText(text) {
-  const value = String(text || "");
-  if (!value) return "";
-  const combined = new RegExp(`(${PROFANITY_PATTERNS.map((pattern) => pattern.source).join("|")})`, "gi");
-  return escapeHtml(value).replace(combined, (match) => `<mark>${match}</mark>`);
+  return escapeHtml(text || "");
 }
 
 function composerHasText(value) {
@@ -2443,7 +2428,7 @@ async function sendMessage(event) {
 
   const form = event.currentTarget;
   const input = form.elements.message;
-  const text = input.value.trim();
+  const text = maskProfanity(input.value.trim());
   Aether.state.composerDraft = input.value;
   if (!text) return;
   if (isRateLimited()) {
@@ -2451,12 +2436,10 @@ async function sendMessage(event) {
     render();
     return;
   }
-  if (handleLocalProfanity(text)) {
-    syncComposerHeight(input);
-    updateProfanityHighlightDom(input);
-    return;
-  }
-
+  input.value = text;
+  Aether.state.composerDraft = text;
+  syncComposerHeight(input);
+  updateProfanityHighlightDom(input);
   const fromVoice = voiceAutoSending;
   if (maybeOpenMessageCaptchaGate(text, { voice: fromVoice })) {
     return;
@@ -2472,31 +2455,32 @@ async function sendMessage(event) {
 }
 
 async function sendTextMessage(text, options = {}) {
+  const safeText = maskProfanity(String(text || "").trim());
   if (isUserBanned()) return;
   if (Aether.state.thinking || Aether.state.assistantTyping) return;
   if (!isAetherAvailable()) return;
   const chat = activeChat();
   if (!chat || chat.safetyLocked) return;
+  if (!safeText) return;
   if (isRateLimited()) {
     Aether.state.rateLimitPopup = true;
     render();
     return;
   }
-  if (handleLocalProfanity(text)) return;
   if (options.addUser !== false) {
-    if (!options.skipMessageCaptchaGate && maybeOpenMessageCaptchaGate(text, options)) {
+    if (!options.skipMessageCaptchaGate && maybeOpenMessageCaptchaGate(safeText, options)) {
       return;
     }
     noteMessageCaptchaSendAttempt();
   }
 
   if (options.addUser !== false) {
-    const userMessage = createMessage("user", text, options.voice ? { voice: true } : {});
+    const userMessage = createMessage("user", safeText, options.voice ? { voice: true } : {});
     chat.messages.push(userMessage);
   }
-  if (!options.voice && isDefaultChatTitle(chat.title)) chat.title = conversationTitleFromText(text);
+  if (!options.voice && isDefaultChatTitle(chat.title)) chat.title = conversationTitleFromText(safeText);
   touchChat(chat);
-  const safetyReason = Aether.config.apiEndpoint ? "" : safetyLockReason(text);
+  const safetyReason = Aether.config.apiEndpoint ? "" : safetyLockReason(safeText);
   if (safetyReason) {
     Aether.state.thinking = true;
     storage.save();
@@ -2511,7 +2495,7 @@ async function sendTextMessage(text, options = {}) {
 
   const responseSpeedMode = normalizedSpeedMode(Aether.config.speedMode);
   const thinkingStartedAt = performance.now();
-  const answer = await getAssistantReply(text, { speedMode: responseSpeedMode });
+  const answer = await getAssistantReply(safeText, { speedMode: responseSpeedMode });
   if (answer && responseSpeedMode === "default") {
     await wait(DEFAULT_MODE_EXTRA_THINK_DELAY_MS);
   }
@@ -2798,9 +2782,8 @@ async function fetchAssistantReply(text, location = null, speedMode = normalized
           render();
           return "";
         }
-        if (data.profanityBlocked) {
-          Aether.state.profanityPopup = true;
-          render();
+        if (data.captchaRequired && data.captchaPurpose === "message-rate") {
+          openMessageCaptchaGate(text, { addUser: false });
           return "";
         }
         if (data.safetyLocked) {
@@ -2830,20 +2813,8 @@ function nextRetryDelay(currentDelayMs) {
   return Math.min(15000, Math.max(3000, Math.round(currentDelayMs * 1.4)));
 }
 
-function handleLocalProfanity(text) {
-  if (!containsProfanity(text)) return false;
-  Aether.state.profanityPopup = true;
-  render();
-  return true;
-}
-
-function containsProfanity(text) {
-  return PROFANITY_PATTERNS.some((pattern) => pattern.test(text));
-}
-
 function safetyLockReason(text) {
-  const match = SAFETY_LOCK_PATTERNS.find((item) => item.pattern.test(text));
-  return match?.reason || "";
+  return "";
 }
 
 function lockChatForSafety(chat, reason = "safety") {
@@ -2968,7 +2939,6 @@ function applyBanStatus(data) {
     stopAssistantResponse({ silent: true });
     Aether.state.authModal = false;
     Aether.state.accountModal = false;
-    Aether.state.profanityPopup = false;
     Aether.state.rateLimitPopup = false;
     Aether.state.reportModal = null;
     Aether.state.reportFixedNotice = null;
@@ -3649,9 +3619,9 @@ function createMessage(role, content, extras = {}) {
   return {
     id: createId(),
     role,
-    content,
     createdAt: new Date().toISOString(),
     ...extras,
+    content: maskProfanity(content),
   };
 }
 
