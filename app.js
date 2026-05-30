@@ -456,7 +456,7 @@ function renderChatPage(chat) {
             </div>
           </div>
         </form>
-        <p class="composer-note">Aether can make mistakes. Double check important info.</p>
+        <p class="composer-note">Aether can make mistakes. Check important info and report serious mistakes.</p>
       </div>
     </main>
   `;
@@ -615,7 +615,7 @@ function renderBanIpPanel(bannedIps, bannedAccounts = []) {
       <form class="admin-ban-form" data-action="admin-ban-user">
         <input name="username" autocomplete="off" placeholder="Username">
         <input name="reason" autocomplete="off" placeholder="Reason">
-        <button class="primary-button" type="submit"${Aether.state.adminLoading ? " disabled" : ""}>Ban user</button>
+        <button class="primary-button" type="submit"${Aether.state.adminLoading ? " disabled" : ""}>Ban User</button>
       </form>
       <div class="admin-list">
         ${bannedAccounts.map((item) => `
@@ -947,7 +947,7 @@ function renderProfilePictureReviewPanel(requests) {
               <button class="secondary-button" data-admin-decline-pfp="${escapeHtml(request.accountId || "")}"${Aether.state.adminLoading ? " disabled" : ""}>Decline</button>
             </div>
           </div>
-        `).join("") || `<div class="admin-empty">No profile pictures waiting for review.</div>`}
+        `).join("") || `<div class="admin-empty">No profile pictures are waiting for review.</div>`}
       </div>
     </section>
   `;
@@ -1252,7 +1252,7 @@ function renderBanOverlay() {
       <section class="ban-lock-card" tabindex="-1">
         <div class="ban-lock-icon" aria-hidden="true">!</div>
         <span class="ban-lock-eyebrow">Oops!</span>
-        <h2 id="ban-title">You are banned from Aether AI</h2>
+        <h2 id="ban-title">You have been banned from Aether AI</h2>
         <p id="ban-body">${escapeHtml(BAN_POPUP_BODY)}</p>
         <div class="ban-lock-details">
           <div class="ban-detail">
@@ -1663,7 +1663,7 @@ async function submitAccountDelete(event) {
     Aether.state.accountModal = false;
     showToast("Account deleted.");
   } catch (error) {
-    Aether.state.accountError = error?.message || "Account could not be deleted.";
+    Aether.state.accountError = error?.message || "Account could not be deleted due to an internal server error.";
   } finally {
     Aether.state.accountLoading = false;
     render();
