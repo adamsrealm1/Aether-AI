@@ -1,12 +1,13 @@
 kind: wasmer.io/App.v0
-name: aether-ai
-app_id: da_nkPI5tJUkwd1
+name: aetherai
+app_id: da_R4qIGtmUVXqP
 owner: adamsrealm1
 package: .
 env:
   PYTHONEXECUTABLE: /bin/python
   PYTHONPATH: /app
   AETHER_GROQ_MODELS: openai/gpt-oss-120b,llama-3.1-8b-instant,qwen/qwen3-32b
+  AETHER_HCAPTCHA_SITE_KEY: d80ab67c-f262-4b58-834c-fab69e447f88
 cli_args:
 - -m
 - flask
